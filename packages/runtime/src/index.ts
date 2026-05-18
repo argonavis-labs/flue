@@ -1,5 +1,4 @@
 /// <reference path="../types/skill-md.d.ts" />
-/// <reference path="../types/text-md.d.ts" />
 
 export type {
 	ActionContext,

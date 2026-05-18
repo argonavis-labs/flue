@@ -1,5 +1,4 @@
 import * as esbuild from 'esbuild';
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { buildSkillDefinition } from './skill-frontmatter.ts';
 
@@ -8,11 +7,10 @@ export function skillBundlerPlugin(): esbuild.Plugin {
 		name: 'flue-skill-bundler',
 		setup(build) {
 			build.onResolve({ filter: /.*/ }, (args) => {
-				const type = args.with?.type;
-				if (type !== 'skill' && type !== 'text') return null;
+				if (args.with?.type !== 'skill') return null;
 				return {
 					path: path.resolve(path.dirname(args.importer), args.path),
-					namespace: type === 'skill' ? 'flue-skill' : 'flue-text',
+					namespace: 'flue-skill',
 				};
 			});
 
@@ -25,7 +23,7 @@ export function skillBundlerPlugin(): esbuild.Plugin {
 				if (/\.(md|markdown)$/i.test(args.path)) {
 					throw new Error(
 						`[flue] Markdown import "${args.path}" must use an import attribute: ` +
-							`with { type: 'skill' } or with { type: 'text' }.`,
+							`with { type: 'skill' }.`,
 					);
 				}
 				return null;
@@ -40,15 +38,6 @@ export function skillBundlerPlugin(): esbuild.Plugin {
 					contents: `const skill = ${JSON.stringify(skill)}; export default skill;`,
 					loader: 'ts',
 					watchFiles,
-				};
-			});
-
-			build.onLoad({ filter: /.*/, namespace: 'flue-text' }, async (args) => {
-				const raw = await fs.promises.readFile(args.path, 'utf8');
-				return {
-					contents: `export default ${JSON.stringify(raw)};`,
-					loader: 'ts',
-					watchFiles: [args.path],
 				};
 			});
 		},

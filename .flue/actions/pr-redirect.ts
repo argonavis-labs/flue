@@ -27,7 +27,7 @@
  */
 
 import type { ActionContext, FlueSession } from '@flue/runtime';
-import { local } from '../connectors/local.ts';
+import { local } from '@flue/runtime/node';
 import {
 	closePullRequest,
 	commentOnDiscussion,

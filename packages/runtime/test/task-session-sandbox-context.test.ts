@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Harness } from '../src/harness.ts';
 import { InMemorySessionStore } from '../src/session.ts';
 import { defineAgent } from '../src/definition.ts';
+import { defineTool } from '../src/tool.ts';
 import type { AgentConfig, SessionEnv, SkillDefinition } from '../src/types.ts';
 
 const sandboxSkill: SkillDefinition = {
@@ -57,5 +58,79 @@ describe('task session sandbox context', () => {
 		expect(taskConfig.systemPrompt).toContain('Child instructions.');
 		expect(taskConfig.systemPrompt).toContain('Repository context.');
 		expect(taskConfig.skills['sandbox-review']).toBe(sandboxSkill);
+	});
+
+	it('uses delegated agent tools instead of parent harness tools', async () => {
+		const parentTool = defineTool({
+			name: 'parent-tool',
+			description: 'Parent tool.',
+			parameters: { type: 'object' },
+			execute: async () => 'parent',
+		});
+		const childTool = defineTool({
+			name: 'child-tool',
+			description: 'Child tool.',
+			parameters: { type: 'object' },
+			execute: async () => 'child',
+		});
+		const config: AgentConfig = {
+			systemPrompt: '',
+			skills: {},
+			sandboxSkills: {},
+			sandboxSkillDiscoveryHint: false,
+			subagents: {},
+			model: undefined,
+			resolveModel: () => undefined,
+		};
+		const harness = new Harness('agent', 'default', config, env, new InMemorySessionStore(), undefined, [parentTool]);
+		const taskSession = await (harness as unknown as {
+			createTaskSession(options: {
+				parentSession: string;
+				taskId: string;
+				parentEnv: SessionEnv;
+				agent: ReturnType<typeof defineAgent>;
+				depth: number;
+			}): Promise<{ agentTools: Array<{ name: string }> }>;
+		}).createTaskSession({
+			parentSession: 'default',
+			taskId: 'task',
+			parentEnv: env,
+			agent: defineAgent({ name: 'child', tools: [childTool] }),
+			depth: 1,
+		});
+		expect(taskSession.agentTools.map((tool) => tool.name)).toEqual(['child-tool']);
+	});
+
+	it('keeps parent harness tools for generic task sessions', async () => {
+		const parentTool = defineTool({
+			name: 'parent-tool',
+			description: 'Parent tool.',
+			parameters: { type: 'object' },
+			execute: async () => 'parent',
+		});
+		const config: AgentConfig = {
+			systemPrompt: '',
+			skills: {},
+			sandboxSkills: {},
+			sandboxSkillDiscoveryHint: false,
+			subagents: {},
+			model: undefined,
+			resolveModel: () => undefined,
+		};
+		const harness = new Harness('agent', 'default', config, env, new InMemorySessionStore(), undefined, [parentTool]);
+		const taskSession = await (harness as unknown as {
+			createTaskSession(options: {
+				parentSession: string;
+				taskId: string;
+				parentEnv: SessionEnv;
+				depth: number;
+			}): Promise<{ agentTools: Array<{ name: string }> }>;
+		}).createTaskSession({
+			parentSession: 'default',
+			taskId: 'task',
+			parentEnv: env,
+			depth: 1,
+		});
+		expect(taskSession.agentTools.map((tool) => tool.name)).toEqual(['parent-tool']);
 	});
 });

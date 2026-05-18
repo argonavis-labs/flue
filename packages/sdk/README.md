@@ -198,18 +198,17 @@ Inline `init({ context: '...' })` adds invocation-specific workspace markdown af
 
 ## Sandboxes
 
-Without `sandbox`, Flue uses a fast in-memory sandbox. For host or remote execution, install connector guidance with `flue add` and import the project-local connector file it describes.
+Without `sandbox`, Flue uses a fast in-memory sandbox. Node apps can use the built-in host sandbox from `@flue/runtime/node`; remote or Cloudflare-specific sandboxes come from connector guidance installed with `flue add`.
 
 ```bash
-flue add local --print
 flue add daytona --print
 flue add cloudflare-shell --print
 ```
 
-For example, a Node CI action can pass the generated local connector factory:
+For example, a Node CI action can pass the built-in local sandbox factory:
 
 ```ts
-import { local } from '../connectors/local';
+import { local } from '@flue/runtime/node';
 
 const harness = await init({
   model: 'anthropic/claude-sonnet-4-6',

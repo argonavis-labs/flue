@@ -1,9 +1,10 @@
 import { defineAgent, type ActionContext } from '@flue/runtime';
 import edgeSummary from '../skills/edge-summary/SKILL.md' with { type: 'skill' };
-import instructions from './with-bundled-skill.instructions.md' with { type: 'text' };
 import * as v from 'valibot';
 
 export const triggers = { webhook: true };
+
+const instructions = `You run the Cloudflare bundled-skill example. Follow the requested skill exactly and keep outputs concise.`;
 
 const bundledSkillAgent = defineAgent({
 	name: 'with-bundled-skill',

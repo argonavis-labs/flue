@@ -675,7 +675,7 @@ class CloudflareReloader implements DevReloader {
 	 *   - Changes to `actions/*.ts` — these MAY change the exported `triggers`,
 	 *     so we have to re-parse them. (Plain body edits redo a tiny amount
 	 *     of work but the rebuild is cheap and idempotent.)
-	 *   - Changes to tagged markdown import targets — the shared skill/text bundler regenerates output.
+	 *   - Changes to tagged markdown import targets — the skill bundler regenerates output.
 	 *   - Adds/removes/edits of `app.{ts,mts,js,mjs}` — discovery flips the
 	 *     entry between the user-app form and the default-app fallback,
 	 *     and the import path is baked into `_entry.ts`. Body edits are
@@ -685,7 +685,7 @@ class CloudflareReloader implements DevReloader {
 	 *   - Changes to the user's `wrangler.jsonc` — affects the merged config.
 	 *
 	 * Notes we explicitly DO ignore for rebuild purposes (wrangler handles
-	 * them): edits to imported source files outside of `actions/`, tagged markdown,
+	 * them): edits to imported source files outside of `actions/`, tagged skill markdown,
 	 * and `app.*`.
 	 */
 	shouldRebuildOn(relPath: string): boolean {

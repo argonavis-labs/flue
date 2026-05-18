@@ -43,7 +43,7 @@ describe('migration diagnostics', () => {
 			'init({ sandbox: \'empty\' })',
 		);
 		await expect(createContext().init({ sandbox: 'local' as never, model: false })).rejects.toThrow(
-			'flue add local',
+			'@flue/runtime/node',
 		);
 	});
 

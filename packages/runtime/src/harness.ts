@@ -133,6 +133,7 @@ export class Harness implements FlueHarness {
 			: options.parentEnv;
 		const taskAgent = options.agent;
 		const taskSkills = taskAgent ? mergeTaskSkills(taskAgent.skills ?? [], this.config.sandboxSkills) : undefined;
+		const taskAgentTools = taskAgent ? [...(taskAgent.tools ?? [])] : this.agentTools;
 		const taskConfig: AgentConfig = taskAgent
 			? {
 					...this.config,
@@ -177,7 +178,7 @@ export class Harness implements FlueHarness {
 			store: this.store,
 			existingData: data,
 			onAgentEvent: eventCallback,
-			agentTools: this.agentTools,
+			agentTools: taskAgentTools,
 			toolFactory: this.toolFactory,
 			taskDepth: options.depth,
 			createTaskSession: (childOptions) => this.createTaskSession(childOptions),

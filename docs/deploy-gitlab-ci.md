@@ -23,7 +23,7 @@ npm install -D @flue/cli
 
 ```typescript
 import type { ActionContext } from '@flue/runtime';
-import { local } from '../connectors/local';
+import { local } from '@flue/runtime/node';
 import * as v from 'valibot';
 
 export const triggers = {};
@@ -164,7 +164,7 @@ In GitLab CI, this means you set the secrets you want the agent's CLIs to see in
 ```typescript
 import { defineAgent, type ActionContext } from '@flue/runtime';
 import reproduceIssue from '../skills/reproduce-issue/SKILL.md' with { type: 'skill' };
-import { local } from '../connectors/local';
+import { local } from '@flue/runtime/node';
 import * as v from 'valibot';
 
 export const triggers = {};
@@ -272,7 +272,7 @@ Result schemas aren't just for type safety — they're how you orchestrate multi
 import { type ActionContext } from '@flue/runtime';
 import autoFix from '../skills/auto-fix/SKILL.md' with { type: 'skill' };
 import reproduceIssue from '../skills/reproduce-issue/SKILL.md' with { type: 'skill' };
-import { local } from '../connectors/local';
+import { local } from '@flue/runtime/node';
 import * as v from 'valibot';
 
 export default async function ({ init, payload }: ActionContext) {

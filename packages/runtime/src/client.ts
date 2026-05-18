@@ -325,8 +325,8 @@ async function resolveSessionEnv(
 	}
 	if ((sandbox as unknown) === 'local') {
 		throw new Error(
-			"[flue] init({ sandbox: 'local' }) is no longer supported because host sandboxes now come from connector files. " +
-				'Run `flue add local`, then write `import { local } from "../connectors/local"; await init({ sandbox: local(), model: "provider/model" })`. ' +
+			"[flue] init({ sandbox: 'local' }) is no longer supported. " +
+				'Write `import { local } from "@flue/runtime/node"; await init({ sandbox: local(), model: "provider/model" })`. ' +
 				"Pass `local({ env: { TOKEN: process.env.TOKEN } })` to opt host env vars in.",
 		);
 	}
@@ -347,5 +347,5 @@ async function resolveSessionEnv(
 		const env = await sandbox.createSessionEnv({ id, cwd });
 		return { env, toolFactory: sandbox.tools };
 	}
-	throw new Error('[flue] init({ sandbox }) received an unsupported value. Omit `sandbox`, pass `false`, pass a BashFactory such as `() => new Bash({ fs })`, or pass a connector SandboxFactory installed by `flue add`.');
+	throw new Error('[flue] init({ sandbox }) received an unsupported value. Omit `sandbox`, pass `false`, use `local()` from `@flue/runtime/node`, pass a BashFactory such as `() => new Bash({ fs })`, or pass a connector SandboxFactory installed by `flue add`.');
 }

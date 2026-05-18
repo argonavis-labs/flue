@@ -167,7 +167,7 @@ If an action intentionally operates inside a pre-existing repository or hydrated
 
 ## Using the local sandbox
 
-Install the local connector with `flue add local`. `local()` is where Node really shines compared to other targets. The agent runs directly against the host filesystem and shell — `cwd` is `process.cwd()`, shell commands go through `child_process`, and `loadFromSandbox: true` can discover project-root `AGENTS.md` and skills when you want that repo context.
+`local()` from `@flue/runtime/node` is where Node really shines compared to other targets. The agent runs directly against the host filesystem and shell — `cwd` is `process.cwd()`, shell commands go through `child_process`, and `loadFromSandbox: true` can discover project-root `AGENTS.md` and skills when you want that repo context.
 
 Run flue itself inside an isolation boundary you trust — a CI runner, a container, a sandbox VM. There is no second layer of isolation between the agent and the host.
 
@@ -177,7 +177,7 @@ Env exposure is opt-in. By default only shell essentials (`PATH`, `HOME`, locale
 
 ```typescript
 import type { ActionContext } from '@flue/runtime';
-import { local } from '../connectors/local';
+import { local } from '@flue/runtime/node';
 import * as v from 'valibot';
 
 export const triggers = { webhook: true };
@@ -246,7 +246,7 @@ For durable sessions, pass a custom store via the `persist` option on `init()`. 
 
 ```typescript
 import type { ActionContext, SessionStore, SessionData } from '@flue/runtime';
-import { local } from '../connectors/local';
+import { local } from '@flue/runtime/node';
 
 // Example: a simple file-backed store. In production, use a database.
 const store: SessionStore = {
@@ -330,7 +330,7 @@ Here's the progression of sandbox types available on Node.js, from simplest to m
 
 1. **Empty virtual sandbox** — `init({ model: 'openai/gpt-5.5' })`. Fast, cheap, stateless. Good for prompt-and-response agents.
 2. **Virtual sandbox with shell setup** — Use `session.shell()` to write files and configure the workspace. Still fast and cheap, good for agents that need small amounts of static context.
-3. **Local sandbox** — `init({ sandbox: local(), model: 'anthropic/claude-sonnet-4-6' })`. Direct host filesystem and shell access. Ideal for self-hosted agents, CI tasks, and dev tooling — anywhere the host environment already provides isolation. Install it with `flue add local`, import the generated connector, and pass `env: { ... }` to expose specific host env vars to the agent's shell.
+3. **Local sandbox** — `init({ sandbox: local(), model: 'anthropic/claude-sonnet-4-6' })`. Direct host filesystem and shell access. Ideal for self-hosted agents, CI tasks, and dev tooling — anywhere the host environment already provides isolation. Import `local` from `@flue/runtime/node` and pass `env: { ... }` to expose specific host env vars to the agent's shell.
 4. **Remote sandbox** — Full isolated Linux environment via a sandbox connector. For multi-tenant agents, coding sandboxes, and anything that needs per-session isolation.
 
 Start simple. Move up when you need to.

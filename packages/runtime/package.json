@@ -27,6 +27,10 @@
 		"./cloudflare": {
 			"types": "./dist/cloudflare/index.d.mts",
 			"import": "./dist/cloudflare/index.mjs"
+		},
+		"./node": {
+			"types": "./dist/node/index.d.mts",
+			"import": "./dist/node/index.mjs"
 		}
 	},
 	"main": "./dist/index.mjs",
