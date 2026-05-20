@@ -400,13 +400,8 @@ function runSseMode(opts: ModeOptions): Response {
 			});
 
 			try {
-				await withRunLifecycle(lifecycle, async () => {
-					try {
-						return await runHandler(ctx, handler);
-					} finally {
-						// Keep idle before the terminal run event on the SSE wire.
-						if (!isIdle) ctx.emitEvent({ type: 'idle' });
-					}
+				await withRunLifecycle(lifecycle, () => runHandler(ctx, handler), () => {
+					if (!isIdle) ctx.emitEvent({ type: 'idle' });
 				});
 			} catch {
 				// The lifecycle wrapper has already emitted the terminal event.
@@ -533,15 +528,20 @@ async function createRunLifecycle(options: RunLifecycleOptions): Promise<RunLife
 async function withRunLifecycle<T>(
 	lifecycle: RunLifecycle,
 	body: () => T | Promise<T>,
+	onIdle?: () => void,
 ): Promise<T> {
 	const flushFanout = subscribeRunFanout(lifecycle);
 	emitRunStart(lifecycle);
 	try {
 		const result = await body();
+		await lifecycle.ctx.waitForIdle();
+		onIdle?.();
 		await flushFanout();
 		await emitRunEnd(lifecycle, { result, isError: false });
 		return result;
 	} catch (error) {
+		await lifecycle.ctx.waitForIdle();
+		onIdle?.();
 		await flushFanout();
 		await emitRunEnd(lifecycle, { isError: true, error });
 		throw error;

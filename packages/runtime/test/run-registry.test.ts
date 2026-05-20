@@ -364,6 +364,113 @@ describe('Bare /runs/:runId routes via flue()', () => {
 		expect(streamOp?.['x-flue-streaming']).toBe(true);
 	});
 
+	it('keeps instance admission busy until detached sends settle', async () => {
+		const instanceAdmission = new InMemoryInstanceRunAdmission();
+		let releaseSend: (() => void) | undefined;
+		const wait = new Promise<void>((resolve) => {
+			releaseSend = resolve;
+		});
+
+		configureFlueRuntime({
+			target: 'node',
+			webhookAgents: ['hello'],
+			allowNonWebhook: false,
+			handlers: {
+				hello: async (ctx) => {
+					const agent = await ctx.init({ model: false });
+					const harness = agent.harness() as FlueHarness;
+					(harness as FlueHarness).session = async () => ({
+						prompt() {
+							return wait as never;
+						},
+					}) as unknown as FlueSession;
+					agent.send('hello');
+					return { accepted: true };
+				},
+			},
+			createContext: (agentName, id, runId, payload, req) =>
+				createFlueContext({
+					agentName,
+					id,
+					runId,
+					payload,
+					env: {},
+					req,
+					agentConfig: { systemPrompt: '', skills: {}, roles: {}, model: undefined, resolveModel: () => undefined },
+					createDefaultEnv: async () => bashFactoryToSessionEnv(async () => new Bash()),
+					defaultStore: new InMemorySessionStore(),
+					registrationStore: new InMemoryRegistrationStore(),
+				}),
+			instanceAdmission,
+		});
+
+		const app = new Hono();
+		app.route('/', flue());
+		const first = app.fetch(new Request('http://localhost/agents/hello/inst-send', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const second = await app.fetch(new Request('http://localhost/agents/hello/inst-send', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }));
+		expect(second.status).toBe(409);
+		releaseSend?.();
+		expect((await first).status).toBe(200);
+		const third = await app.fetch(new Request('http://localhost/agents/hello/inst-send', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }));
+		expect(third.status).toBe(200);
+	});
+
+	it('streams idle and run_end only after detached sends settle', async () => {
+		let releaseSend: (() => void) | undefined;
+		const wait = new Promise<void>((resolve) => {
+			releaseSend = resolve;
+		});
+
+		configureFlueRuntime({
+			target: 'node',
+			webhookAgents: ['hello'],
+			allowNonWebhook: false,
+			handlers: {
+				hello: async (ctx) => {
+					const agent = await ctx.init({ model: false });
+					const harness = agent.harness() as FlueHarness;
+					(harness as FlueHarness).session = async () => ({
+						prompt() {
+							return wait as never;
+						},
+					}) as unknown as FlueSession;
+					agent.send('hello');
+					return { accepted: true };
+				},
+			},
+			createContext: (agentName, id, runId, payload, req) =>
+				createFlueContext({
+					agentName,
+					id,
+					runId,
+					payload,
+					env: {},
+					req,
+					agentConfig: { systemPrompt: '', skills: {}, roles: {}, model: undefined, resolveModel: () => undefined },
+					createDefaultEnv: async () => bashFactoryToSessionEnv(async () => new Bash()),
+					defaultStore: new InMemorySessionStore(),
+					registrationStore: new InMemoryRegistrationStore(),
+				}),
+		});
+
+		const app = new Hono();
+		app.route('/', flue());
+		const response = await app.fetch(new Request('http://localhost/agents/hello/inst-stream', {
+			method: 'POST',
+			headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+			body: '{}',
+		}));
+		const streamText = response.text();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		releaseSend?.();
+		const body = await streamText;
+		const idleIndex = body.indexOf('event: idle');
+		const endIndex = body.indexOf('event: run_end');
+		expect(idleIndex).toBeGreaterThan(-1);
+		expect(endIndex).toBeGreaterThan(idleIndex);
+	});
+
 	it('rejects overlapping runs for the same instance and releases afterward', async () => {
 		const instanceAdmission = new InMemoryInstanceRunAdmission();
 		let releaseRun: (() => void) | undefined;

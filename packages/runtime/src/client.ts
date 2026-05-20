@@ -50,6 +50,7 @@ export interface FlueContextInternal extends FlueContext {
 	emitEvent(event: FlueEvent): FlueEvent;
 	subscribeEvent(callback: FlueEventCallback): () => void;
 	setEventCallback(callback: FlueEventCallback | undefined): void;
+	waitForIdle(): Promise<void>;
 }
 
 export function createFlueContext(config: FlueContextConfig): FlueContextInternal {
@@ -58,6 +59,7 @@ export function createFlueContext(config: FlueContextConfig): FlueContextInterna
 	let eventIndex = 0;
 	let didRegister = false;
 	const initializedHarnessNames = new Set<string>();
+	const detachedOperations = new Set<Promise<unknown>>();
 
 	const emitEvent = (event: FlueEvent): FlueEvent => {
 		const decorated: FlueEvent = {
@@ -216,7 +218,7 @@ export function createFlueContext(config: FlueContextConfig): FlueContextInterna
 							throw new Error('[flue] agent.send(message) requires a string message.');
 						}
 						sendInFlight = true;
-						void harness
+						const operation = harness
 							.session(sendOptions?.session)
 							.then((session) => session.prompt(message))
 							.catch((error) => {
@@ -229,7 +231,9 @@ export function createFlueContext(config: FlueContextConfig): FlueContextInterna
 							})
 							.finally(() => {
 								sendInFlight = false;
+								detachedOperations.delete(operation);
 							});
+						detachedOperations.add(operation);
 					},
 					harness: () => harness,
 				};
@@ -249,6 +253,12 @@ export function createFlueContext(config: FlueContextConfig): FlueContextInterna
 		setEventCallback(callback: FlueEventCallback | undefined): void {
 			handlerUnsubscribe?.();
 			handlerUnsubscribe = callback ? ctx.subscribeEvent(callback) : undefined;
+		},
+
+		async waitForIdle(): Promise<void> {
+			while (detachedOperations.size > 0) {
+				await Promise.allSettled([...detachedOperations]);
+			}
 		},
 	};
 
