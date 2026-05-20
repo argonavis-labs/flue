@@ -10,6 +10,8 @@
 
 - **Serialized agent-instance admission.** Concurrent requests for the same agent instance are now rejected with a structured `409 instance_busy` response until the active run finishes. Node uses a process-local admission lane; Cloudflare uses Durable Object SQLite state and clears interrupted webhook-fiber leases during recovery.
 
+- **Persistent default virtual workspaces.** The built-in default sandbox now reuses filesystem state across runs for the same agent name, instance id, and harness name. Node keeps this workspace process-local; Cloudflare persists it in Durable Object SQLite storage. Custom sandboxes remain unchanged.
+
 - **Cloudflare shell sandbox.** Added `getShellSandbox({ workspace, loader })`, `getDefaultWorkspace()`, and `hydrateFromBucket()` from `@flue/runtime/cloudflare`. The new sandbox wires `@cloudflare/shell` Workspaces into Flue through a codemode `code` tool backed by a Worker Loader binding. Agents use `state.*` inside the `code` tool instead of bash/read/write/grep/glob. Use `@cloudflare/shell` directly for primitives like `Workspace`, `WorkspaceFileSystem`, and `createGit`.
 
 ### Breaking Changes

@@ -1,10 +1,13 @@
 import { Hono } from 'hono';
+import { Bash } from 'just-bash';
 import { describe, expect, it } from 'vitest';
 import { admin, flue } from '../src/app.ts';
 import {
 	configureFlueRuntime,
 	createFlueContext,
 	createRunSubscriberRegistry,
+	bashFactoryToSessionEnv,
+	InMemoryDefaultWorkspaceStore,
 	InMemoryInstanceRunAdmission,
 	InMemoryRunRegistry,
 	InMemoryRunStore,
@@ -252,8 +255,9 @@ describe('Bare /runs/:runId routes via flue()', () => {
 			handlers: {
 				hello: async (_ctx) => ({ greeting: 'hi' }),
 			},
-			createContext: (id, runId, payload, req) =>
+			createContext: (agentName, id, runId, payload, req) =>
 				createFlueContext({
+					agentName,
 					id,
 					runId,
 					payload,
@@ -369,8 +373,9 @@ describe('Bare /runs/:runId routes via flue()', () => {
 			webhookAgents: ['hello'],
 			allowNonWebhook: false,
 			handlers: { hello: async () => wait },
-			createContext: (id, runId, payload, req) =>
+			createContext: (agentName, id, runId, payload, req) =>
 				createFlueContext({
+					agentName,
 					id,
 					runId,
 					payload,
@@ -402,8 +407,9 @@ describe('Bare /runs/:runId routes via flue()', () => {
 			webhookAgents: ['hello'],
 			allowNonWebhook: false,
 			handlers: { hello: async () => null },
-			createContext: (id, runId, payload, req) =>
+			createContext: (agentName, id, runId, payload, req) =>
 				createFlueContext({
+					agentName,
 					id,
 					runId,
 					payload,
@@ -500,6 +506,68 @@ describe('Bare /runs/:runId routes via flue()', () => {
 		expect(await original.text()).toBe('{"caseNumber":"02101282"}');
 	});
 
+	it('persists default workspace files by instance while harnesses remain isolated', async () => {
+		const workspaceStore = new InMemoryDefaultWorkspaceStore();
+
+		configureFlueRuntime({
+			target: 'node',
+			webhookAgents: ['hello'],
+			allowNonWebhook: false,
+			handlers: {
+				hello: async (ctx) => {
+					const harnessName = String((ctx.payload as { harness?: string }).harness ?? 'default');
+					const harness = await ctx.init({ name: harnessName, model: false });
+					const write = (ctx.payload as { write?: string }).write;
+					if (write) await harness.fs.writeFile('/workspace.txt', write);
+					return {
+						value: await harness.fs.readFile('/workspace.txt').catch(() => null),
+					};
+				},
+			},
+			createContext: (agentName, id, runId, payload, req) =>
+				createFlueContext({
+					agentName,
+					id,
+					runId,
+					payload,
+					env: {},
+					req,
+					agentConfig: {
+						systemPrompt: '',
+						skills: {},
+						roles: {},
+						model: undefined,
+						resolveModel: () => undefined,
+					},
+					createDefaultEnv: async (scope) => {
+						const fs = await workspaceStore.get(scope);
+						return bashFactoryToSessionEnv(async () => new Bash({ fs }));
+					},
+					defaultStore: new InMemorySessionStore(),
+				}),
+		});
+
+		const app = new Hono();
+		app.route('/', flue());
+		const invoke = async (id: string, payload: { harness?: string; write?: string } = {}) =>
+			(await app.fetch(
+				new Request(`http://localhost/agents/hello/${id}`, {
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify(payload),
+				}),
+			)).json() as Promise<{ result: { value: string | null } }>;
+
+		expect((await invoke('stable', { write: 'persisted' })).result.value).toBe('persisted');
+		expect((await invoke('stable')).result.value).toBe('persisted');
+		expect((await invoke('stable', { harness: 'other' })).result.value).toBeNull();
+		expect((await invoke('stable', { harness: 'other', write: 'other-data' })).result.value).toBe(
+			'other-data',
+		);
+		expect((await invoke('stable', { harness: 'other' })).result.value).toBe('other-data');
+		expect((await invoke('isolated')).result.value).toBeNull();
+	});
+
 	it('flushes queued non-terminal events before run_end is persisted', async () => {
 		const runStore = new SlowNonTerminalRunStore();
 		const runRegistry = new InMemoryRunRegistry();
@@ -515,8 +583,9 @@ describe('Bare /runs/:runId routes via flue()', () => {
 					return { ok: true };
 				},
 			},
-			createContext: (id, runId, payload, req) =>
+			createContext: (agentName, id, runId, payload, req) =>
 				createFlueContext({
+					agentName,
 					id,
 					runId,
 					payload,
@@ -604,8 +673,9 @@ describe('admin() routes', () => {
 			webhookAgents: ['hello'],
 			allowNonWebhook: false,
 			handlers: { hello: async () => ({ ok: true }) },
-			createContext: (id, runId, payload, req) =>
+			createContext: (agentName, id, runId, payload, req) =>
 				createFlueContext({
+					agentName,
 					id,
 					runId,
 					payload,

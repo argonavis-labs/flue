@@ -29,11 +29,16 @@ export { parseSkillMarkdown } from './skill-frontmatter.ts';
 // they pull in `cloudflare:workers`, a virtual module Node can't resolve.
 // The generated CF entry imports them from there directly.
 export { createDurableRunStore } from './cloudflare/run-store.ts';
+export { InMemoryDefaultWorkspaceStore } from './node/default-workspace-store.ts';
 export { InMemoryInstanceRunAdmission } from './node/instance-admission.ts';
 export { InMemoryRunRegistry } from './node/run-registry.ts';
 export { InMemoryRunStore } from './node/run-store.ts';
 export type { FlueRuntime } from './runtime/flue-app.ts';
 export { configureFlueRuntime, createDefaultFlueApp } from './runtime/flue-app.ts';
+export type {
+	DefaultWorkspaceScope,
+	DefaultWorkspaceStore,
+} from './runtime/default-workspace-store.ts';
 export type {
 	AcquireInstanceRunInput,
 	InstanceRunAdmission,

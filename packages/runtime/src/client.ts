@@ -1,6 +1,7 @@
 import { discoverSessionContext } from './context.ts';
 import { Harness } from './harness.ts';
 import { assertRoleExists } from './roles.ts';
+import type { DefaultWorkspaceScope } from './runtime/default-workspace-store.ts';
 import { dispatchGlobalEvent } from './runtime/events.ts';
 import { bashFactoryToSessionEnv, createCwdSessionEnv, isBashLike } from './sandbox.ts';
 import type {
@@ -22,8 +23,9 @@ export interface FlueContextConfig {
 	runId: string;
 	payload: any;
 	env: Record<string, any>;
+	agentName: string;
 	agentConfig: AgentConfig;
-	createDefaultEnv: () => Promise<SessionEnv>;
+	createDefaultEnv: (scope: DefaultWorkspaceScope) => Promise<SessionEnv>;
 	defaultStore: SessionStore;
 	/**
 	 * Platform-specific sandbox resolver hook. Called before default resolution.
@@ -130,7 +132,9 @@ export function createFlueContext(config: FlueContextConfig): FlueContextInterna
 				assertRoleExists(config.agentConfig.roles, options.role);
 				const sandbox = options.sandbox;
 				const { env: baseEnv, toolFactory } = await resolveSessionEnv(
+					config.agentName,
 					config.id,
+					name,
 					sandbox,
 					config,
 					options.cwd,
@@ -229,13 +233,21 @@ function isSandboxFactory(value: unknown): value is SandboxFactory {
 
 /** Resolve sandbox option to its session environment and optional tool factory. */
 async function resolveSessionEnv(
+	agentName: string,
 	id: string,
+	harnessName: string,
 	sandbox: AgentInit['sandbox'],
 	config: FlueContextConfig,
 	cwd: string | undefined,
 ): Promise<{ env: SessionEnv; toolFactory?: SessionToolFactory }> {
 	if (sandbox === undefined || sandbox === false) {
-		return { env: await config.createDefaultEnv() };
+		return {
+			env: await config.createDefaultEnv({
+				agentName,
+				instanceId: id,
+				harnessName,
+			}),
+		};
 	}
 	// JS-caller / `any`-input fallback for the removed `'empty'` and
 	// `'local'` magic strings. TS callers get compile errors from the

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
+import { createDurableDefaultWorkspaceStore } from '../src/cloudflare/default-workspace-store.ts';
 import { createDurableInstanceRunAdmission } from '../src/cloudflare/instance-admission.ts';
 import {
 	createRegistryOps,
@@ -33,6 +34,24 @@ const STARTED_AT_1 = '2026-05-13T10:00:00.000Z';
 const STARTED_AT_2 = '2026-05-13T10:01:00.000Z';
 const STARTED_AT_3 = '2026-05-13T10:02:00.000Z';
 const ENDED_AT = '2026-05-13T10:03:00.000Z';
+
+describe('createDurableDefaultWorkspaceStore (SQL paths)', () => {
+	it('persists default workspace contents across store recreation and isolates scopes', async () => {
+		const sql = makeFakeSql();
+		const firstScope = { agentName: 'hello', instanceId: 'inst_a', harnessName: 'default' };
+		const isolatedScope = { agentName: 'hello', instanceId: 'inst_b', harnessName: 'default' };
+		const fs = await createDurableDefaultWorkspaceStore(sql).get(firstScope);
+		await fs.mkdir('/empty', { recursive: true });
+		await fs.writeFile('/context.txt', 'persisted');
+		await fs.symlink('/context.txt', '/context-link.txt');
+		const recovered = await createDurableDefaultWorkspaceStore(sql).get(firstScope);
+		expect(await recovered.readFile('/context.txt')).toBe('persisted');
+		expect(await recovered.stat('/empty')).toMatchObject({ isDirectory: true });
+		expect(await recovered.readlink('/context-link.txt')).toBe('/context.txt');
+		const isolated = await createDurableDefaultWorkspaceStore(sql).get(isolatedScope);
+		expect(await isolated.exists('/context.txt')).toBe(false);
+	});
+});
 
 describe('createDurableInstanceRunAdmission', () => {
 	it('admits one active run per agent instance and releases leases', async () => {
