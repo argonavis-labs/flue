@@ -1,5 +1,5 @@
 import * as v from 'valibot';
-import type { AgentDefinition, Skill, ThinkingLevel, ToolDefinition } from './types.ts';
+import type { AgentDefinition, AgentInit, Skill, ThinkingLevel, ToolDefinition } from './types.ts';
 
 const AGENT_DEFINITION_FIELDS = new Set([
 	'model',
@@ -31,6 +31,22 @@ const AgentDefinitionSchema = v.looseObject({
 export function defineAgent(definition: AgentDefinition): AgentDefinition {
 	assertAgentDefinition(definition, 'defineAgent()');
 	return definition;
+}
+
+export function resolveAgentDefinition(options: AgentInit | undefined): AgentDefinition {
+	const inherited = options?.inherit;
+	return {
+		model: hasOwn(options, 'model') ? options?.model : inherited?.model,
+		instructions: hasOwn(options, 'instructions') ? options?.instructions : inherited?.instructions,
+		skills: hasOwn(options, 'skills') ? options?.skills : inherited?.skills,
+		tools: hasOwn(options, 'tools') ? options?.tools : inherited?.tools,
+		thinkingLevel: hasOwn(options, 'thinkingLevel') ? options?.thinkingLevel : inherited?.thinkingLevel,
+		compaction: hasOwn(options, 'compaction') ? options?.compaction : inherited?.compaction,
+	};
+}
+
+function hasOwn<T extends object, K extends PropertyKey>(value: T | undefined, key: K): value is T & Record<K, unknown> {
+	return Boolean(value && Object.hasOwn(value, key));
 }
 
 function assertAgentDefinition(

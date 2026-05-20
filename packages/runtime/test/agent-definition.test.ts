@@ -1,6 +1,6 @@
 import { Type } from '@earendil-works/pi-ai';
 import { describe, expect, it } from 'vitest';
-import { defineAgent } from '../src/agent-definition.ts';
+import { defineAgent, resolveAgentDefinition } from '../src/agent-definition.ts';
 import { defineTool } from '../src/tool.ts';
 
 describe('defineAgent', () => {
@@ -11,6 +11,7 @@ describe('defineAgent', () => {
 			parameters: Type.Object({ value: Type.String() }),
 			execute: async () => 'ok',
 		});
+
 		const definition = {
 			model: 'anthropic/claude-sonnet-4-6',
 			instructions: 'Help the user.',
@@ -71,4 +72,29 @@ describe('defineAgent', () => {
 		).toThrow('duplicate skill name "triage"');
 	});
 
+});
+
+describe('resolveAgentDefinition', () => {
+	it('inherits definition fields and lets init-level fields replace them', () => {
+		const inheritedSkills = [{ name: 'base', description: 'Base skill.' }];
+		const overrideSkills = [{ name: 'override', description: 'Override skill.' }];
+		expect(
+			resolveAgentDefinition({
+				inherit: {
+					model: 'anthropic/claude-sonnet-4-6',
+					instructions: 'Inherited instructions.',
+					skills: inheritedSkills,
+				},
+				instructions: undefined,
+				skills: overrideSkills,
+			}),
+		).toEqual({
+			model: 'anthropic/claude-sonnet-4-6',
+			instructions: undefined,
+			skills: overrideSkills,
+			tools: undefined,
+			thinkingLevel: undefined,
+			compaction: undefined,
+		});
+	});
 });

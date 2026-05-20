@@ -1,3 +1,4 @@
+import { resolveAgentDefinition } from './agent-definition.ts';
 import { discoverSessionContext } from './context.ts';
 import { AgentBusyError } from './errors.ts';
 import { Harness } from './harness.ts';
@@ -139,7 +140,7 @@ export function createFlueContext(config: FlueContextConfig): FlueContextInterna
 		},
 
 		async init(options?: AgentInit): Promise<Agent> {
-			const definition = resolveInitDefinition(options);
+			const definition = resolveAgentDefinition(options);
 			if (!hasInitModel(options)) {
 				throw new Error(
 					'[flue] init() requires a model. Pass { model: "provider/model-id" }, { model: false }, or inherit a definition with a model.',
@@ -289,18 +290,6 @@ function serializeAgentSendError(error: unknown): Record<string, unknown> {
 
 function hasInitModel(options: AgentInit | undefined): boolean {
 	return Boolean(options && ('model' in options || (options.inherit && 'model' in options.inherit)));
-}
-
-function resolveInitDefinition(options: AgentInit | undefined): AgentInit {
-	return {
-		model: options?.inherit?.model,
-		instructions: options?.inherit?.instructions,
-		skills: options?.inherit?.skills,
-		tools: options?.inherit?.tools,
-		thinkingLevel: options?.inherit?.thinkingLevel,
-		compaction: options?.inherit?.compaction,
-		...(options ?? {}),
-	};
 }
 
 function isBashFactory(value: unknown): value is BashFactory {
