@@ -271,6 +271,8 @@ export interface AgentConfig {
 	systemPrompt: string;
 	/** Agent instructions prepended ahead of discovered workspace context. */
 	instructions?: string;
+	/** Agent-definition skills merged into each discovered skill catalog. */
+	definitionSkills?: Skill[];
 	/** Discovered at runtime from .agents/skills/ in the session's cwd. */
 	skills: Record<string, Skill>;
 	roles: Record<string, Role>;
@@ -382,6 +384,9 @@ export interface AgentInit {
 
 	/** Agent instructions prepended ahead of discovered workspace context. */
 	instructions?: string;
+
+	/** Agent-definition skills disclosed in the system-prompt catalog. */
+	skills?: Skill[];
 
 	/** Working directory for context discovery, tools, and shell calls. Defaults to the sandbox cwd. */
 	cwd?: string;

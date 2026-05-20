@@ -103,7 +103,7 @@ export async function discoverLocalSkills(
 
 	if (!(await env.exists(skillsDir))) return {};
 
-	const skills: Record<string, Skill> = {};
+	const skills: Record<string, Skill> = Object.create(null);
 	const entries = await env.readdir(skillsDir);
 
 	for (const entry of entries) {
@@ -128,6 +128,23 @@ export async function discoverLocalSkills(
 	}
 
 	return skills;
+}
+
+export function mergeSkillCatalog(
+	definitionSkills: readonly Skill[],
+	discoveredSkills: Record<string, Skill>,
+): Record<string, Skill> {
+	const merged: Record<string, Skill> = Object.create(null);
+	for (const skill of definitionSkills) {
+		merged[skill.name] = skill;
+	}
+	for (const [name, skill] of Object.entries(discoveredSkills)) {
+		if (Object.hasOwn(merged, name)) {
+			throw new Error(`[flue] Skill name "${name}" appears in both agent definition and workspace discovery.`);
+		}
+		merged[name] = skill;
+	}
+	return merged;
 }
 
 /**
@@ -160,7 +177,7 @@ export function composeSystemPrompt(
 			'',
 			'## Available Skills',
 			'',
-			'Each skill below is documented in a markdown file under `.agents/skills/` (relative to your working directory). The default location is `.agents/skills/<name>/SKILL.md`. When asked to run a skill, read its file from disk and follow the instructions there literally — the skill body is not provided inline.',
+			'The following skills provide specialized instructions for specific tasks. When a task matches a skill description, activate that skill before proceeding so its full instructions are loaded. Skill instructions and supporting resources stay lazy until activation or explicit file reads.',
 			'',
 		);
 		for (const skill of skillEntries) {
@@ -190,11 +207,12 @@ export function composeSystemPrompt(
 export async function discoverSessionContext(
 	env: SessionEnv,
 	instructions?: string,
+	definitionSkills: readonly Skill[] = [],
 ): Promise<{ systemPrompt: string; skills: Record<string, Skill> }> {
 	const cwd = env.cwd;
 
 	const agentsMd = await readAgentsMd(env, cwd);
-	const skills = await discoverLocalSkills(env, cwd);
+	const skills = mergeSkillCatalog(definitionSkills, await discoverLocalSkills(env, cwd));
 
 	let directoryListing: string[] | undefined;
 	try {

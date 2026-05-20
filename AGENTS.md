@@ -101,6 +101,13 @@ This builds the project, starts a temporary server, invokes the agent via SSE, s
 pnpm run check:types    # in packages/runtime/
 ```
 
+## Agent Skills
+
+When implementing or reviewing Agent Skills support, use the official client guidance and spec as references:
+
+- https://agentskills.io/client-implementation/adding-skills-support
+- https://agentskills.io/specification
+
 ## Models
 
 `provider/model-id` strings; providers come from pi-ai's registry. API keys via env (`ANTHROPIC_API_KEY`, etc.) or provider configuration in `app.ts` via `configureProvider()` / `registerProvider()`.

@@ -589,6 +589,61 @@ describe('Bare /runs/:runId routes via flue()', () => {
 		expect(overriddenHarness.agentTools).toEqual([overrideTool]);
 	});
 
+	it('adds inherited skills to the active catalog without injecting skill bodies', async () => {
+		const ctx = createFlueContext({
+			agentName: 'hello',
+			id: 'inst-1',
+			runId: 'run-skills',
+			payload: {},
+			env: {},
+			createDefaultEnv: async () => bashFactoryToSessionEnv(async () => new Bash()),
+			defaultStore: new InMemorySessionStore(),
+			registrationStore: new InMemoryRegistrationStore(),
+			agentConfig: {
+				systemPrompt: '',
+				skills: {},
+				roles: {},
+				model: undefined,
+				resolveModel: () => undefined,
+			},
+		});
+
+		const agent = await ctx.init({
+			inherit: {
+				model: false,
+				skills: [
+					{
+						name: 'review',
+						description: 'Review work.',
+						body: 'Hidden review instructions.',
+						source: { kind: 'local', path: '/skills/review/SKILL.md' },
+					},
+				],
+			},
+		});
+		const harness = agent.harness() as unknown as { config: AgentConfig };
+		expect(harness.config.skills.review).toMatchObject({ name: 'review', description: 'Review work.' });
+		expect(harness.config.systemPrompt).toContain('**review** — Review work.');
+		expect(harness.config.systemPrompt).not.toContain('Hidden review instructions.');
+
+		const childContext = await (agent.harness() as unknown as {
+			createTaskSession(options: {
+				parentSession: string;
+				taskId: string;
+				parentEnv: unknown;
+				depth: number;
+			}): Promise<{ config: AgentConfig }>;
+		}).createTaskSession({
+			parentSession: 'default',
+			taskId: 'skill-child',
+			parentEnv: await bashFactoryToSessionEnv(async () => new Bash()),
+			depth: 1,
+		});
+		expect(childContext.config.skills.review).toMatchObject({ name: 'review', description: 'Review work.' });
+		expect(childContext.config.systemPrompt).toContain('**review** — Review work.');
+		expect(childContext.config.systemPrompt).not.toContain('Hidden review instructions.');
+	});
+
 	it('uses inherited instructions and lets init-level instructions replace them', async () => {
 		const ctx = createFlueContext({
 			agentName: 'hello',
