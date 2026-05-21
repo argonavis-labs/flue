@@ -310,6 +310,80 @@ export interface Agent {
 	harness(): FlueHarness;
 }
 
+export interface MessageSender {
+	id: string;
+	name?: string;
+	raw?: unknown;
+}
+
+export interface InboundMessage {
+	messageId: string;
+	content: string;
+	channel: string;
+	sender?: MessageSender;
+	metadata: Record<string, unknown>;
+	receivedAt: number;
+}
+
+export interface DeliveryInput {
+	content: string;
+	metadata?: Record<string, unknown>;
+	channel: string;
+	sender?: MessageSender;
+}
+
+export interface DeliveryResult {
+	result?: unknown;
+	error?: unknown;
+}
+
+export interface EventStream extends AsyncIterable<FlueEvent> {
+	cancel(): void;
+}
+
+export interface DeliveryHandle {
+	readonly messageId: string;
+	events(): EventStream;
+	waitForIdle(): Promise<DeliveryResult>;
+}
+
+export interface ChannelContext {
+	readonly agentName: string;
+	readonly env: Record<string, unknown>;
+	deliver(instanceId: string, input: DeliveryInput): Promise<DeliveryHandle>;
+}
+
+export interface Channel {
+	readonly name: string;
+	readonly mount: 'top' | 'namespaced';
+	app(ctx: ChannelContext): unknown;
+}
+
+export interface HttpAuthContext {
+	readonly req: Request;
+	readonly url: URL;
+	readonly headers: Headers;
+	readonly body: unknown;
+}
+
+export interface HttpChannelOptions {
+	auth?: (ctx: HttpAuthContext) => boolean | Promise<boolean>;
+}
+
+export interface AgentContext<TEnv = Record<string, any>> {
+	readonly id: string;
+	readonly env: TEnv;
+	readonly log: FlueLogger;
+	readonly metadata: Record<string, unknown>;
+	spawn(options: AgentInit): Promise<Agent>;
+	register(callback: () => unknown | Promise<unknown>): Promise<void>;
+}
+
+export type AgentMessageHandler = (
+	agent: Agent,
+	message: InboundMessage,
+) => unknown | Promise<unknown>;
+
 // ─── Flue Context (passed to agent handlers) ───────────────────────────────
 
 /**
