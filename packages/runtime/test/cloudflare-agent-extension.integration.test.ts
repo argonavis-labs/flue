@@ -40,7 +40,8 @@ describe('Cloudflare agent extension', () => {
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ prompt: 'Hello' }),
 			});
-			expect(response.status).not.toBe(404);
+			expect(response.status).toBe(400);
+			expect(await response.json()).toMatchObject({ error: { type: 'invalid_request' } });
 		} finally {
 			await server?.close();
 			fs.rmSync(root, { recursive: true, force: true });
@@ -57,7 +58,8 @@ describe('Cloudflare agent extension', () => {
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ prompt: 'Hello' }),
 			});
-			expect(response.status, await response.text()).not.toBe(500);
+			expect(response.status).toBe(400);
+			expect(await response.json()).toMatchObject({ error: { type: 'invalid_request' } });
 			const heartbeat = await fetch(new URL('/heartbeat', server.url));
 			expect(heartbeat.status).toBe(200);
 		} finally {
@@ -66,25 +68,56 @@ describe('Cloudflare agent extension', () => {
 		}
 	}, 90000);
 
-	it('bootstraps the inherited PartyServer name before accepting an agent WebSocket', async () => {
-		const root = await createGeneratedFixture();
+	it('routes named generated Durable Objects across dispatch, workflow, and WebSocket transports', async () => {
+		const root = await createGeneratedFixture(defaultAgentSource, '', true);
 		let server: Awaited<ReturnType<typeof startServer>> | undefined;
-		let socket: WebSocket | undefined;
+		let agentSocket: WebSocket | undefined;
+		let workflowSocket: WebSocket | undefined;
 		try {
 			server = await startServer(root);
-			const url = new URL('/agents/assistant/socket-instance', server.url);
-			url.protocol = 'ws:';
-			socket = new WebSocket(url.toString());
-			const firstMessage = await waitForSocketMessage(socket);
-			expect(JSON.parse(firstMessage)).toMatchObject({
+			const agentSocketUrl = new URL('/agents/assistant/socket-instance', server.url);
+			agentSocketUrl.protocol = 'ws:';
+			agentSocket = new WebSocket(agentSocketUrl.toString());
+			const agentFirstMessage = await waitForSocketMessage(agentSocket);
+			expect(JSON.parse(agentFirstMessage)).toMatchObject({
 				version: 1,
 				type: 'ready',
 				target: 'agent',
 				name: 'assistant',
 				instanceId: 'socket-instance',
 			});
+
+			const dispatchResponse = await fetch(new URL('/dispatch', server.url));
+			const dispatchBody = await dispatchResponse.text();
+			expect(dispatchResponse.status, dispatchBody).toBe(200);
+			expect(JSON.parse(dispatchBody)).toEqual({
+				dispatchId: expect.any(String),
+				acceptedAt: expect.any(String),
+			});
+
+			const workflowResponse = await fetch(new URL('/workflows/smoke?wait=result', server.url), {
+				method: 'POST',
+			});
+			const workflowBody = await workflowResponse.text();
+			expect(workflowResponse.status, workflowBody).toBe(200);
+			expect(JSON.parse(workflowBody)).toEqual({
+				result: { ok: true },
+				_meta: { runId: expect.any(String) },
+			});
+
+			const workflowSocketUrl = new URL('/workflows/smoke', server.url);
+			workflowSocketUrl.protocol = 'ws:';
+			workflowSocket = new WebSocket(workflowSocketUrl.toString());
+			const workflowFirstMessage = await waitForSocketMessage(workflowSocket);
+			expect(JSON.parse(workflowFirstMessage)).toEqual({
+				version: 1,
+				type: 'ready',
+				target: 'workflow',
+				name: 'smoke',
+			});
 		} finally {
-			socket?.close();
+			agentSocket?.close();
+			workflowSocket?.close();
 			await server?.close();
 			fs.rmSync(root, { recursive: true, force: true });
 		}
@@ -94,6 +127,7 @@ describe('Cloudflare agent extension', () => {
 async function createGeneratedFixture(
 	agentSource = defaultAgentSource,
 	mount = '',
+	withWorkflow = false,
 ): Promise<string> {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'flue-cloudflare-agent-extension-'));
 	const output = path.join(root, 'generated');
@@ -111,19 +145,35 @@ async function createGeneratedFixture(
 		'dir',
 	);
 	fs.mkdirSync(path.join(root, 'src', 'agents'), { recursive: true });
+	if (withWorkflow) fs.mkdirSync(path.join(root, 'src', 'workflows'), { recursive: true });
 	fs.writeFileSync(
 		path.join(root, 'wrangler.jsonc'),
 		JSON.stringify({
 			name: 'cloudflare-agent-extension',
 			compatibility_date: '2026-04-01',
 			compatibility_flags: ['nodejs_compat'],
-			migrations: [{ tag: 'v1', new_sqlite_classes: ['FlueAssistantAgent', 'FlueRegistry'] }],
+			migrations: [
+				{
+					tag: 'v1',
+					new_sqlite_classes: [
+						'FlueAssistantAgent',
+						...(withWorkflow ? ['FlueSmokeWorkflow'] : []),
+						'FlueRegistry',
+					],
+				},
+			],
 		}),
 	);
 	fs.writeFileSync(path.join(root, 'src', 'agents', 'assistant.ts'), agentSource);
+	if (withWorkflow) {
+		fs.writeFileSync(
+			path.join(root, 'src', 'workflows', 'smoke.ts'),
+			`export const route = async (_c, next) => next();\nexport const websocket = async (_c, next) => next();\nexport async function run() { return { ok: true }; }\n`,
+		);
+	}
 	fs.writeFileSync(
 		path.join(root, 'src', 'app.ts'),
-		`import { Hono } from 'hono';\nimport { getAgentByName } from 'agents';\nimport { flue } from '@flue/runtime/routing';\nlet started = false;\nconst app = new Hono();\napp.route('${mount}', flue());\napp.get('${mount}/heartbeat', async (c) => {\n  const agent = await getAgentByName(c.env.FLUE_ASSISTANT_AGENT, 'scheduled');\n  if (!started) { await agent.startHeartbeat(); started = true; }\n  return c.json({ count: await agent.getHeartbeatCount() });\n});\nexport default app;\n`,
+		`import { Hono } from 'hono';\nimport { getAgentByName } from 'agents';\nimport { dispatch } from '@flue/runtime';\nimport { flue } from '@flue/runtime/routing';\nlet started = false;\nconst app = new Hono();\napp.route('${mount}', flue());\napp.get('${mount}/heartbeat', async (c) => {\n  const agent = await getAgentByName(c.env.FLUE_ASSISTANT_AGENT, 'scheduled');\n  if (!started) { await agent.startHeartbeat(); started = true; }\n  return c.json({ count: await agent.getHeartbeatCount() });\n});\napp.get('${mount}/dispatch', async (c) => c.json(await dispatch({ agent: 'assistant', id: 'dispatched', input: { text: 'Hello' } })));\nexport default app;\n`,
 	);
 	try {
 		await build({
