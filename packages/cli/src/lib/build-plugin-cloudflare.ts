@@ -52,61 +52,41 @@ export class CloudflarePlugin implements BuildPlugin {
 				) => `const agentExtension${index} = resolveCloudflareAgentExtension(agentModules[${JSON.stringify(agent.name)}], ${JSON.stringify(agent.name)});
 const ${agentClassName(agent.name)} = class ${agentClassName(agent.name)} extends agentExtension${index}.base(Agent) {
   constructor(ctx, env) {
-    const executionStore = createSqlAgentExecutionStore(ctx.storage, ${JSON.stringify(agentClassName(agent.name))});
+    const prepared = cloudflareAgents.prepare({ storage: ctx.storage, className: ${JSON.stringify(agentClassName(agent.name))}, agentName: ${JSON.stringify(agent.name)} });
     super(ctx, env);
-    this[FLUE_AGENT_EXECUTION_STORE] = executionStore;
+    cloudflareAgents.attach(this, prepared);
   }
 
-  async onStart(props) {
-    await restoreFlueAgentSubmissionWake(this);
-    if (typeof super.onStart === 'function') await super.onStart(props);
-    await reconcileFlueAgentSubmissions(this, ${JSON.stringify(agent.name)}, { driverAlreadyArmed: true });
+  onStart(props) {
+    return cloudflareAgents.onStart(this, () => typeof super.onStart === 'function' ? super.onStart(props) : undefined);
   }
 
-  async __flueWakeAgentSubmissions() {
-    const submissions = getAgentExecutionStore(this).submissions;
-    if (!submissions.hasUnsettledSubmissions()) return;
-    await armFlueAgentSubmissionWake(this, { idempotent: false });
-    await reconcileFlueAgentSubmissions(this, ${JSON.stringify(agent.name)}, { driverAlreadyArmed: true });
+  __flueWakeAgentSubmissions() {
+    return cloudflareAgents.wakeSubmissions(this);
   }
 
-  async onRequest(request) {
-    return dispatchAgent(request, this, ${JSON.stringify(agent.name)}, directHandlers[${JSON.stringify(agent.name)}]);
+  onRequest(request) {
+    return cloudflareAgents.onRequest(this, request);
   }
 
-  async fetch(request) {
-    if (isWebSocketUpgrade(request)) {
-      await this.__unsafe_ensureInitialized();
-      return acceptAgentSocket(request, this, ${JSON.stringify(agent.name)});
-    }
-    return super.fetch(request);
+  fetch(request) {
+    return cloudflareAgents.fetch(this, request, () => super.fetch(request));
   }
 
-  async webSocketMessage(socket, message) {
-    if (isFlueSocket(socket, 'agent', ${JSON.stringify(agent.name)})) {
-      await this.__unsafe_ensureInitialized();
-      return messageAgentSocket(socket, message, this, ${JSON.stringify(agent.name)});
-    }
-    return super.webSocketMessage(socket, message);
+  webSocketMessage(socket, message) {
+    return cloudflareAgents.webSocketMessage(this, socket, message, () => super.webSocketMessage(socket, message));
   }
 
-  async webSocketClose(socket, code, reason, wasClean) {
-    if (isFlueSocket(socket, 'agent', ${JSON.stringify(agent.name)})) return closeFlueSocket(socket, code, reason);
-    return super.webSocketClose(socket, code, reason, wasClean);
+  webSocketClose(socket, code, reason, wasClean) {
+    return cloudflareAgents.webSocketClose(this, socket, code, reason, () => super.webSocketClose(socket, code, reason, wasClean));
   }
 
-  async webSocketError(socket, error) {
-    if (isFlueSocket(socket, 'agent', ${JSON.stringify(agent.name)})) return closeFlueSocket(socket, 1011, 'WebSocket error');
-    return super.webSocketError(socket, error);
+  webSocketError(socket, error) {
+    return cloudflareAgents.webSocketError(this, socket, () => super.webSocketError(socket, error));
   }
 
-  async onFiberRecovered(ctx) {
-    if (ctx.name === 'flue:submission-attempt') {
-      return handleFlueAgentSubmissionAttemptRecovered(ctx, this);
-    }
-    if (typeof super.onFiberRecovered === 'function') {
-      return super.onFiberRecovered(ctx);
-    }
+  onFiberRecovered(ctx) {
+    return cloudflareAgents.onFiberRecovered(this, ctx, () => typeof super.onFiberRecovered === 'function' ? super.onFiberRecovered(ctx) : undefined);
   }
 };
 const Wrapped${agentClassName(agent.name)} = agentExtension${index}.wrap(${agentClassName(agent.name)});
@@ -203,23 +183,15 @@ import {
   InMemorySessionStore,
   InMemoryRunStore,
   createDurableRunStore,
-  createSqlAgentExecutionStore,
+  CLOUDFLARE_AGENT_INTERNAL_DISPATCH_PATH,
+  createCloudflareAgentRuntime,
   createSqlSessionStore,
-  SqlAgentDispatchReceiptRetainedError,
-  SqlAgentSubmissionConflictError,
   createRunSubscriberRegistry,
   bashFactoryToSessionEnv,
   resolveModel,
   handleAgentRequest,
   handleWorkflowRequest,
   handleRunRouteRequest,
-  validateAgentDispatchAdmission,
-  createDispatchAgentHandler,
-  createDispatchInputInspectionHandler,
-  createDirectSubmissionAgentHandler,
-  createDirectSubmissionInputInspectionHandler,
-  createSubmissionTerminalHandler,
-  createAgentSubmissionObserverRegistry,
   failRecoveredRun,
   configureFlueRuntime,
   createDefaultFlueApp,
@@ -232,9 +204,7 @@ import {
   getCloudflareAIBindingApiProvider,
   FlueRegistry,
   createCloudflareRunRegistry,
-  connectCloudflareAgentWebSocket,
   connectCloudflareWorkflowWebSocket,
-  messageCloudflareAgentWebSocket,
   messageCloudflareWorkflowWebSocket,
   resolveCloudflareAgentExtension,
 } from '@flue/runtime/cloudflare';
@@ -354,12 +324,7 @@ function resolveSandbox(sandbox) {
 
 const memoryWorkflowSessionStore = new InMemorySessionStore();
 const memoryRunStore = new InMemoryRunStore();
-const FLUE_AGENT_EXECUTION_STORE = Symbol('flueAgentExecutionStore');
-const FLUE_AGENT_SUBMISSION_WAKE_CALLBACK = '__flueWakeAgentSubmissions';
-const FLUE_AGENT_SUBMISSION_WAKE_SECONDS = 30;
-const FLUE_AGENT_SUBMISSION_ATTEMPT_STALE_MS = 15 * 60 * 1000;
-const FLUE_AGENT_SUBMISSION_TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-const INTERNAL_DISPATCH_PATH = '/__flue/internal/dispatch';
+const INTERNAL_DISPATCH_PATH = CLOUDFLARE_AGENT_INTERNAL_DISPATCH_PATH;
 const dispatchQueue = {
   async enqueue(input) {
     const identity = agentIdentities[input.agent];
@@ -377,14 +342,6 @@ const dispatchQueue = {
 
 // Module-scoped per-isolate registry; run ids isolate buckets across DOs.
 const runSubscribers = createRunSubscriberRegistry();
-const agentSubmissionObservers = createAgentSubmissionObserverRegistry();
-const activeFlueAgentSubmissionAttempts = new Set();
-
-function getAgentExecutionStore(doInstance) {
-  const store = doInstance[FLUE_AGENT_EXECUTION_STORE];
-  if (!store) throw new Error('[flue] Generated Cloudflare agent execution store was not initialized.');
-  return store;
-}
 
 function createContextForRequest(id, runId, payload, doInstance, req, defaultStore, initialEventIndex, dispatchId) {
   return createFlueContext({
@@ -404,8 +361,7 @@ function createContextForRequest(id, runId, payload, doInstance, req, defaultSto
   });
 }
 
-function createAgentContextForRequest(id, payload, doInstance, req, initialEventIndex, dispatchId) {
-  const executionStore = getAgentExecutionStore(doInstance);
+function createAgentContextForRequest(executionStore, id, payload, doInstance, req, initialEventIndex, dispatchId) {
   return createFlueContext({
     id,
     payload,
@@ -467,6 +423,19 @@ function createDurableObjectIdentity(doInstance, identity) {
   };
 }
 
+const cloudflareAgents = createCloudflareAgentRuntime({
+  createdAgents,
+  directHandlers,
+  websocketAgentHandlers,
+  createContext: ({ executionStore, instance, payload, request, initialEventIndex, dispatchId }) =>
+    createAgentContextForRequest(executionStore, instance.name, payload, instance, request, initialEventIndex, dispatchId),
+  runWithInstanceContext: (instance, agentName, fn) => runWithInstanceContext(instance, agentRuntimeIdentity(agentName), fn),
+  createWebSocketPair: () => {
+    const pair = new WebSocketPair();
+    return { client: pair[0], server: pair[1] };
+  },
+});
+
 function assertAgentsDurabilityApi(doInstance, method) {
   if (typeof doInstance[method] !== 'function') {
 		throw new Error(
@@ -475,15 +444,6 @@ function assertAgentsDurabilityApi(doInstance, method) {
 				'". Install or upgrade the "agents" package in your project.',
 		);
 	}
-}
-
-async function handleFlueAgentSubmissionAttemptRecovered(ctx, doInstance) {
-  const submissionId = ctx.snapshot?.submissionId;
-  const attemptId = ctx.snapshot?.attemptId;
-  if (typeof submissionId !== 'string' || typeof attemptId !== 'string') return;
-  await restoreFlueAgentSubmissionWake(doInstance);
-  const submissions = getAgentExecutionStore(doInstance).submissions;
-  submissions.requestSubmissionRecovery(submissionId, attemptId);
 }
 
 async function handleFlueWorkflowFiberRecovered(ctx, doInstance, workflowName) {
@@ -501,270 +461,6 @@ async function handleFlueWorkflowFiberRecovered(ctx, doInstance, workflowName) {
     runRegistry: createRunRegistryForRequest(doInstance.env),
     createContext: (id_, recoveredRunId, payload, req, initialEventIndex) => createWorkflowContextForRequest(id_, recoveredRunId, payload, doInstance, req, initialEventIndex),
   });
-}
-
-// ─── Per-DO Agent Submissions ─────────────────────────────────────────────
-
-function armFlueAgentSubmissionWake(doInstance, options = {}) {
-  assertAgentsDurabilityApi(doInstance, 'schedule');
-  return doInstance.schedule(
-    options.delaySeconds ?? FLUE_AGENT_SUBMISSION_WAKE_SECONDS,
-    FLUE_AGENT_SUBMISSION_WAKE_CALLBACK,
-    undefined,
-    { idempotent: options.idempotent ?? true },
-  );
-}
-
-function armFlueAgentSubmissionAdmissionWake(doInstance) {
-  return armFlueAgentSubmissionWake(doInstance);
-}
-
-function cleanupFlueAgentSubmissionTerminalState(doInstance) {
-  return getAgentExecutionStore(doInstance).submissions.cleanupTerminalSubmissions(
-    Date.now() - FLUE_AGENT_SUBMISSION_TERMINAL_RETENTION_MS,
-  );
-}
-
-async function restoreFlueAgentSubmissionWake(doInstance) {
-  const submissions = getAgentExecutionStore(doInstance).submissions;
-  if (!submissions.hasUnsettledSubmissions()) return false;
-  await armFlueAgentSubmissionWake(doInstance);
-  return true;
-}
-
-async function reconcileFlueAgentSubmissions(doInstance, agentName, options = {}) {
-  const submissions = getAgentExecutionStore(doInstance).submissions;
-  cleanupFlueAgentSubmissionTerminalState(doInstance);
-  if (!submissions.hasUnsettledSubmissions()) return false;
-  if (!options.driverAlreadyArmed) await restoreFlueAgentSubmissionWake(doInstance);
-  if (!submissions.hasUnsettledSubmissions()) return false;
-  try {
-    const attemptMarkers = listActiveSqlAgentSubmissionAttemptMarkers(doInstance);
-    if (attemptMarkers.blockAll) return true;
-    for (const submission of submissions.listRunningSubmissions()) {
-      if (activeFlueAgentSubmissionAttempts.has(submissionAttemptLocalKey(doInstance, submission))) continue;
-      if (submission.status !== 'terminalizing' && attemptMarkers.keys.has(submissionAttemptMarkerKey(submission)) && submission.recoveryRequestedAt === undefined) continue;
-      await reconcileInterruptedSqlAgentSubmission(submission, doInstance, agentName);
-    }
-    for (const submission of submissions.listRunnableSubmissions()) {
-      const claimed = submissions.claimSubmission(submission.submissionId, crypto.randomUUID());
-      if (claimed) startSqlAgentSubmissionAttempt(claimed, doInstance, agentName);
-    }
-  } catch (error) {
-    console.error('[flue:submission-reconciliation]', { agentName, instanceId: doInstance.name, operation: 'reconcile', outcome: 'deferred_to_scheduled_wake' }, error);
-    return true;
-  }
-  return submissions.hasUnsettledSubmissions();
-}
-
-async function reconcileInterruptedSqlAgentSubmission(submission, doInstance, agentName) {
-  const { attemptId, input } = submission;
-  if (!attemptId) return;
-  const submissions = getAgentExecutionStore(doInstance).submissions;
-  if (submission.status === 'terminalizing') {
-    await failInterruptedSqlAgentSubmission(
-      submission,
-      doInstance,
-      agentName,
-      submission.inputAppliedAt === undefined ? 'interrupted_before_input_marker' : 'interrupted_after_input_application',
-      new Error(submission.inputAppliedAt === undefined
-        ? '[flue] Agent submission attempt was interrupted after canonical input persistence but before the input-application marker was recorded. Provider replay was not attempted.'
-        : '[flue] Agent submission attempt was interrupted after input application without a completed canonical response. Provider replay was not attempted.'),
-    );
-    return;
-  }
-  const agent = createdAgents[agentName];
-  if (!agent) throw new Error('[flue] Agent target unavailable during durable reconciliation.');
-  const request = new Request('https://flue.invalid' + INTERNAL_DISPATCH_PATH, { method: 'POST' });
-  const ctx = createAgentContextForRequest(doInstance.name, input, doInstance, request, undefined, input.dispatchId);
-  const state = await runWithInstanceContext(doInstance, agentRuntimeIdentity(agentName), () =>
-    submission.kind === 'dispatch'
-      ? createDispatchInputInspectionHandler(agent, input)(ctx)
-      : createDirectSubmissionInputInspectionHandler(agent, input)(ctx),
-  );
-  if (submission.inputAppliedAt === undefined) {
-    if (state === 'absent') {
-      submissions.requeueSubmissionBeforeInputApplied(submission.submissionId, attemptId);
-      return;
-    }
-    await failInterruptedSqlAgentSubmission(
-      submission,
-      doInstance,
-      agentName,
-      'interrupted_before_input_marker',
-      new Error('[flue] Agent submission attempt was interrupted after canonical input persistence but before the input-application marker was recorded. Provider replay was not attempted.'),
-    );
-    return;
-  }
-  if (state === 'completed') {
-    submissions.completeSubmission(submission.submissionId, attemptId);
-    return;
-  }
-  await failInterruptedSqlAgentSubmission(
-    submission,
-    doInstance,
-    agentName,
-    'interrupted_after_input_application',
-    new Error('[flue] Agent submission attempt was interrupted after input application without a completed canonical response. Provider replay was not attempted.'),
-  );
-}
-
-async function failInterruptedSqlAgentSubmission(submission, doInstance, agentName, reason, error) {
-  const { attemptId, input } = submission;
-  if (!attemptId) return;
-  const submissions = getAgentExecutionStore(doInstance).submissions;
-  if (submission.status !== 'terminalizing' && !submissions.beginSubmissionTerminalization(submission.submissionId, attemptId)) return;
-  const agent = createdAgents[agentName];
-  if (!agent) throw new Error('[flue] Agent target unavailable during durable terminalization.');
-  const request = new Request('https://flue.invalid' + INTERNAL_DISPATCH_PATH, { method: 'POST' });
-  const ctx = createAgentContextForRequest(doInstance.name, submission.kind === 'direct' ? input.payload : input, doInstance, request, undefined, input.dispatchId);
-  await runWithInstanceContext(doInstance, agentRuntimeIdentity(agentName), () =>
-    createSubmissionTerminalHandler(agent, input, {
-      submissionId: submission.submissionId,
-      kind: submission.kind,
-      reason,
-      message: error.message,
-    })(ctx),
-  );
-  const failed = submissions.finalizeSubmissionTerminalization(submission.submissionId, attemptId, error);
-  if (failed && submission.kind === 'direct') agentSubmissionObservers.fail(submission.submissionId, error);
-}
-
-function startSqlAgentSubmissionAttempt(submission, doInstance, agentName) {
-  if (submission.status !== 'running' || !submission.attemptId) return;
-  const attemptKey = submissionAttemptLocalKey(doInstance, submission);
-  if (activeFlueAgentSubmissionAttempts.has(attemptKey)) return;
-  assertAgentsDurabilityApi(doInstance, 'runFiber');
-  activeFlueAgentSubmissionAttempts.add(attemptKey);
-  let running;
-  try {
-    running = doInstance.runFiber('flue:submission-attempt', async (fiberCtx) => {
-      fiberCtx.stash({ submissionId: submission.submissionId, attemptId: submission.attemptId });
-      await processSqlAgentSubmission(submission, doInstance, agentName);
-    });
-  } catch (error) {
-    activeFlueAgentSubmissionAttempts.delete(attemptKey);
-    throw error;
-  }
-  void running.catch((error) => {
-    console.error('[flue:submission-processing]', { agentName, instanceId: doInstance.name, submissionId: submission.submissionId, operation: 'process', outcome: 'failed' }, error);
-  }).finally(() => {
-    activeFlueAgentSubmissionAttempts.delete(attemptKey);
-  });
-}
-
-function submissionAttemptLocalKey(doInstance, submission) {
-  return doInstance.ctx.id.toString() + ':' + submission.attemptId;
-}
-
-function submissionAttemptMarkerKey(submission) {
-  return submission.submissionId + ':' + submission.attemptId;
-}
-
-function listActiveSqlAgentSubmissionAttemptMarkers(doInstance) {
-  const keys = new Set();
-  let blockAll = false;
-  const rows = doInstance.ctx.storage.sql.exec(
-    "SELECT snapshot, created_at FROM cf_agents_runs WHERE name = 'flue:submission-attempt'",
-  ).toArray();
-  for (const row of rows) {
-    if (typeof row.created_at !== 'number') {
-      blockAll = true;
-      continue;
-    }
-    if (Date.now() - row.created_at > FLUE_AGENT_SUBMISSION_ATTEMPT_STALE_MS) continue;
-    if (row.snapshot === null) continue;
-    if (typeof row.snapshot !== 'string') {
-      blockAll = true;
-      continue;
-    }
-    let snapshot;
-    try {
-      snapshot = JSON.parse(row.snapshot);
-    } catch {
-      blockAll = true;
-      continue;
-    }
-    if (typeof snapshot?.submissionId !== 'string' || typeof snapshot?.attemptId !== 'string') {
-      blockAll = true;
-      continue;
-    }
-    keys.add(snapshot.submissionId + ':' + snapshot.attemptId);
-  }
-  return { blockAll, keys };
-}
-
-async function processSqlAgentSubmission(submission, doInstance, agentName) {
-  const { attemptId, input } = submission;
-  if (!attemptId) return;
-  const submissions = getAgentExecutionStore(doInstance).submissions;
-  const persisted = submissions.getSubmission(submission.submissionId);
-  if (persisted?.status !== 'running' || persisted.attemptId !== attemptId) return;
-  let ctx;
-  try {
-    const agent = createdAgents[agentName];
-    if (!agent) throw new Error('[flue] Agent target unavailable during durable processing.');
-    if (submission.kind === 'dispatch') await validateAgentDispatchAdmission({ input });
-    const request = submission.kind === 'direct'
-      ? new Request('https://flue.invalid/agents/' + encodeURIComponent(agentName) + '/' + encodeURIComponent(doInstance.name), { method: 'POST' })
-      : new Request('https://flue.invalid' + INTERNAL_DISPATCH_PATH, { method: 'POST' });
-    ctx = createAgentContextForRequest(doInstance.name, submission.kind === 'direct' ? input.payload : input, doInstance, request, undefined, input.dispatchId);
-    if (submission.kind === 'direct') {
-      ctx.setEventCallback((event) => {
-        if (event.type === 'run_start' || event.type === 'run_end') return;
-        const attachedEvent = { ...event, instanceId: doInstance.name };
-        delete attachedEvent.runId;
-        return agentSubmissionObservers.publish(submission.submissionId, attachedEvent);
-      });
-    }
-    const result = await runWithInstanceContext(doInstance, agentRuntimeIdentity(agentName), () =>
-      submission.kind === 'dispatch'
-        ? createDispatchAgentHandler(agent, input, {
-            onInputApplied: () => markSubmissionInputApplied(submissions, submission, attemptId),
-          })(ctx)
-        : createDirectSubmissionAgentHandler(agent, input, {
-            onInputApplied: () => markSubmissionInputApplied(submissions, submission, attemptId),
-          })(ctx),
-    );
-    const completed = submissions.completeSubmission(submission.submissionId, attemptId);
-    if (completed && submission.kind === 'direct') agentSubmissionObservers.complete(submission.submissionId, result);
-  } catch (error) {
-    const failed = submissions.failSubmission(submission.submissionId, attemptId, error);
-    if (failed && submission.kind === 'direct') agentSubmissionObservers.fail(submission.submissionId, error);
-    throw error;
-  } finally {
-    if (submission.kind === 'direct') ctx?.setEventCallback(undefined);
-    void reconcileFlueAgentSubmissions(doInstance, agentName).catch((error) => {
-      console.error('[flue:submission-reconciliation]', { agentName, instanceId: doInstance.name, operation: 'settlement', outcome: 'reconcile_failed' }, error);
-    });
-  }
-}
-
-function markSubmissionInputApplied(submissions, submission, attemptId) {
-  if (!submissions.markSubmissionInputApplied(submission.submissionId, attemptId)) {
-    throw new Error('[flue] Agent submission attempt lost ownership before input application.');
-  }
-}
-
-async function admitAttachedAgentSubmission(doInstance, agentName, payload, _request, onEvent) {
-  const submissionId = crypto.randomUUID();
-  const input = {
-    submissionId,
-    agent: agentName,
-    id: doInstance.name,
-    session: typeof payload.session === 'string' && payload.session.trim() !== '' ? payload.session : 'default',
-    payload,
-    acceptedAt: new Date().toISOString(),
-  };
-  const attachment = agentSubmissionObservers.attach(submissionId, { onEvent });
-  try {
-    await armFlueAgentSubmissionAdmissionWake(doInstance);
-    getAgentExecutionStore(doInstance).submissions.admitDirect(input);
-    await reconcileFlueAgentSubmissions(doInstance, agentName, { driverAlreadyArmed: true });
-    return await attachment.completion;
-  } finally {
-    attachment.detach();
-  }
 }
 
 async function dispatchWorkflow(request, doInstance, workflowName) {
@@ -805,38 +501,6 @@ async function dispatchWorkflow(request, doInstance, workflowName) {
     }));
 }
 
-async function dispatchAgent(request, doInstance, agentName, handler) {
-  const id = doInstance.name;
-  if (isInternalDispatchRequest(request)) {
-    const input = await request.json();
-    await validateAgentDispatchAdmission({ input });
-    if (input.agent !== agentName || input.id !== id) return new Response('Invalid internal dispatch target.', { status: 400 });
-    if (!createdAgents[agentName]) return new Response('Dispatch target unavailable.', { status: 404 });
-    const submissions = getAgentExecutionStore(doInstance).submissions;
-    cleanupFlueAgentSubmissionTerminalState(doInstance);
-    await armFlueAgentSubmissionAdmissionWake(doInstance);
-    let submission;
-    try {
-      submission = submissions.admitDispatch(input);
-    } catch (error) {
-      if (error instanceof SqlAgentDispatchReceiptRetainedError) return Response.json({ dispatchId: error.receipt.submissionId, acceptedAt: new Date(error.receipt.acceptedAt).toISOString() });
-      if (error instanceof SqlAgentSubmissionConflictError) return new Response('Conflicting internal dispatch replay.', { status: 409 });
-      throw error;
-    }
-    await reconcileFlueAgentSubmissions(doInstance, agentName, { driverAlreadyArmed: true });
-    return Response.json({ dispatchId: submission.submissionId, acceptedAt: submission.input.acceptedAt });
-  }
-  const identity = agentRuntimeIdentity(agentName);
-  return runWithInstanceContext(doInstance, identity, () => handleAgentRequest({
-      request,
-      agentName,
-      id,
-      handler,
-      createContext: (id_, runId, payload, req, initialEventIndex, dispatchId) => createAgentContextForRequest(id_, payload, doInstance, req, initialEventIndex, dispatchId),
-      admitAttachedSubmission: (payload, req, onEvent) => admitAttachedAgentSubmission(doInstance, agentName, payload, req, onEvent),
-    }));
-}
-
 function isWebSocketUpgrade(request) {
   return request.method === 'GET' && request.headers.get('upgrade')?.toLowerCase() === 'websocket';
 }
@@ -855,17 +519,6 @@ function closeFlueSocket(socket, code, reason) {
   }
 }
 
-function acceptAgentSocket(request, doInstance, agentName) {
-  const handler = websocketAgentHandlers[agentName];
-  if (!handler) return new Response(null, { status: 404 });
-  const pair = new WebSocketPair();
-  const client = pair[0];
-  const server = pair[1];
-  doInstance.ctx.acceptWebSocket(server);
-  connectCloudflareAgentWebSocket(server, { name: agentName, id: doInstance.name, requestUrl: socketRequestUrl(request) });
-  return new Response(null, { status: 101, webSocket: client });
-}
-
 function acceptWorkflowSocket(request, doInstance, workflowName) {
   const handler = websocketWorkflowHandlers[workflowName];
   if (!handler) return new Response(null, { status: 404 });
@@ -875,20 +528,6 @@ function acceptWorkflowSocket(request, doInstance, workflowName) {
   doInstance.ctx.acceptWebSocket(server);
   connectCloudflareWorkflowWebSocket(server, { name: workflowName, runId: doInstance.name, requestUrl: socketRequestUrl(request) });
   return new Response(null, { status: 101, webSocket: client });
-}
-
-async function messageAgentSocket(connection, message, doInstance, agentName) {
-  const handler = websocketAgentHandlers[agentName];
-  if (!handler) return;
-  const identity = agentRuntimeIdentity(agentName);
-  return runWithInstanceContext(doInstance, identity, () => messageCloudflareAgentWebSocket(connection, message, {
-    name: agentName,
-    id: doInstance.name,
-    request: socketRequest(connection),
-    handler,
-    createContext: (id_, runId, payload, req) => createAgentContextForRequest(id_, payload, doInstance, req),
-    admitAttachedSubmission: (payload, req, onEvent) => admitAttachedAgentSubmission(doInstance, agentName, payload, req, onEvent),
-  }));
 }
 
 async function messageWorkflowSocket(connection, message, doInstance, workflowName) {

@@ -25,16 +25,16 @@ describe('CloudflarePlugin', () => {
 			}),
 		);
 
-		expect(entry).toContain('createSqlAgentExecutionStore');
+		expect(entry).toContain('createCloudflareAgentRuntime');
 		expect(entry).toContain('createSqlSessionStore');
 		expect(entry).toContain(
 			`constructor(ctx, env) {
-    const executionStore = createSqlAgentExecutionStore(ctx.storage, "FlueAssistantAgent");
+    const prepared = cloudflareAgents.prepare({ storage: ctx.storage, className: "FlueAssistantAgent", agentName: "assistant" });
     super(ctx, env);
-    this[FLUE_AGENT_EXECUTION_STORE] = executionStore;
+    cloudflareAgents.attach(this, prepared);
   }`,
 		);
-		expect(entry).not.toContain('const agentExecutionStores = new WeakMap();');
+		expect(entry).not.toContain('createSqlAgentExecutionStore');
 		expect(entry).toContain('const memoryWorkflowSessionStore = new InMemorySessionStore();');
 		expect(entry).toContain(
 			'const defaultStore = sql ? createSqlSessionStore(sql) : memoryWorkflowSessionStore;',
@@ -46,82 +46,28 @@ describe('CloudflarePlugin', () => {
 		expect(entry).not.toContain('CREATE TABLE IF NOT EXISTS flue_sessions');
 	});
 
-	it('pre-arms SQL-backed dispatch admission and drains claimed rows without managed Fibers', async () => {
+	it('delegates durable agent execution to the typed Cloudflare coordinator', async () => {
 		const entry = await new CloudflarePlugin().generateEntryPoint(
 			testBuildContext({
 				agents: [{ name: 'assistant', filePath: '/fixture/agents/assistant.ts' }],
 			}),
 		);
 
-		expect(entry).toContain(
-			`async onStart(props) {
-    await restoreFlueAgentSubmissionWake(this);
-    if (typeof super.onStart === 'function') await super.onStart(props);
-    await reconcileFlueAgentSubmissions(this, "assistant", { driverAlreadyArmed: true });
-  }
-
-  async __flueWakeAgentSubmissions() {
-    const submissions = getAgentExecutionStore(this).submissions;
-    if (!submissions.hasUnsettledSubmissions()) return;
-    await armFlueAgentSubmissionWake(this, { idempotent: false });
-    await reconcileFlueAgentSubmissions(this, "assistant", { driverAlreadyArmed: true });
-  }`,
-		);
-		expect(entry).toContain("const FLUE_AGENT_SUBMISSION_WAKE_CALLBACK = '__flueWakeAgentSubmissions';");
-		expect(entry).not.toContain('scheduleEvery');
-		expect(entry).toContain("await armFlueAgentSubmissionAdmissionWake(doInstance);\n    let submission;");
-		expect(entry).toContain('cleanupFlueAgentSubmissionTerminalState(doInstance);');
-		expect(entry).not.toContain('cleanupDispatchReceipt');
-		expect(entry).not.toContain('getDispatchReceipt');
-		expect(entry).toContain('submission = submissions.admitDispatch(input);');
-		expect(entry).toContain('if (error instanceof SqlAgentDispatchReceiptRetainedError) return Response.json({ dispatchId: error.receipt.submissionId, acceptedAt: new Date(error.receipt.acceptedAt).toISOString() });');
-		expect(entry).toContain('for (const submission of submissions.listRunningSubmissions()) {');
-		expect(entry).toContain('if (activeFlueAgentSubmissionAttempts.has(submissionAttemptLocalKey(doInstance, submission))) continue;');
-		expect(entry).toContain("if (submission.status !== 'terminalizing' && attemptMarkers.keys.has(submissionAttemptMarkerKey(submission)) && submission.recoveryRequestedAt === undefined) continue;");
-		expect(entry).toContain('await reconcileInterruptedSqlAgentSubmission(submission, doInstance, agentName);');
-		expect(entry).toContain('await restoreFlueAgentSubmissionWake(doInstance);\n  const submissions = getAgentExecutionStore(doInstance).submissions;\n  submissions.requestSubmissionRecovery(submissionId, attemptId);');
-		expect(entry).toContain('return handleFlueAgentSubmissionAttemptRecovered(ctx, this);');
-		expect(entry).toContain("SELECT snapshot, created_at FROM cf_agents_runs WHERE name = 'flue:submission-attempt'");
-		expect(entry).toContain('if (Date.now() - row.created_at > FLUE_AGENT_SUBMISSION_ATTEMPT_STALE_MS) continue;');
-		expect(entry).toContain('if (row.snapshot === null) continue;');
-		expect(entry).toContain("if (typeof row.snapshot !== 'string') {");
-		expect(entry).toContain('submissions.requeueSubmissionBeforeInputApplied(submission.submissionId, attemptId);');
-		expect(entry).toContain('createDispatchInputInspectionHandler(agent, input)(ctx)');
-		expect(entry).toContain('createDirectSubmissionInputInspectionHandler(agent, input)(ctx)');
-		expect(entry).toContain('if (!submissions.markSubmissionInputApplied(submission.submissionId, attemptId)) {');
-		expect(entry).toContain('const claimed = submissions.claimSubmission(submission.submissionId, crypto.randomUUID());');
-		expect(entry).toContain("running = doInstance.runFiber('flue:submission-attempt', async (fiberCtx) => {");
-		expect(entry).toContain("fiberCtx.stash({ submissionId: submission.submissionId, attemptId: submission.attemptId });");
-		expect(entry).toContain("activeFlueAgentSubmissionAttempts.delete(attemptKey);\n    throw error;");
-		expect(entry).toContain('const completed = submissions.completeSubmission(submission.submissionId, attemptId);');
-		expect(entry).toContain("if (completed && submission.kind === 'direct') agentSubmissionObservers.complete(submission.submissionId, result);");
-		expect(entry).toContain("if (submission.kind === 'direct') ctx?.setEventCallback(undefined);");
-		expect(entry).toContain('getAgentExecutionStore(doInstance).submissions.admitDirect(input);');
-		expect(entry).toContain('admitAttachedSubmission: (payload, req, onEvent) => admitAttachedAgentSubmission(doInstance, agentName, payload, req, onEvent)');
-		expect(entry).not.toContain('adoptLegacyDispatches');
+		expect(entry).toContain('const cloudflareAgents = createCloudflareAgentRuntime({');
+		expect(entry).toContain('const prepared = cloudflareAgents.prepare({ storage: ctx.storage, className: "FlueAssistantAgent", agentName: "assistant" });');
+		expect(entry).toContain('cloudflareAgents.attach(this, prepared);');
+		expect(entry).toContain("return cloudflareAgents.onStart(this, () => typeof super.onStart === 'function' ? super.onStart(props) : undefined);");
+		expect(entry).toContain('return cloudflareAgents.wakeSubmissions(this);');
+		expect(entry).toContain('return cloudflareAgents.onRequest(this, request);');
+		expect(entry).toContain('return cloudflareAgents.fetch(this, request, () => super.fetch(request));');
+		expect(entry).toContain('return cloudflareAgents.webSocketMessage(this, socket, message, () => super.webSocketMessage(socket, message));');
+		expect(entry).toContain('return cloudflareAgents.onFiberRecovered(this, ctx, () => typeof super.onFiberRecovered === \'function\' ? super.onFiberRecovered(ctx) : undefined);');
+		expect(entry).not.toContain('reconcileFlueAgentSubmissions');
+		expect(entry).not.toContain('cf_agents_runs');
 		expect(entry).not.toContain('cf_agents_fibers');
-		expect(entry).toContain("idempotent: options.idempotent ?? true");
-		expect(entry).toContain("idempotent: false");
-		expect(entry).not.toContain('generation:');
-		expect(entry).not.toContain('beginFlueAgentSubmissionAdmission');
-		expect(entry).not.toContain('cancelSchedule(schedule.id)');
-		expect(entry).toContain('getAgentExecutionStore(doInstance).submissions.cleanupTerminalSubmissions(\n    Date.now() - FLUE_AGENT_SUBMISSION_TERMINAL_RETENTION_MS,');
-		expect(entry).toContain('begin: (sessionKey) => executionStore.submissions.beginSessionDeletion(sessionKey)');
-		expect(entry).toContain('if (submission.status !== \'terminalizing\' && !submissions.beginSubmissionTerminalization(submission.submissionId, attemptId)) return;');
-		expect(entry).toContain('createSubmissionTerminalHandler(agent, input, {');
-		expect(entry).toContain('submissions.finalizeSubmissionTerminalization(submission.submissionId, attemptId, error)');
-		expect(entry).toContain("if (failed && submission.kind === 'direct') agentSubmissionObservers.fail(submission.submissionId, error);");
-		expect(entry).not.toContain('const { manifest, directHandlers, localAgentHandlers, createdAgents');
-		expect(entry).not.toContain('assertNoPendingDispatchForDirectSession');
+		expect(entry).not.toContain('scheduleEvery');
 		expect(entry).not.toContain("runFiber('flue:direct'");
-		expect(entry).not.toContain('listActiveDirectAgentSessionMarkers');
-		expect(entry).not.toContain('agentSubmissionObservers.takeRequest');
-		expect(entry).not.toContain('handleFlueDispatchAttemptRecovered');
-		expect(entry).not.toContain("ctx.name === 'flue:dispatch'");
-		expect(entry).not.toContain("ctx.name === 'flue:direct'");
-		expect(entry).not.toContain('createLegacyDirectSubmissionTerminalHandler');
 		expect(entry).not.toContain("startFiber('flue:dispatch'");
-		expect(entry).not.toContain('inspectFiberByKey');
 		expect(entry).not.toContain('ctx.storage.setAlarm');
 	});
 
