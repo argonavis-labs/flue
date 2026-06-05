@@ -704,6 +704,7 @@ export class Session implements FlueSession {
 	private harnessMessageCheckpointCursor = 0;
 	private activeCheckpointSource: MessageEntry['source'] | undefined;
 	private activeJournalCallbacks: ProcessAgentSubmissionOptions['journal'] | undefined;
+	private activeTimeoutAt: number | undefined;
 	private activeTurnCanCommitJournal = false;
 
 	private emitTurnRequestAndStream: StreamFn = async (model, context, options) => {
@@ -1971,6 +1972,9 @@ export class Session implements FlueSession {
 
 		while (true) {
 			if (options.signal.aborted) throw abortErrorFor(options.signal);
+			if (this.activeTimeoutAt !== undefined && Date.now() >= this.activeTimeoutAt) {
+				throw new Error('[flue] Submission exceeded configured timeout.');
+			}
 			this.activeCheckpointSource = source;
 			try {
 				await start();
@@ -2314,6 +2318,7 @@ export class Session implements FlueSession {
 			recoveryError: '[flue] Cannot recover dispatched input after the session has advanced.',
 			onInputApplied: options?.onInputApplied,
 			journal: options?.journal,
+			timeoutAt: options?.timeoutAt,
 			signal,
 		});
 	}
@@ -2338,6 +2343,7 @@ export class Session implements FlueSession {
 			recoveryError: '[flue] Cannot recover direct input after the session has advanced.',
 			onInputApplied: options?.onInputApplied,
 			journal: options?.journal,
+			timeoutAt: options?.timeoutAt,
 			signal,
 		});
 	}
@@ -2346,6 +2352,7 @@ export class Session implements FlueSession {
 		findInput: () => MessageEntry | undefined;
 		persistInput: () => string;
 		journal?: ProcessAgentSubmissionOptions['journal'];
+		timeoutAt?: number;
 		errorLabel: string;
 		outputSource: MessageSource;
 		callSite: string;
@@ -2363,6 +2370,7 @@ export class Session implements FlueSession {
 			},
 			async ({ resolvedModel }) => {
 				this.activeJournalCallbacks = options.journal;
+				this.activeTimeoutAt = options.timeoutAt;
 				try {
 					let inputEntry = options.findInput();
 					if (!inputEntry) {
@@ -2432,6 +2440,7 @@ export class Session implements FlueSession {
 					};
 				} finally {
 					this.activeJournalCallbacks = undefined;
+					this.activeTimeoutAt = undefined;
 				}
 			},
 		);

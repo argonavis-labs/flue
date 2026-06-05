@@ -393,6 +393,23 @@ export interface CompactionConfig {
 	model?: string;
 }
 
+// ─── Durability ─────────────────────────────────────────────────────────────
+
+export interface DurabilityConfig {
+	/**
+	 * Maximum recovery attempts before the submission is terminalized as
+	 * failed. Each DO reset or deploy that interrupts a running submission
+	 * counts as one attempt. Defaults to 10.
+	 */
+	retry?: number;
+	/**
+	 * Maximum wall-clock minutes for a single submission. Submissions that
+	 * exceed this limit are aborted and settled as failed. Defaults to 60.
+	 * Set higher for long-running agents (e.g. 360 for a 6-hour agent).
+	 */
+	timeout?: number;
+}
+
 // ─── Provider Runtime Settings ──────────────────────────────────────────────
 
 /** Per-provider transport settings accepted by `configureProvider(...)`. */
@@ -473,6 +490,11 @@ export interface AgentProfile {
 	 * calls still compact when needed.
 	 */
 	compaction?: false | CompactionConfig;
+	/**
+	 * Durability configuration for durable agent submissions. Controls
+	 * recovery attempt limits and submission timeouts.
+	 */
+	durability?: DurabilityConfig;
 }
 
 /** Configuration returned by a {@link createAgent} initializer. */
@@ -499,6 +521,11 @@ export interface AgentRuntimeConfig {
 	 * calls still compact when needed.
 	 */
 	compaction?: false | CompactionConfig;
+	/**
+	 * Durability configuration for durable agent submissions. Controls
+	 * recovery attempt limits and submission timeouts.
+	 */
+	durability?: DurabilityConfig;
 	/** Working directory inside the initialized sandbox. */
 	cwd?: string;
 	/** Sandbox factory used to construct the initialized environment. */
@@ -803,7 +830,11 @@ export interface MessageEntry extends SessionEntryBase {
 interface SubmissionTerminalMetadata {
 	submissionId: string;
 	kind: 'dispatch' | 'direct';
-	reason: 'interrupted_before_input_marker' | 'interrupted_after_input_application';
+	reason:
+		| 'interrupted_before_input_marker'
+		| 'interrupted_after_input_application'
+		| 'exhausted_retry_budget'
+		| 'exceeded_timeout';
 }
 
 export interface DispatchMessageMetadata {

@@ -126,6 +126,9 @@ describe('createSqlAgentExecutionStore()', () => {
 			{ name: 'started_at' },
 			{ name: 'settled_at' },
 			{ name: 'error' },
+			{ name: 'attempt_count' },
+			{ name: 'max_retry' },
+			{ name: 'timeout_at' },
 		]);
 		expect(
 			db.prepare("SELECT name FROM pragma_table_info('flue_agent_turn_journals') ORDER BY cid").all(),

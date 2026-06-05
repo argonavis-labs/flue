@@ -26,7 +26,11 @@ export type AgentSubmissionInput = DispatchAgentSubmissionInput | DirectAgentSub
 export interface AgentSubmissionInterruption {
 	readonly submissionId: string;
 	readonly kind: AgentSubmissionInput['kind'];
-	readonly reason: 'interrupted_before_input_marker' | 'interrupted_after_input_application';
+	readonly reason:
+		| 'interrupted_before_input_marker'
+		| 'interrupted_after_input_application'
+		| 'exhausted_retry_budget'
+		| 'exceeded_timeout';
 	readonly message: string;
 }
 
@@ -40,6 +44,8 @@ interface ProcessAgentSubmissionJournalState {
 
 export interface ProcessAgentSubmissionOptions {
 	onInputApplied?: () => Promise<void> | void;
+	/** Absolute timestamp (ms) after which the submission should be aborted. */
+	timeoutAt?: number;
 	journal?: {
 		beforeProvider?: (state: ProcessAgentSubmissionJournalState) => Promise<void> | void;
 		providerStarted?: (state: ProcessAgentSubmissionJournalState) => Promise<void> | void;

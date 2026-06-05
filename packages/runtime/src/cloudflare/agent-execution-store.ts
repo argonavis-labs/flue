@@ -10,6 +10,10 @@ import type {
 	SqlStorage,
 	SubmissionAttemptRef,
 } from '../agent-execution-store.ts';
+import {
+	DURABILITY_DEFAULT_MAX_RETRY,
+	DURABILITY_DEFAULT_TIMEOUT_MINUTES,
+} from '../agent-execution-store.ts';
 
 type SqlRow = Record<string, unknown>;
 import {
@@ -216,7 +220,7 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 		const row = this.sql
 			.exec(
 				`UPDATE flue_agent_submissions
-				 SET attempt_id = ?, recovery_requested_at = NULL, started_at = ?
+				 SET attempt_id = ?, recovery_requested_at = NULL, started_at = ?, attempt_count = attempt_count + 1
 				 WHERE submission_id = ? AND status = 'running' AND attempt_id = ?
 				 RETURNING ${submissionColumns}`,
 				nextAttemptId,
@@ -368,11 +372,18 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 		}
 	}
 
-	claimSubmission(attempt: SubmissionAttemptRef): AgentSubmission | null {
+	claimSubmission(
+		attempt: SubmissionAttemptRef,
+		durability?: { maxRetry: number; timeoutAt: number },
+	): AgentSubmission | null {
+		const now = Date.now();
+		const maxRetry = durability?.maxRetry ?? DURABILITY_DEFAULT_MAX_RETRY;
+		const timeoutAt = durability?.timeoutAt ?? (now + DURABILITY_DEFAULT_TIMEOUT_MINUTES * 60_000);
 		const row = this.sql
 			.exec(
 				`UPDATE flue_agent_submissions AS current
-				 SET status = 'running', attempt_id = ?, started_at = ?
+				 SET status = 'running', attempt_id = ?, started_at = ?, attempt_count = 1,
+				     max_retry = ?, timeout_at = ?
 				 WHERE current.submission_id = ? AND current.status = 'queued'
 				   AND NOT EXISTS (
 				     SELECT 1
@@ -383,7 +394,9 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 				   )
 				 RETURNING ${submissionColumns}`,
 				attempt.attemptId,
-				Date.now(),
+				now,
+				maxRetry,
+				timeoutAt,
 				attempt.submissionId,
 			)
 			.toArray()[0];
@@ -557,7 +570,7 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 }
 
 const submissionColumns =
-	'sequence, submission_id, session_key, kind, payload, status, accepted_at, attempt_id, input_applied_at, recovery_requested_at, started_at, error';
+	'sequence, submission_id, session_key, kind, payload, status, accepted_at, attempt_id, input_applied_at, recovery_requested_at, started_at, error, attempt_count, max_retry, timeout_at';
 
 function submissionColumnsFor(table: string): string {
 	return submissionColumns
@@ -654,6 +667,9 @@ function parseSubmission(row: SqlRow): AgentSubmission {
 			: {}),
 		...(typeof row.started_at === 'number' ? { startedAt: row.started_at } : {}),
 		...(typeof row.error === 'string' ? { error: row.error } : {}),
+		attemptCount: typeof row.attempt_count === 'number' ? row.attempt_count : 0,
+		maxRetry: typeof row.max_retry === 'number' ? row.max_retry : DURABILITY_DEFAULT_MAX_RETRY,
+		timeoutAt: typeof row.timeout_at === 'number' ? row.timeout_at : 0,
 	};
 }
 
@@ -754,9 +770,22 @@ function ensureSubmissionTable(sql: SqlStorage): void {
 		 recovery_requested_at INTEGER,
 		 started_at INTEGER,
 		 settled_at INTEGER,
-		 error TEXT
+		 error TEXT,
+		 attempt_count INTEGER NOT NULL DEFAULT 0,
+		 max_retry INTEGER NOT NULL DEFAULT ${DURABILITY_DEFAULT_MAX_RETRY},
+		 timeout_at INTEGER NOT NULL DEFAULT 0
 		)`,
 	);
+	// Additive migration for existing tables created before durability columns existed.
+	try {
+		sql.exec(`ALTER TABLE flue_agent_submissions ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0`);
+	} catch { /* column already exists */ }
+	try {
+		sql.exec(`ALTER TABLE flue_agent_submissions ADD COLUMN max_retry INTEGER NOT NULL DEFAULT ${DURABILITY_DEFAULT_MAX_RETRY}`);
+	} catch { /* column already exists */ }
+	try {
+		sql.exec(`ALTER TABLE flue_agent_submissions ADD COLUMN timeout_at INTEGER NOT NULL DEFAULT 0`);
+	} catch { /* column already exists */ }
 	sql.exec(
 		`CREATE TABLE IF NOT EXISTS flue_agent_session_deletions (
 		 session_key TEXT PRIMARY KEY,

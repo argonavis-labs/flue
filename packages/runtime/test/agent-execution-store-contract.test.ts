@@ -306,6 +306,70 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 		});
 	});
 
+	// ── Durability ───────────────────────────────────────────────────────
+
+	describe('durability', () => {
+		it('initializes attempt_count to 0 and timeout_at to 0 at admission', () => {
+			const store = create();
+			store.submissions.admitDispatch(dispatchInput());
+			const submission = store.submissions.getSubmission('dispatch-1');
+			expect(submission).toMatchObject({
+				attemptCount: 0,
+				maxRetry: 10,
+				timeoutAt: 0,
+			});
+		});
+
+		it('sets attempt_count to 1 and applies system defaults at claim time', () => {
+			const store = create();
+			store.submissions.admitDispatch(dispatchInput());
+			const before = Date.now();
+			store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'));
+			const claimed = store.submissions.getSubmission('dispatch-1')!;
+			expect(claimed.attemptCount).toBe(1);
+			expect(claimed.maxRetry).toBe(10);
+			expect(claimed.timeoutAt).toBeGreaterThanOrEqual(before + 60 * 60_000);
+		});
+
+		it('applies custom durability at claim time when provided', () => {
+			const store = create();
+			store.submissions.admitDispatch(dispatchInput());
+			const customTimeout = Date.now() + 6 * 60 * 60_000;
+			store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'), {
+				maxRetry: 5,
+				timeoutAt: customTimeout,
+			});
+			expect(store.submissions.getSubmission('dispatch-1')).toMatchObject({
+				attemptCount: 1,
+				maxRetry: 5,
+				timeoutAt: customTimeout,
+			});
+		});
+
+		it('increments attempt_count on recovery via replaceTurnJournalAttempt', () => {
+			const store = create();
+			store.submissions.admitDispatch(dispatchInput());
+			store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'));
+			expect(store.submissions.getSubmission('dispatch-1')).toMatchObject({ attemptCount: 1 });
+
+			store.submissions.beginTurnJournal({
+				submissionId: 'dispatch-1',
+				sessionKey: 'agent-session:["agent-1","default","default"]',
+				kind: 'dispatch',
+				attemptId: 'attempt-1',
+				operationId: 'op-1',
+				turnId: 'turn-1',
+				phase: 'before_provider',
+			});
+
+			const replaced = store.submissions.replaceTurnJournalAttempt(
+				attempt('dispatch-1', 'attempt-1'),
+				'attempt-2',
+			);
+			expect(replaced).toMatchObject({ attemptCount: 2, attemptId: 'attempt-2' });
+		});
+	});
+
 	// ── Turn journal lifecycle ────────────────────────────────────────────
 
 	describe('turn journal lifecycle', () => {

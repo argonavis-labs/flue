@@ -18,6 +18,13 @@ export interface SqlStorage {
 	exec(query: string, ...bindings: unknown[]): { toArray(): Record<string, unknown>[] };
 }
 
+// ─── Durability defaults ────────────────────────────────────────────────────
+
+/** Default maximum recovery attempts before terminalization. */
+export const DURABILITY_DEFAULT_MAX_RETRY = 10;
+/** Default submission timeout in minutes. */
+export const DURABILITY_DEFAULT_TIMEOUT_MINUTES = 60;
+
 // ─── Submission ─────────────────────────────────────────────────────────────
 
 export type AgentSubmissionStatus = 'queued' | 'running' | 'recording_interruption' | 'settled';
@@ -35,6 +42,9 @@ export interface AgentSubmission {
 	readonly recoveryRequestedAt?: number;
 	readonly startedAt?: number;
 	readonly error?: string;
+	readonly attemptCount: number;
+	readonly maxRetry: number;
+	readonly timeoutAt: number;
 }
 
 export interface SubmissionAttemptRef {
@@ -119,7 +129,7 @@ export interface AgentSubmissionStore {
 	admitDirect(input: DirectAgentSubmissionInput): AgentSubmission;
 
 	// Submission lifecycle
-	claimSubmission(attempt: SubmissionAttemptRef): AgentSubmission | null;
+	claimSubmission(attempt: SubmissionAttemptRef, durability?: { maxRetry: number; timeoutAt: number }): AgentSubmission | null;
 	markSubmissionInputApplied(attempt: SubmissionAttemptRef): boolean;
 	requestSubmissionRecovery(attempt: SubmissionAttemptRef): boolean;
 	requeueSubmissionBeforeInputApplied(attempt: SubmissionAttemptRef): boolean;

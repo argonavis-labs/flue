@@ -82,6 +82,7 @@ export function createAgentDispatchProcessor(options: {
 							onInputApplied: () => {
 								submissions.markSubmissionInputApplied(attempt);
 							},
+							timeoutAt: claimed.timeoutAt > 0 ? claimed.timeoutAt : undefined,
 							journal: createSubmissionJournalCallbacks(submissions, submission, attempt),
 						})(ctx);
 						submissions.completeSubmission(attempt);

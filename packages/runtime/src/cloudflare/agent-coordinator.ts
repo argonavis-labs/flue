@@ -419,6 +419,24 @@ class CloudflareAgentCoordinator {
 		const { input } = submission;
 		const attempt = submissionAttemptRef(submission);
 		if (!attempt) return;
+		if (submission.attemptCount >= submission.maxRetry) {
+			await this.failInterruptedSubmission(
+				submission,
+				'exhausted_retry_budget',
+				new Error(
+					`[flue] Agent submission exceeded maximum recovery attempts (${submission.attemptCount}/${submission.maxRetry}).`,
+				),
+			);
+			return;
+		}
+		if (submission.timeoutAt > 0 && Date.now() >= submission.timeoutAt) {
+			await this.failInterruptedSubmission(
+				submission,
+				'exceeded_timeout',
+				new Error('[flue] Agent submission exceeded configured timeout.'),
+			);
+			return;
+		}
 		if (submission.status === 'recording_interruption') {
 			await this.failInterruptedSubmission(
 				submission,
@@ -533,7 +551,11 @@ class CloudflareAgentCoordinator {
 
 	private async failInterruptedSubmission(
 		submission: AgentSubmission,
-		reason: 'interrupted_before_input_marker' | 'interrupted_after_input_application',
+		reason:
+			| 'interrupted_before_input_marker'
+			| 'interrupted_after_input_application'
+			| 'exhausted_retry_budget'
+			| 'exceeded_timeout',
 		error: Error,
 	): Promise<void> {
 		const { input } = submission;
@@ -682,6 +704,7 @@ class CloudflareAgentCoordinator {
 			const result = await this.runWithInstanceContext(() =>
 				createAgentSubmissionHandler(agent, input, {
 					onInputApplied: () => this.markInputApplied(attempt),
+					timeoutAt: submission.timeoutAt > 0 ? submission.timeoutAt : undefined,
 					journal: createSubmissionJournalCallbacks(this.submissions, submission, attempt),
 				})(operationCtx),
 			);
