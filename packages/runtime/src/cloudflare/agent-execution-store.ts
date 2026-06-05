@@ -274,8 +274,8 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 				.exec(
 					`SELECT 1
 					 FROM flue_agent_submissions
-					 WHERE status IN ('queued', 'running', 'recording_interruption')
-					 LIMIT 1`,
+				 WHERE status IN ('queued', 'running')
+				 LIMIT 1`,
 				)
 				.toArray().length > 0
 		);
@@ -291,7 +291,7 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 				     SELECT 1
 				     FROM flue_agent_submissions AS earlier
 				     WHERE earlier.session_key = current.session_key
-				       AND earlier.status IN ('queued', 'running', 'recording_interruption')
+				       AND earlier.status IN ('queued', 'running')
 				       AND earlier.sequence < current.sequence
 				   )
 				 ORDER BY current.sequence ASC`,
@@ -306,7 +306,7 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 				.exec(
 					`SELECT ${submissionColumns}
 					 FROM flue_agent_submissions
-					 WHERE status IN ('running', 'recording_interruption')
+					 WHERE status = 'running'
 					 ORDER BY sequence ASC`,
 				)
 				.toArray(),
@@ -332,7 +332,7 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 				.exec(
 					`SELECT 1
 					 FROM flue_agent_submissions
-					 WHERE session_key = ? AND status IN ('queued', 'running', 'recording_interruption')
+					 WHERE session_key = ? AND status IN ('queued', 'running')
 					 LIMIT 1`,
 					sessionKey,
 				)
@@ -389,7 +389,7 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 				     SELECT 1
 				     FROM flue_agent_submissions AS earlier
 				     WHERE earlier.session_key = current.session_key
-				       AND earlier.status IN ('queued', 'running', 'recording_interruption')
+				       AND earlier.status IN ('queued', 'running')
 				       AND earlier.sequence < current.sequence
 				   )
 				 RETURNING ${submissionColumns}`,
@@ -443,17 +443,6 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 		);
 	}
 
-	beginSubmissionInterruptionRecording(attempt: SubmissionAttemptRef): boolean {
-		return this.updateOwnedSubmission(
-			`UPDATE flue_agent_submissions
-			 SET status = 'recording_interruption'
-			 WHERE submission_id = ? AND status = 'running' AND attempt_id = ?
-			 RETURNING submission_id`,
-			attempt.submissionId,
-			attempt.attemptId,
-		);
-	}
-
 	completeSubmission(attempt: SubmissionAttemptRef): boolean {
 		return this.updateOwnedSubmission(
 			`UPDATE flue_agent_submissions
@@ -471,19 +460,6 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 			`UPDATE flue_agent_submissions
 			 SET status = 'settled', settled_at = ?, error = ?
 			 WHERE submission_id = ? AND status = 'running' AND attempt_id = ?
-			 RETURNING submission_id`,
-			Date.now(),
-			error instanceof Error ? error.message : String(error),
-			attempt.submissionId,
-			attempt.attemptId,
-		);
-	}
-
-	finishSubmissionInterruptionRecording(attempt: SubmissionAttemptRef, error: unknown): boolean {
-		return this.updateOwnedSubmission(
-			`UPDATE flue_agent_submissions
-			 SET status = 'settled', settled_at = ?, error = ?
-			 WHERE submission_id = ? AND status = 'recording_interruption' AND attempt_id = ?
 			 RETURNING submission_id`,
 			Date.now(),
 			error instanceof Error ? error.message : String(error),
@@ -549,7 +525,7 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 		this.sql.exec(
 			`UPDATE flue_agent_submissions
 			 SET status = 'settled', settled_at = ?, error = ?
-			 WHERE sequence = ? AND ${status === 'queued' ? "status = 'queued'" : "status IN ('running', 'recording_interruption')"}`,
+			 WHERE sequence = ? AND ${status === 'queued' ? "status = 'queued'" : "status = 'running'"}`,
 			Date.now(),
 			error instanceof Error ? error.message : String(error),
 			sequence,
@@ -627,7 +603,6 @@ function parseSubmission(row: SqlRow): AgentSubmission {
 		typeof row.payload !== 'string' ||
 		(row.status !== 'queued' &&
 			row.status !== 'running' &&
-			row.status !== 'recording_interruption' &&
 			row.status !== 'settled') ||
 		typeof row.accepted_at !== 'number' ||
 		(row.attempt_id !== null && row.attempt_id !== undefined && typeof row.attempt_id !== 'string') ||
@@ -643,7 +618,7 @@ function parseSubmission(row: SqlRow): AgentSubmission {
 				row.input_applied_at !== null ||
 				row.recovery_requested_at !== null ||
 				row.started_at !== null)) ||
-		((row.status === 'running' || row.status === 'recording_interruption') &&
+		(row.status === 'running' &&
 			(typeof row.attempt_id !== 'string' || typeof row.started_at !== 'number'))
 	) {
 		throw new Error('[flue] Persisted agent submission row is malformed.');

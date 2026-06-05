@@ -27,7 +27,7 @@ export const DURABILITY_DEFAULT_TIMEOUT_MINUTES = 60;
 
 // ─── Submission ─────────────────────────────────────────────────────────────
 
-export type AgentSubmissionStatus = 'queued' | 'running' | 'recording_interruption' | 'settled';
+export type AgentSubmissionStatus = 'queued' | 'running' | 'settled';
 
 export interface AgentSubmission {
 	readonly sequence: number;
@@ -133,10 +133,8 @@ export interface AgentSubmissionStore {
 	markSubmissionInputApplied(attempt: SubmissionAttemptRef): boolean;
 	requestSubmissionRecovery(attempt: SubmissionAttemptRef): boolean;
 	requeueSubmissionBeforeInputApplied(attempt: SubmissionAttemptRef): boolean;
-	beginSubmissionInterruptionRecording(attempt: SubmissionAttemptRef): boolean;
 	completeSubmission(attempt: SubmissionAttemptRef): boolean;
 	failSubmission(attempt: SubmissionAttemptRef, error: unknown): boolean;
-	finishSubmissionInterruptionRecording(attempt: SubmissionAttemptRef, error: unknown): boolean;
 
 	// Deletion
 	deleteSession(sessionKey: string, deleteSessionTree: () => Promise<void>): Promise<void>;

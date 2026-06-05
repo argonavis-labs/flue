@@ -426,31 +426,6 @@ describe('createSqlAgentExecutionStore()', () => {
 		});
 	});
 
-	it('fences ordinary completion while an interrupted submission records its advisory', () => {
-		const { sql, transactionSync } = makeFakeSql();
-		const store = createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
-		store.submissions.admitDispatch(dispatchInput());
-		store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'));
-
-		expect(store.submissions.beginSubmissionInterruptionRecording(attempt('dispatch-1', 'attempt-1'))).toBe(
-			true,
-		);
-		expect(store.submissions.getSubmission('dispatch-1')).toMatchObject({
-			status: 'recording_interruption',
-		});
-		expect(store.submissions.completeSubmission(attempt('dispatch-1', 'attempt-1'))).toBe(false);
-		expect(
-			store.submissions.finishSubmissionInterruptionRecording(
-				attempt('dispatch-1', 'attempt-1'),
-				new Error('interrupted'),
-			),
-		).toBe(true);
-		expect(store.submissions.getSubmission('dispatch-1')).toMatchObject({
-			status: 'settled',
-			error: 'interrupted',
-		});
-	});
-
 	it('rejects session deletion while durable submissions are queued or running', async () => {
 		const { sql, transactionSync } = makeFakeSql();
 		const store = createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');

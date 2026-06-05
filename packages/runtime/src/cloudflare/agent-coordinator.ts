@@ -356,7 +356,6 @@ class CloudflareAgentCoordinator {
 			for (const submission of this.submissions.listRunningSubmissions()) {
 				if (this.activeAttempts.has(this.submissionAttemptLocalKey(submission))) continue;
 				if (
-					submission.status !== 'recording_interruption' &&
 					attemptMarkers.keys.has(submissionAttemptMarkerKey(submission)) &&
 					submission.recoveryRequestedAt === undefined
 				)
@@ -434,20 +433,6 @@ class CloudflareAgentCoordinator {
 				submission,
 				'exceeded_timeout',
 				new Error('[flue] Agent submission exceeded configured timeout.'),
-			);
-			return;
-		}
-		if (submission.status === 'recording_interruption') {
-			await this.failInterruptedSubmission(
-				submission,
-				submission.inputAppliedAt === undefined
-					? 'interrupted_before_input_marker'
-					: 'interrupted_after_input_application',
-				new Error(
-					submission.inputAppliedAt === undefined
-						? '[flue] Agent submission attempt was interrupted after canonical input persistence but before the input-application marker was recorded. Provider replay was not attempted.'
-						: '[flue] Agent submission attempt was interrupted after input application without a completed canonical response. Provider replay was not attempted.',
-				),
 			);
 			return;
 		}
@@ -561,11 +546,6 @@ class CloudflareAgentCoordinator {
 		const { input } = submission;
 		const attempt = submissionAttemptRef(submission);
 		if (!attempt) return;
-		if (
-			submission.status !== 'recording_interruption' &&
-			!this.submissions.beginSubmissionInterruptionRecording(attempt)
-		)
-			return;
 		const agent = this.options.createdAgents[this.agentName];
 		if (!agent) throw new Error('[flue] Agent target unavailable during durable terminalization.');
 		const request = new Request(`https://flue.invalid${CLOUDFLARE_AGENT_INTERNAL_DISPATCH_PATH}`, {
@@ -585,7 +565,7 @@ class CloudflareAgentCoordinator {
 				message: error.message,
 			})(ctx),
 		);
-		const failed = this.submissions.finishSubmissionInterruptionRecording(attempt, error);
+		const failed = this.submissions.failSubmission(attempt, error);
 		if (failed && submission.kind === 'direct') this.observers.fail(submission.submissionId, error);
 	}
 

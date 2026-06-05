@@ -23,8 +23,7 @@ function makeFakeSql(events: string[] = []) {
 				exec(query: string, ...bindings: unknown[]) {
 					if (query.includes('SET recovery_requested_at')) events.push('request-recovery');
 					if (query.includes("SET status = 'queued'")) events.push('requeue');
-					if (query.includes("SET status = 'recording_interruption'")) events.push('begin-interruption-recording');
-					if (query.includes("SET status = 'settled', settled_at")) events.push('finish-interruption-recording');
+					if (query.includes("SET status = 'settled', settled_at")) events.push('settle');
 					const stmt = db.prepare(query);
 					let rows: unknown[];
 					try {
@@ -289,32 +288,8 @@ describe('createCloudflareAgentRuntime()', () => {
 
 		await runtime.onStart(instance, () => {});
 
-		expect(events).toEqual(['begin-interruption-recording', 'record-terminal', 'finish-interruption-recording']);
+		expect(events).toEqual(['record-terminal', 'settle']);
 		expect(payloads).toEqual([directInput(), directInput().payload]);
-		expect(executionStore.submissions.getSubmission('direct-1')).toMatchObject({ status: 'settled' });
-	});
-
-	it('resumes recording interruption rows by recording interruption before final SQL settlement', async () => {
-		const events: string[] = [];
-		const { storage } = makeFakeSql(events);
-		const recovery = makeRecoveryContext({ events });
-		const runtime = makeRuntime({
-			createdAgent: {} as never,
-			createContext: () => recovery.ctx,
-		});
-		const instance = makeInstance(storage);
-		const executionStore = prepare(runtime, instance);
-		executionStore.submissions.admitDirect(directInput());
-		executionStore.submissions.claimSubmission({ submissionId: 'direct-1', attemptId: 'attempt-1' });
-			executionStore.submissions.beginSubmissionInterruptionRecording({
-				submissionId: 'direct-1',
-				attemptId: 'attempt-1',
-			});
-		events.splice(0);
-
-		await runtime.onStart(instance, () => {});
-
-		expect(events).toEqual(['record-terminal', 'finish-interruption-recording']);
 		expect(executionStore.submissions.getSubmission('direct-1')).toMatchObject({ status: 'settled' });
 	});
 
