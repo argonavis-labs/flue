@@ -339,9 +339,10 @@ class CloudflareAgentCoordinator {
 	}
 
 	private cleanupTerminalState(): number {
-		return this.submissions.cleanupTerminalSubmissions(
-			Date.now() - FLUE_AGENT_SUBMISSION_TERMINAL_RETENTION_MS,
-		);
+		const settledBefore = Date.now() - FLUE_AGENT_SUBMISSION_TERMINAL_RETENTION_MS;
+		const submissions = this.submissions.cleanupTerminalSubmissions(settledBefore);
+		this.submissions.cleanupCommittedTurnJournals(settledBefore);
+		return submissions;
 	}
 
 	private async restoreSubmissionWake(): Promise<boolean> {
@@ -452,6 +453,14 @@ class CloudflareAgentCoordinator {
 		const state = await this.runWithInstanceContext(() =>
 			createAgentSubmissionInspectionHandler(agent, input)(ctx),
 		);
+		const journal = this.submissions.getTurnJournal(submission.submissionId);
+		if (journal?.phase === 'before_provider' && journal.committed === false && state === 'continuable') {
+			const replacement = this.submissions.replaceTurnJournalAttempt(attempt, crypto.randomUUID());
+			if (replacement) {
+				this.startSubmissionAttempt(replacement);
+				return;
+			}
+		}
 		if (submission.inputAppliedAt === undefined) {
 			if (state === 'absent') {
 				this.submissions.requeueSubmissionBeforeInputApplied(attempt);
@@ -627,9 +636,48 @@ class CloudflareAgentCoordinator {
 					return this.observers.publish(submission.submissionId, attachedEvent);
 				});
 			}
+			const recoveryRootId = submission.submissionId;
+			let journalTurnId: string | undefined;
 			const result = await this.runWithInstanceContext(() =>
 				createAgentSubmissionHandler(agent, input, {
 					onInputApplied: () => this.markInputApplied(attempt),
+					journal: {
+						beforeProvider: (state) => {
+							if (state.turnId !== journalTurnId) {
+								journalTurnId = state.turnId;
+								this.submissions.beginTurnJournal({
+									submissionId: submission.submissionId,
+									sessionKey: submission.sessionKey,
+									kind: submission.kind,
+									attemptId: attempt.attemptId,
+									operationId: state.operationId,
+									turnId: state.turnId,
+									recoveryRootId,
+									phase: 'before_provider',
+									checkpointLeafId: state.checkpointLeafId,
+								});
+							}
+						},
+						providerStarted: (state) => {
+							this.submissions.updateTurnJournalPhase(attempt, 'provider_started', {
+								checkpointLeafId: state.checkpointLeafId,
+							});
+						},
+						toolRequestRecorded: (state) => {
+							this.submissions.updateTurnJournalPhase(attempt, 'tool_request_recorded', {
+								checkpointLeafId: state.checkpointLeafId,
+								toolRequest: state.toolRequest,
+							});
+						},
+						checkpointReady: (state) => {
+							this.submissions.updateTurnJournalPhase(attempt, 'before_provider', {
+								checkpointLeafId: state.checkpointLeafId,
+							});
+						},
+						committed: (state) => {
+							this.submissions.commitTurnJournal(attempt, state.committedLeafId);
+						},
+					},
 				})(operationCtx),
 			);
 			const completed = this.submissions.completeSubmission(attempt);

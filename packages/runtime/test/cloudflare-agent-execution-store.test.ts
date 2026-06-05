@@ -128,17 +128,43 @@ describe('createSqlAgentExecutionStore()', () => {
 			{ name: 'error' },
 		]);
 		expect(
-			db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all(),
+			db.prepare("SELECT name FROM pragma_table_info('flue_agent_turn_journals') ORDER BY cid").all(),
+		).toEqual([
+			{ name: 'submission_id' },
+			{ name: 'session_key' },
+			{ name: 'kind' },
+			{ name: 'attempt_id' },
+			{ name: 'operation_id' },
+			{ name: 'turn_id' },
+			{ name: 'recovery_root_id' },
+			{ name: 'phase' },
+			{ name: 'revision' },
+			{ name: 'created_at' },
+			{ name: 'updated_at' },
+			{ name: 'last_progress_at' },
+			{ name: 'checkpoint_leaf_id' },
+			{ name: 'stream_high_water' },
+			{ name: 'tool_request_json' },
+			{ name: 'tool_state_json' },
+			{ name: 'committed' },
+			{ name: 'committed_leaf_id' },
+		]);
+		expect(
+			db
+			.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")
+			.all(),
 		).toEqual([
 			{ name: 'flue_agent_dispatch_receipts' },
 			{ name: 'flue_agent_session_deletions' },
 			{ name: 'flue_agent_submissions' },
+			{ name: 'flue_agent_turn_journals' },
 			{ name: 'flue_sessions' },
 			{ name: 'sqlite_sequence' },
 		]);
 		expect(
 			db
-				.prepare(
+			.prepare(
+
 					"SELECT name FROM sqlite_schema WHERE type = 'index' AND tbl_name = 'flue_agent_submissions' ORDER BY name",
 				)
 				.all(),
@@ -162,6 +188,17 @@ describe('createSqlAgentExecutionStore()', () => {
 				.prepare("SELECT name FROM pragma_index_info('flue_agent_dispatch_receipts_settled_at_dispatch_id_idx') ORDER BY seqno")
 				.all(),
 		).toEqual([{ name: 'settled_at' }, { name: 'dispatch_id' }]);
+		expect(
+			db
+				.prepare(
+					"SELECT name FROM sqlite_schema WHERE type = 'index' AND tbl_name = 'flue_agent_turn_journals' ORDER BY name",
+				)
+				.all(),
+		).toEqual([
+			{ name: 'flue_agent_turn_journals_committed_updated_idx' },
+			{ name: 'flue_agent_turn_journals_session_updated_idx' },
+			{ name: 'sqlite_autoindex_flue_agent_turn_journals_1' },
+		]);
 	});
 
 	it('admits one queued dispatch row when the same submission is replayed', () => {
@@ -292,7 +329,47 @@ describe('createSqlAgentExecutionStore()', () => {
 		store.submissions.admitDispatch(dispatchInput());
 		store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'));
 
+		expect(
+			store.submissions.beginTurnJournal({
+				submissionId: 'dispatch-1',
+				sessionKey: 'agent-session:["agent-1","default","default"]',
+				kind: 'dispatch',
+				attemptId: 'attempt-1',
+				operationId: 'op-1',
+				turnId: 'turn-1',
+				recoveryRootId: 'dispatch-1',
+				phase: 'before_provider',
+			}),
+		).toBe(true);
+		expect(store.submissions.updateTurnJournalPhase(attempt('dispatch-1', 'attempt-1'), 'provider_started')).toBe(true);
+		expect(store.submissions.commitTurnJournal(attempt('dispatch-1', 'attempt-1'), 'leaf-1')).toBe(true);
+		expect(store.submissions.commitTurnJournal(attempt('dispatch-1', 'attempt-1'), 'leaf-1')).toBe(false);
+		expect(store.submissions.getTurnJournal('dispatch-1')).toMatchObject({
+			phase: 'committed',
+			committed: true,
+			committedLeafId: 'leaf-1',
+		});
+		expect(
+			store.submissions.beginTurnJournal({
+				submissionId: 'dispatch-1',
+				sessionKey: 'agent-session:["agent-1","default","default"]',
+				kind: 'dispatch',
+				attemptId: 'attempt-1',
+				operationId: 'op-2',
+				turnId: 'turn-2',
+				recoveryRootId: 'dispatch-1',
+				phase: 'before_provider',
+			}),
+		).toBe(true);
+		expect(store.submissions.getTurnJournal('dispatch-1')).toMatchObject({
+			phase: 'before_provider',
+			committed: false,
+			operationId: 'op-2',
+			turnId: 'turn-2',
+		});
+
 		expect(store.submissions.markSubmissionInputApplied(attempt('dispatch-1', 'attempt-1'))).toBe(true);
+
 		const appliedAt = store.submissions.getSubmission('dispatch-1')?.inputAppliedAt;
 		expect(store.submissions.markSubmissionInputApplied(attempt('dispatch-1', 'attempt-1'))).toBe(true);
 		expect(store.submissions.markSubmissionInputApplied(attempt('dispatch-1', 'stale-attempt'))).toBe(false);

@@ -691,11 +691,20 @@ export class Session implements FlueSession {
 	private pendingSave: Promise<void> = Promise.resolve();
 	private harnessMessageCheckpointCursor = 0;
 	private activeCheckpointSource: MessageEntry['source'] | undefined;
+	private activeJournalCallbacks: ProcessAgentSubmissionOptions['journal'] | undefined;
+	private activeTurnCanCommitJournal = false;
 
-	private emitTurnRequestAndStream: StreamFn = (model, context, options) => {
+	private emitTurnRequestAndStream: StreamFn = async (model, context, options) => {
 		if (this.activeTurnId === undefined) this.activeTurnId = generateTurnId();
 		const turnId = this.activeTurnId;
+		const state = {
+			operationId: this.activeOperationId ?? generateOperationId(),
+			turnId,
+			checkpointLeafId: this.history.getLeafId() ?? undefined,
+		};
+		await this.activeJournalCallbacks?.beforeProvider?.(state);
 		this.emitTurnRequest(turnId, 'agent', model, context, options?.reasoning);
+		await this.activeJournalCallbacks?.providerStarted?.(state);
 		return streamSimple(model, context, options);
 	};
 
@@ -785,6 +794,7 @@ export class Session implements FlueSession {
 				case 'turn_start':
 					this.turnStartTime = Date.now();
 					this.activeTurnId = generateTurnId();
+					this.activeTurnCanCommitJournal = false;
 					this.emit({ type: 'turn_start', turnId: this.activeTurnId, purpose: 'agent' });
 					break;
 				case 'message_start':
@@ -809,6 +819,17 @@ export class Session implements FlueSession {
 					break;
 				}
 				case 'message_end':
+					if (event.message.role === 'assistant') {
+						const toolCalls = event.message.content.filter((content) => content.type === 'toolCall');
+						if (toolCalls.length > 0) {
+							await this.activeJournalCallbacks?.toolRequestRecorded?.({
+								operationId: this.activeOperationId ?? generateOperationId(),
+								turnId: this.activeTurnId ?? generateTurnId(),
+								checkpointLeafId: this.history.getLeafId() ?? undefined,
+								toolRequest: { toolCalls },
+							});
+						}
+					}
 					if (event.message.role === 'user') await this.checkpointHarnessMessages();
 					this.emit({ type: 'message_end', message: event.message });
 					break;
@@ -855,8 +876,9 @@ export class Session implements FlueSession {
 					this.toolStartTimes.delete(event.toolCallId);
 					break;
 				case 'turn_end': {
-					await this.checkpointHarnessMessages();
 					const turnId = this.activeTurnId ?? generateTurnId();
+					this.activeTurnCanCommitJournal = true;
+					await this.checkpointHarnessMessages();
 					this.emit({
 						type: 'turn_end',
 						turnId,
@@ -1807,6 +1829,25 @@ export class Session implements FlueSession {
 		this.history.appendMessages(messages, this.activeCheckpointSource);
 		this.harnessMessageCheckpointCursor = this.harness.state.messages.length;
 		await this.save();
+		if (this.activeTurnCanCommitJournal) {
+			const latest = messages.at(-1);
+			const turnEndedWithToolResult = latest?.role === 'toolResult';
+			if (turnEndedWithToolResult) {
+				await this.activeJournalCallbacks?.checkpointReady?.({
+					operationId: this.activeOperationId ?? generateOperationId(),
+					turnId: this.activeTurnId ?? generateTurnId(),
+					checkpointLeafId: this.history.getLeafId() ?? '',
+				});
+			} else {
+				await this.activeJournalCallbacks?.committed?.({
+					operationId: this.activeOperationId ?? generateOperationId(),
+					turnId: this.activeTurnId ?? generateTurnId(),
+					checkpointLeafId: this.history.getLeafId() ?? undefined,
+					committedLeafId: this.history.getLeafId() ?? '',
+				});
+			}
+			this.activeTurnCanCommitJournal = false;
+		}
 	}
 
 	private async save(): Promise<void> {
@@ -2163,7 +2204,14 @@ export class Session implements FlueSession {
 		const assistant = following.findLast(
 			(entry): entry is MessageEntry => entry.type === 'message' && entry.message.role === 'assistant',
 		)?.message as AssistantMessage | undefined;
-		return assistant && isCompletedAssistantResponse(assistant) ? 'completed' : 'uncertain';
+		if (assistant && isCompletedAssistantResponse(assistant)) return 'completed';
+		if (
+			assistant?.stopReason === 'toolUse' &&
+			following.some((entry) => entry.type === 'message' && entry.message.role === 'toolResult')
+		) {
+			return 'continuable';
+		}
+		return 'uncertain';
 	}
 
 	private async runPersistedDispatchInput(
@@ -2185,6 +2233,7 @@ export class Session implements FlueSession {
 			persistenceError: '[flue] Failed to persist dispatched input.',
 			recoveryError: '[flue] Cannot recover dispatched input after the session has advanced.',
 			onInputApplied: options?.onInputApplied,
+			journal: options?.journal,
 			signal,
 		});
 	}
@@ -2208,6 +2257,7 @@ export class Session implements FlueSession {
 			persistenceError: '[flue] Failed to persist direct input.',
 			recoveryError: '[flue] Cannot recover direct input after the session has advanced.',
 			onInputApplied: options?.onInputApplied,
+			journal: options?.journal,
 			signal,
 		});
 	}
@@ -2215,6 +2265,7 @@ export class Session implements FlueSession {
 	private async runPersistedContextInput(options: {
 		findInput: () => MessageEntry | undefined;
 		persistInput: () => string;
+		journal?: ProcessAgentSubmissionOptions['journal'];
 		errorLabel: string;
 		outputSource: MessageSource;
 		callSite: string;
@@ -2231,66 +2282,77 @@ export class Session implements FlueSession {
 				callSite: options.callSite,
 			},
 			async ({ resolvedModel }) => {
-				let inputEntry = options.findInput();
-				if (!inputEntry) {
-					options.persistInput();
-					this.rebuildHarnessContext();
-					await this.save();
-					inputEntry = options.findInput();
-				}
-				if (!inputEntry) throw new Error(options.persistenceError);
-				await options.onInputApplied?.();
-				const following = this.history.getActivePathSince(inputEntry.id);
-				if (following.some((entry) => entry.type === 'message' && entry.message.role === 'user')) {
-					throw new Error(options.recoveryError);
-				}
-				const persistedAssistants = following.filter(
-					(entry): entry is MessageEntry =>
-						entry.type === 'message' && entry.message.role === 'assistant',
-				);
-				const persistedAssistant = persistedAssistants.at(-1);
-				const assistant = persistedAssistant?.message as AssistantMessage | undefined;
-				const model = this.harness.state.model;
-				const overflow = assistant ? isContextOverflow(assistant, model.contextWindow ?? 0) : false;
-				if (!assistant || overflow || isRetryableModelError(assistant)) {
-					const transientRetries = countConsecutiveRetryableModelErrors(following);
-					if (assistant && overflow) {
+				this.activeJournalCallbacks = options.journal;
+				try {
+					let inputEntry = options.findInput();
+					if (!inputEntry) {
+						options.persistInput();
 						this.rebuildHarnessContext();
-						this.internalLog(
-							'info',
-							'[flue:compaction] Overflow detected, compacting and retrying...',
-						);
-						if (!(await this.runCompaction('overflow'))) {
-							throw new Error(
-								`[flue] ${options.errorLabel} failed: ${assistant.errorMessage ?? assistant.stopReason}`,
-							);
-						}
-						this.internalLog('info', '[flue:compaction] Retrying after overflow recovery...');
-					} else if (assistant && isRetryableModelError(assistant)) {
-						if (!(await this.waitForTransientModelRetry(assistant, transientRetries))) {
-							throw new Error(
-								`[flue] ${options.errorLabel} failed: ${assistant.errorMessage ?? assistant.stopReason}`,
-							);
-						}
+						await this.save();
+						inputEntry = options.findInput();
 					}
-					await this.runModelTurnWithRecovery({
-						start: () => this.harness.continue(),
-						source: assistant ? 'retry' : options.outputSource,
-						signal: options.signal,
-						transientRetries,
-						overflowRecoveryAttempted: overflow,
-					});
-					this.throwIfError(options.errorLabel);
-				} else if (assistant.stopReason === 'error' || assistant.stopReason === 'aborted') {
-					throw new Error(
-						`[flue] ${options.errorLabel} failed: ${assistant.errorMessage ?? assistant.stopReason}`,
+					if (!inputEntry) throw new Error(options.persistenceError);
+					await options.onInputApplied?.();
+					const following = this.history.getActivePathSince(inputEntry.id);
+					if (following.some((entry) => entry.type === 'message' && entry.message.role === 'user')) {
+						throw new Error(options.recoveryError);
+					}
+					const persistedAssistants = following.filter(
+						(entry): entry is MessageEntry =>
+							entry.type === 'message' && entry.message.role === 'assistant',
 					);
+					const persistedAssistant = persistedAssistants.at(-1);
+					const assistant = persistedAssistant?.message as AssistantMessage | undefined;
+					const model = this.harness.state.model;
+					const overflow = assistant ? isContextOverflow(assistant, model.contextWindow ?? 0) : false;
+					if (
+						!assistant ||
+						overflow ||
+						isRetryableModelError(assistant) ||
+						(assistant.stopReason === 'toolUse' &&
+							following.some((entry) => entry.type === 'message' && entry.message.role === 'toolResult'))
+					) {
+						const transientRetries = countConsecutiveRetryableModelErrors(following);
+						if (assistant && overflow) {
+							this.rebuildHarnessContext();
+							this.internalLog(
+								'info',
+								'[flue:compaction] Overflow detected, compacting and retrying...',
+							);
+							if (!(await this.runCompaction('overflow'))) {
+								throw new Error(
+									`[flue] ${options.errorLabel} failed: ${assistant.errorMessage ?? assistant.stopReason}`,
+								);
+							}
+							this.internalLog('info', '[flue:compaction] Retrying after overflow recovery...');
+						} else if (assistant && isRetryableModelError(assistant)) {
+							if (!(await this.waitForTransientModelRetry(assistant, transientRetries))) {
+								throw new Error(
+									`[flue] ${options.errorLabel} failed: ${assistant.errorMessage ?? assistant.stopReason}`,
+								);
+							}
+						}
+						await this.runModelTurnWithRecovery({
+							start: () => this.harness.continue(),
+							source: assistant ? 'retry' : options.outputSource,
+							signal: options.signal,
+							transientRetries,
+							overflowRecoveryAttempted: overflow,
+						});
+						this.throwIfError(options.errorLabel);
+					} else if (assistant.stopReason === 'error' || assistant.stopReason === 'aborted') {
+						throw new Error(
+							`[flue] ${options.errorLabel} failed: ${assistant.errorMessage ?? assistant.stopReason}`,
+						);
+					}
+					return {
+						text: this.getAssistantText(),
+						usage: this.aggregateUsageSince(inputEntry.id),
+						model: { provider: resolvedModel.provider, id: resolvedModel.id },
+					};
+				} finally {
+					this.activeJournalCallbacks = undefined;
 				}
-				return {
-					text: this.getAssistantText(),
-					usage: this.aggregateUsageSince(inputEntry.id),
-					model: { provider: resolvedModel.provider, id: resolvedModel.id },
-				};
 			},
 		);
 	}

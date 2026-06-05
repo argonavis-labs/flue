@@ -30,10 +30,29 @@ export interface AgentSubmissionInterruption {
 	readonly message: string;
 }
 
-export type AgentSubmissionInspection = 'absent' | 'completed' | 'uncertain';
+export type AgentSubmissionInspection = 'absent' | 'completed' | 'continuable' | 'uncertain';
+
+interface ProcessAgentSubmissionJournalState {
+	readonly operationId: string;
+	readonly turnId: string;
+	readonly checkpointLeafId?: string;
+}
 
 export interface ProcessAgentSubmissionOptions {
 	onInputApplied?: () => Promise<void> | void;
+	journal?: {
+		beforeProvider?: (state: ProcessAgentSubmissionJournalState) => Promise<void> | void;
+		providerStarted?: (state: ProcessAgentSubmissionJournalState) => Promise<void> | void;
+		toolRequestRecorded?: (
+			state: ProcessAgentSubmissionJournalState & { toolRequest: unknown },
+		) => Promise<void> | void;
+		checkpointReady?: (
+			state: ProcessAgentSubmissionJournalState & { checkpointLeafId: string },
+		) => Promise<void> | void;
+		committed?: (
+			state: ProcessAgentSubmissionJournalState & { committedLeafId: string },
+		) => Promise<void> | void;
+	};
 }
 
 interface AgentSubmissionSession {
