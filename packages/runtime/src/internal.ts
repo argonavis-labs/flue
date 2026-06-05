@@ -24,6 +24,7 @@ export { createFlueContext } from './client.ts';
 export { CLOUDFLARE_AGENT_INTERNAL_DISPATCH_PATH, createCloudflareAgentRuntime } from './cloudflare/agent-coordinator.ts';
 export { createSqlSessionStore } from './cloudflare/agent-execution-store.ts';
 export { createDurableRunStore } from './cloudflare/run-store.ts';
+export { createNodeAgentCoordinator, createNodeDispatchQueue } from './node/agent-coordinator.ts';
 export { createNodeAgentExecutionStore } from './node/agent-execution-store.ts';
 export { InMemoryRunRegistry } from './node/run-registry.ts';
 export { InMemoryRunStore } from './node/run-store.ts';

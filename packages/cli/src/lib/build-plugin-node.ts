@@ -60,6 +60,8 @@ import {
   InMemoryFs,
   createFlueContext,
   createNodeAgentExecutionStore,
+  createNodeAgentCoordinator,
+  createNodeDispatchQueue,
   InMemoryRunStore,
   InMemoryRunRegistry,
   createRunSubscriberRegistry,
@@ -68,14 +70,12 @@ import {
   configureFlueRuntime,
   createDefaultFlueApp,
   createDirectAgentHandler,
-  createAgentDispatchProcessor,
   invokeWorkflowAttached,
   invokeDirectAttached,
   generateWorkflowRunId,
   createWebSocketErrorMessage,
   parseWorkflowWebSocketMessage,
   parseAgentWebSocketMessage,
-  InMemoryDispatchQueue,
 } from '@flue/runtime/internal';
 ${agentImports}
 ${workflowImports}
@@ -123,11 +123,12 @@ const executionStore = createNodeAgentExecutionStore();
 const runStore = new InMemoryRunStore();
 const runRegistry = new InMemoryRunRegistry();
 const runSubscribers = createRunSubscriberRegistry();
-const dispatchQueue = new InMemoryDispatchQueue(createAgentDispatchProcessor({
+const agentCoordinator = createNodeAgentCoordinator({
+  submissions: executionStore.submissions,
   agents: createdAgents,
   createContext: createContextForRequest,
-  submissions: executionStore.submissions,
-}));
+});
+const dispatchQueue = createNodeDispatchQueue(agentCoordinator);
 
 function createContextForRequest(id, runId, payload, req, initialEventIndex, dispatchId) {
   return createFlueContext({
@@ -184,6 +185,12 @@ configureFlueRuntime({
   runStore,
   runSubscribers,
   runRegistry,
+});
+
+// Reconcile any interrupted submissions from a previous process.
+// This is best-effort on startup — errors are logged but do not block the server.
+agentCoordinator.reconcileSubmissions().catch((error) => {
+  console.error('[flue] Startup submission reconciliation failed:', error);
 });
 
 // ─── App composition ────────────────────────────────────────────────────────

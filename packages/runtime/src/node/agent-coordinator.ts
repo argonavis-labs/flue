@@ -1,5 +1,5 @@
 import type { AgentSubmission, AgentSubmissionStore, SubmissionAttemptRef } from '../agent-execution-store.ts';
-import type { CreatedAgent } from '../types.ts';
+import type { CreatedAgent, DispatchReceipt } from '../types.ts';
 import {
 	agentSubmissionDispatchId,
 	agentSubmissionProcessingPayload,
@@ -9,13 +9,37 @@ import {
 	submissionDispatchRequest,
 } from '../runtime/agent-submissions.ts';
 import type { CreateContextFn } from '../runtime/handle-agent.ts';
-import type { DispatchInput } from '../runtime/dispatch-queue.ts';
+import type { DispatchInput, DispatchQueue } from '../runtime/dispatch-queue.ts';
 
 export interface NodeAgentCoordinator {
 	/** Call once at startup to reconcile interrupted work from a previous process. */
 	reconcileSubmissions(): Promise<void>;
 	/** Admit and process a dispatch. Drains the queue after processing. */
 	admitDispatch(input: DispatchInput): Promise<void>;
+}
+
+/**
+ * Create a `DispatchQueue` backed by a `NodeAgentCoordinator`.
+ *
+ * Dispatches go through proper SQL admission, claim, journal callbacks,
+ * and settlement instead of fire-and-forget inline processing. The
+ * coordinator also reconciles interrupted work from a previous process
+ * on startup and drains queued submissions after each dispatch.
+ */
+export function createNodeDispatchQueue(coordinator: NodeAgentCoordinator): DispatchQueue {
+	return {
+		async enqueue(input: DispatchInput): Promise<DispatchReceipt> {
+			const receipt: DispatchReceipt = {
+				dispatchId: input.dispatchId,
+				acceptedAt: input.acceptedAt,
+			};
+			// Admission, claim, processing, and queue drain are handled by the
+			// coordinator. Errors during processing are logged and swallowed by
+			// the coordinator — the dispatch is still accepted.
+			await coordinator.admitDispatch(input);
+			return receipt;
+		},
+	};
 }
 
 export function createNodeAgentCoordinator(options: {
