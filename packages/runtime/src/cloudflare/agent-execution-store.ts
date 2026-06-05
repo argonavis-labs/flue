@@ -725,9 +725,6 @@ function ensureTurnJournalTable(sql: SqlStorage): void {
 		 committed_leaf_id TEXT
 		)`,
 	);
-	sql.exec(
-		'CREATE INDEX IF NOT EXISTS flue_agent_turn_journals_session_updated_idx ON flue_agent_turn_journals (session_key, updated_at ASC)',
-	);
 }
 
 function ensureSubmissionTable(sql: SqlStorage): void {

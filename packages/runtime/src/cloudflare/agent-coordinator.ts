@@ -348,11 +348,10 @@ class CloudflareAgentCoordinator {
 		if (!this.submissions.hasUnsettledSubmissions()) return false;
 		try {
 			const attemptMarkers = this.listActiveAttemptMarkers();
-			if (attemptMarkers.blockAll) return true;
 			for (const submission of this.submissions.listRunningSubmissions()) {
 				if (this.activeAttempts.has(this.submissionAttemptLocalKey(submission))) continue;
 				if (
-					attemptMarkers.keys.has(submissionAttemptMarkerKey(submission)) &&
+					attemptMarkers.has(submissionAttemptMarkerKey(submission)) &&
 					submission.recoveryRequestedAt === undefined
 				)
 					continue;
@@ -475,9 +474,8 @@ class CloudflareAgentCoordinator {
 		return `${this.instance.ctx.id.toString()}:${submission.attemptId}`;
 	}
 
-	private listActiveAttemptMarkers(): { blockAll: boolean; keys: Set<string> } {
+	private listActiveAttemptMarkers(): Set<string> {
 		const keys = new Set<string>();
-		let blockAll = false;
 		const rows = this.instance.ctx.storage.sql
 			?.exec(
 				`SELECT snapshot, created_at FROM cf_agents_runs WHERE name = '${FLUE_AGENT_SUBMISSION_ATTEMPT_FIBER}'`,
@@ -486,29 +484,29 @@ class CloudflareAgentCoordinator {
 		if (!rows) throw new Error('[flue] Cloudflare durable agent SQL storage is unavailable.');
 		for (const row of rows) {
 			if (typeof row.created_at !== 'number') {
-				blockAll = true;
+				console.warn('[flue:submission-reconciliation] Skipping attempt marker with non-numeric created_at.');
 				continue;
 			}
 			if (Date.now() - row.created_at > FLUE_AGENT_SUBMISSION_ATTEMPT_STALE_MS) continue;
 			if (row.snapshot === null) continue;
 			if (typeof row.snapshot !== 'string') {
-				blockAll = true;
+				console.warn('[flue:submission-reconciliation] Skipping attempt marker with non-string snapshot.');
 				continue;
 			}
 			let snapshot: unknown;
 			try {
 				snapshot = JSON.parse(row.snapshot);
 			} catch {
-				blockAll = true;
+				console.warn('[flue:submission-reconciliation] Skipping attempt marker with unparseable snapshot.');
 				continue;
 			}
 			if (!isAttemptMarkerSnapshot(snapshot)) {
-				blockAll = true;
+				console.warn('[flue:submission-reconciliation] Skipping attempt marker with invalid snapshot shape.');
 				continue;
 			}
 			keys.add(`${snapshot.submissionId}:${snapshot.attemptId}`);
 		}
-		return { blockAll, keys };
+		return keys;
 	}
 
 	private async processSubmission(submission: AgentSubmission): Promise<void> {

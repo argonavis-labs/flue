@@ -232,7 +232,7 @@ describe('createCloudflareAgentRuntime()', () => {
 		expect(executionStore.submissions.getSubmission('direct-1')).toMatchObject({ status: 'running' });
 	});
 
-	it('blocks claims when an active raw Fiber marker has malformed non-NULL evidence', async () => {
+	it('skips malformed raw Fiber markers and continues reconciliation', async () => {
 		const { db, storage } = makeFakeSql();
 		const runtime = makeRuntime();
 		const instance = makeInstance(storage);
@@ -246,7 +246,8 @@ describe('createCloudflareAgentRuntime()', () => {
 
 		await runtime.onStart(instance, () => {});
 
-		expect(executionStore.submissions.getSubmission('direct-1')).toMatchObject({ status: 'queued' });
+		// Malformed marker is skipped; the queued submission is claimed and processed.
+		expect(executionStore.submissions.getSubmission('direct-1')).toMatchObject({ status: 'running' });
 	});
 
 	it('requeues interrupted attempts when canonical input is absent', async () => {

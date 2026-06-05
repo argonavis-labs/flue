@@ -188,7 +188,6 @@ describe('createSqlAgentExecutionStore()', () => {
 				)
 				.all(),
 		).toEqual([
-			{ name: 'flue_agent_turn_journals_session_updated_idx' },
 			{ name: 'sqlite_autoindex_flue_agent_turn_journals_1' },
 		]);
 	});
