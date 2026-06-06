@@ -1,16 +1,13 @@
 /**
- * Node agent execution store backed by `node:sqlite` with an in-memory database.
+ * Node agent execution store and built-in SQLite persistence adapter.
  *
  * Uses the same SQL store implementation as Cloudflare (DO SQLite) but runs
- * against `node:sqlite`'s `DatabaseSync` with `:memory:`. Data lives for the
- * process lifetime only — restart loses everything.
- *
- * Swap `:memory:` for a file path to get local persistence without changing
- * the store contract.
+ * against `node:sqlite`'s `DatabaseSync`. Pass `:memory:` (default) for
+ * process-lifetime storage, or a file path for persistent storage.
  */
 
 import { DatabaseSync } from 'node:sqlite';
-import type { AgentExecutionStore, SqlStorage } from '../agent-execution-store.ts';
+import type { AgentExecutionStore, PersistenceAdapter, SqlStorage } from '../agent-execution-store.ts';
 import { createSqlAgentExecutionStoreFromSql } from '../cloudflare/agent-execution-store.ts';
 
 /**
@@ -81,4 +78,26 @@ export function createNodeAgentExecutionStore(
 	const sql = createNodeSqlStorage(db);
 	const runTransaction = createNodeTransactionSync(db);
 	return createSqlAgentExecutionStoreFromSql(sql, runTransaction);
+}
+
+/**
+ * Built-in SQLite persistence adapter for Node.js.
+ *
+ * @param path - SQLite database file path. Omit or pass `':memory:'` for an
+ *   in-memory database (data lost on process exit). Pass a file path for
+ *   persistent storage across restarts.
+ *
+ * @example
+ * ```ts
+ * // src/db.ts
+ * import { sqlite } from '@flue/runtime/node';
+ * export default sqlite('./data/flue.db');
+ * ```
+ */
+export function sqlite(path?: string): PersistenceAdapter {
+	return {
+		createStore() {
+			return createNodeAgentExecutionStore(path ?? ':memory:');
+		},
+	};
 }

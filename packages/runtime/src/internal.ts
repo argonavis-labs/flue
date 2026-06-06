@@ -28,6 +28,7 @@ export { createNodeAgentCoordinator, createNodeDispatchQueue } from './node/agen
 export { createNodeAgentExecutionStore } from './node/agent-execution-store.ts';
 export { InMemoryRunRegistry } from './node/run-registry.ts';
 export { InMemoryRunStore } from './node/run-store.ts';
+export type { PersistenceAdapter } from './agent-execution-store.ts';
 export type { DispatchInput, DispatchQueue } from './runtime/dispatch-queue.ts';
 export type { ExposedTransport, FlueRuntime } from './runtime/flue-app.ts';
 export {

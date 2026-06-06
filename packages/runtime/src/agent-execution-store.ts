@@ -146,3 +146,23 @@ export interface AgentExecutionStore {
 	readonly sessions: SessionStore;
 	readonly submissions: AgentSubmissionStore;
 }
+
+// ─── Persistence adapter ────────────────────────────────────────────────────
+
+/**
+ * A persistence adapter creates an {@link AgentExecutionStore} backed by a
+ * specific database. Users configure persistence by creating a `db.ts` file
+ * in their source root and default-exporting an adapter.
+ *
+ * Adapter packages export a factory function that returns this interface.
+ * The built-in `sqlite()` adapter is available from `@flue/runtime/node`.
+ *
+ * `db.ts` discovery is wired into the build plugin separately — this
+ * interface defines the contract that adapters must satisfy.
+ */
+export interface PersistenceAdapter {
+	/** Create the execution store. Called once at startup. */
+	createStore(): AgentExecutionStore | Promise<AgentExecutionStore>;
+	/** Gracefully release resources (connection pools, file handles). */
+	close?(): void | Promise<void>;
+}
