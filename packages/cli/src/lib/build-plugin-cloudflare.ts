@@ -19,6 +19,12 @@ export class CloudflarePlugin implements BuildPlugin {
 		const runtimeVersion = JSON.stringify(ctx.runtimeVersion);
 		validateCloudflareAgentNames(ctx);
 		validateCloudflareExportNames(ctx);
+		if (ctx.dbEntry) {
+			console.warn(
+				`[flue] Custom persistence (db.ts) is not yet supported on the Cloudflare target. ` +
+					`The file will be ignored; agents will use Durable Object SQLite.`,
+			);
+		}
 
 		const agentImports = agents
 			.map((a, index) => {

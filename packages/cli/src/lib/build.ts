@@ -55,6 +55,7 @@ async function buildApplication(options: BuildOptions): Promise<BuildResult> {
 	const workflows = discoverWorkflows(sourceRoot);
 	const appEntry = discoverOptionalEntry(sourceRoot, 'app');
 	const cloudflareEntry = discoverOptionalEntry(sourceRoot, 'cloudflare');
+	const dbEntry = discoverOptionalEntry(sourceRoot, 'db');
 
 	if (agents.length === 0 && workflows.length === 0) {
 		throw new Error(
@@ -66,6 +67,9 @@ async function buildApplication(options: BuildOptions): Promise<BuildResult> {
 
 	if (appEntry) {
 		console.log(`[flue] Custom app entry: ${path.relative(root, appEntry) || appEntry}`);
+	}
+	if (dbEntry) {
+		console.log(`[flue] Custom persistence: ${path.relative(root, dbEntry) || dbEntry}`);
 	}
 	if (cloudflareEntry && plugin.name === 'cloudflare') {
 		console.log(
@@ -96,6 +100,7 @@ async function buildApplication(options: BuildOptions): Promise<BuildResult> {
 		output,
 		appEntry,
 		cloudflareEntry,
+		dbEntry,
 		runtimeVersion: readRuntimeVersion(root),
 		options,
 	};

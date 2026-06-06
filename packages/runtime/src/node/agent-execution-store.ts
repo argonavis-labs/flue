@@ -6,6 +6,8 @@
  * process-lifetime storage, or a file path for persistent storage.
  */
 
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { AgentExecutionStore, PersistenceAdapter, SqlStorage } from '../agent-execution-store.ts';
 import { createSqlAgentExecutionStoreFromSql } from '../cloudflare/agent-execution-store.ts';
@@ -65,6 +67,20 @@ function createNodeTransactionSync(db: DatabaseSync): <T>(closure: () => T) => T
 	};
 }
 
+/** Open a `node:sqlite` database and return the handle + execution store. */
+function openDatabase(path: string): { db: DatabaseSync; store: AgentExecutionStore } {
+	if (path !== ':memory:') {
+		mkdirSync(dirname(path), { recursive: true });
+	}
+	const db = new DatabaseSync(path);
+	if (path !== ':memory:') {
+		db.exec('PRAGMA journal_mode=WAL');
+	}
+	const sql = createNodeSqlStorage(db);
+	const runTransaction = createNodeTransactionSync(db);
+	return { db, store: createSqlAgentExecutionStoreFromSql(sql, runTransaction) };
+}
+
 /**
  * Create a process-local {@link AgentExecutionStore} backed by `node:sqlite`.
  *
@@ -74,10 +90,7 @@ function createNodeTransactionSync(db: DatabaseSync): <T>(closure: () => T) => T
 export function createNodeAgentExecutionStore(
 	path: string = ':memory:',
 ): AgentExecutionStore {
-	const db = new DatabaseSync(path);
-	const sql = createNodeSqlStorage(db);
-	const runTransaction = createNodeTransactionSync(db);
-	return createSqlAgentExecutionStoreFromSql(sql, runTransaction);
+	return openDatabase(path).store;
 }
 
 /**
@@ -95,9 +108,20 @@ export function createNodeAgentExecutionStore(
  * ```
  */
 export function sqlite(path?: string): PersistenceAdapter {
+	if (path !== undefined && path !== ':memory:' && path.trim() === '') {
+		throw new Error('[flue] sqlite() requires a non-empty file path, or omit the argument for an in-memory database.');
+	}
+	const resolvedPath = path ?? ':memory:';
+	let db: DatabaseSync | undefined;
 	return {
 		createStore() {
-			return createNodeAgentExecutionStore(path ?? ':memory:');
+			const opened = openDatabase(resolvedPath);
+			db = opened.db;
+			return opened.store;
+		},
+		close() {
+			db?.close();
+			db = undefined;
 		},
 	};
 }

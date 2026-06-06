@@ -7,7 +7,7 @@ export class NodePlugin implements BuildPlugin {
 	bundle: BuildPlugin['bundle'] = 'vite';
 
 	generateEntryPoint(ctx: BuildContext): string {
-		const { agents, appEntry, workflows } = ctx;
+		const { agents, appEntry, dbEntry, workflows } = ctx;
 		const runtimeVersion = JSON.stringify(ctx.runtimeVersion);
 
 		const agentImports = agents
@@ -41,6 +41,7 @@ export class NodePlugin implements BuildPlugin {
 		// no app.ts is present, the generated entry constructs a thin default
 		// Hono that mounts `flue()` and renders canonical error envelopes.
 		const userAppImport = appEntry ? `import userApp from '${appEntry.replace(/\\/g, '/')}';` : '';
+		const userDbImport = dbEntry ? `import userPersistenceAdapter from '${dbEntry.replace(/\\/g, '/')}';` : '';
 
 		// All HTTP routing, workflow admission/SSE/sync handling, agent dispatch,
 		// and error rendering live in @flue/runtime's runtime modules. The
@@ -80,6 +81,7 @@ import {
 ${agentImports}
 ${workflowImports}
 ${userAppImport}
+${userDbImport}
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 
@@ -118,8 +120,21 @@ async function createDefaultEnv() {
   }));
 }
 
-// Default persistence for Node — in-memory SQLite, process lifetime.
-const executionStore = createNodeAgentExecutionStore();
+${
+			dbEntry
+				? `// Custom persistence from db.ts.
+if (!userPersistenceAdapter || typeof userPersistenceAdapter.createStore !== 'function') {
+  throw new Error('[flue] db.ts must default-export a PersistenceAdapter with a createStore() method.');
+}
+let executionStore;
+try {
+  executionStore = await userPersistenceAdapter.createStore();
+} catch (error) {
+  throw new Error('[flue] Failed to initialize persistence from db.ts: ' + (error instanceof Error ? error.message : error), { cause: error });
+}`
+				: `// Default persistence for Node — in-memory SQLite, process lifetime.
+const executionStore = createNodeAgentExecutionStore();`
+		}
 const runStore = new InMemoryRunStore();
 const runRegistry = new InMemoryRunRegistry();
 const runSubscribers = createRunSubscriberRegistry();
@@ -350,7 +365,7 @@ if (isLocalCliMode) {
     console.log('[flue] Agents: ' + ${JSON.stringify(agents.map((a) => a.name).join(', '))});
   }
   async function stop() {
-    await websocketTransport.close();
+    await websocketTransport.close();${dbEntry ? "\n    if (userPersistenceAdapter.close) await userPersistenceAdapter.close();" : ''}
     server.close();
     process.exit(0);
   }

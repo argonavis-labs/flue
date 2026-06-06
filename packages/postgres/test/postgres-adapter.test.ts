@@ -1,25 +1,46 @@
 /**
- * Shared contract tests for AgentExecutionStore.
+ * Contract tests for the Postgres persistence adapter.
  *
- * Runs the same behavioral assertions against both the Cloudflare-style SQL
- * backend (node:sqlite standing in for DO SQLite) and the Node backend
- * (node:sqlite :memory: via createNodeAgentExecutionStore).
- *
- * SQL-specific tests (schema assertions, error diagnostics, DO-specific edge
- * cases) remain in cloudflare-agent-execution-store.test.ts.
+ * Uses PGlite (embedded Postgres in WASM) so no external server is needed.
+ * The same behavioral assertions as the runtime contract tests are exercised
+ * against a real Postgres SQL engine.
  */
 
-import { DatabaseSync } from 'node:sqlite';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { PGlite } from '@electric-sql/pglite';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { AgentExecutionStore, SqlStorage } from '../src/agent-execution-store.ts';
-import { createSqlAgentExecutionStoreFromSql } from '../src/cloudflare/agent-execution-store.ts';
-import { createNodeAgentExecutionStore, sqlite } from '../src/node/agent-execution-store.ts';
-import type { DirectAgentSubmissionInput } from '../src/runtime/agent-submissions.ts';
-import type { DispatchInput } from '../src/runtime/dispatch-queue.ts';
-import type { SessionData } from '../src/types.ts';
+import type { AgentExecutionStore } from '@flue/runtime';
+import type { DirectAgentSubmissionInput, DispatchInput, SessionData } from '@flue/runtime';
+import { postgresFromRunner, type PgRunner } from '../src/postgres-adapter.ts';
+
+// ─── PGlite → PgRunner adapter ─────────────────────────────────────────────
+
+function createPgliteRunner(): PgRunner {
+	const db = new PGlite();
+	return {
+		async query(text: string, params: unknown[] = []) {
+			const result = await db.query(text, params);
+			return (result.rows ?? []) as Record<string, unknown>[];
+		},
+		async transaction<T>(fn: (tx: PgRunner) => Promise<T>): Promise<T> {
+			return db.transaction(async (pgTx) => {
+				const txRunner: PgRunner = {
+					async query(text: string, params: unknown[] = []) {
+						const result = await pgTx.query(text, params);
+						return (result.rows ?? []) as Record<string, unknown>[];
+					},
+					transaction: () => {
+						throw new Error('Nested transactions not supported');
+					},
+					close: () => Promise.resolve(),
+				};
+				return fn(txRunner);
+			});
+		},
+		async close() {
+			await db.close();
+		},
+	};
+}
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -64,65 +85,52 @@ function sessionData(): SessionData {
 	};
 }
 
-// ─── Backend factories ──────────────────────────────────────────────────────
+// ─── Backend factory ────────────────────────────────────────────────────────
 
-function createCloudflareSqlBackend(): AgentExecutionStore {
-	const db = new DatabaseSync(':memory:');
-	const sql: SqlStorage = {
-		exec(query: string, ...bindings: unknown[]) {
-			const stmt = db.prepare(query);
-			let rows: Record<string, unknown>[];
-			try {
-				rows = stmt.all(...(bindings as never[])) as Record<string, unknown>[];
-			} catch {
-				stmt.run(...(bindings as never[]));
-				rows = [];
-			}
-			return { toArray: () => rows };
+async function createPostgresBackend(): Promise<{ store: AgentExecutionStore; close: () => Promise<void> }> {
+	const runner = createPgliteRunner();
+	const adapter = postgresFromRunner(runner);
+	const store = (await adapter.createStore()) as AgentExecutionStore;
+	return {
+		store,
+		async close() {
+			await adapter.close?.();
 		},
 	};
-	const runTransaction = <T>(closure: () => T): T => {
-		db.exec('BEGIN');
-		try {
-			const result = closure();
-			db.exec('COMMIT');
-			return result;
-		} catch (error) {
-			db.exec('ROLLBACK');
-			throw error;
-		}
-	};
-	return createSqlAgentExecutionStoreFromSql(sql, runTransaction);
-}
-
-function createNodeBackend(): AgentExecutionStore {
-	return createNodeAgentExecutionStore();
 }
 
 // ─── Contract tests ─────────────────────────────────────────────────────────
 
-const backends = [
-	{ name: 'cloudflare-sql', create: createCloudflareSqlBackend },
-	{ name: 'node-sqlite', create: createNodeBackend },
-] as const;
+describe('Postgres AgentExecutionStore', () => {
+	let cleanup: (() => Promise<void>) | undefined;
 
-describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
+	afterEach(async () => {
+		await cleanup?.();
+		cleanup = undefined;
+	});
+
+	async function create(): Promise<AgentExecutionStore> {
+		const backend = await createPostgresBackend();
+		cleanup = backend.close;
+		return backend.store;
+	}
+
 	// ── Sessions ──────────────────────────────────────────────────────────
 
 	describe('sessions', () => {
 		it('loads null for missing sessions', async () => {
-			const store = create();
+			const store = await create();
 			expect(await store.sessions.load('missing')).toBeNull();
 		});
 
 		it('saves and loads session data', async () => {
-			const store = create();
+			const store = await create();
 			await store.sessions.save('s1', sessionData());
 			expect(await store.sessions.load('s1')).toEqual(sessionData());
 		});
 
 		it('overwrites existing session data', async () => {
-			const store = create();
+			const store = await create();
 			await store.sessions.save('s1', sessionData());
 			const updated = { ...sessionData(), updatedAt: '2026-06-04T00:00:00.000Z' };
 			await store.sessions.save('s1', updated);
@@ -130,14 +138,14 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 		});
 
 		it('deletes existing sessions', async () => {
-			const store = create();
+			const store = await create();
 			await store.sessions.save('s1', sessionData());
 			await store.sessions.delete('s1');
 			expect(await store.sessions.load('s1')).toBeNull();
 		});
 
 		it('silently handles deleting nonexistent sessions', async () => {
-			const store = create();
+			const store = await create();
 			await expect(store.sessions.delete('missing')).resolves.toBeUndefined();
 		});
 	});
@@ -146,7 +154,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 
 	describe('dispatch admission', () => {
 		it('admits one queued dispatch row when the same submission is replayed', async () => {
-			const store = create();
+			const store = await create();
 			const first = await store.submissions.admitDispatch(dispatchInput());
 			const replay = await store.submissions.admitDispatch(dispatchInput());
 			expect(replay).toEqual(first);
@@ -161,7 +169,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 		});
 
 		it('returns conflict when one dispatch id is reused with another payload', async () => {
-			const store = create();
+			const store = await create();
 			await store.submissions.admitDispatch(dispatchInput());
 			expect(await store.submissions.admitDispatch(dispatchInput({ input: { text: 'Different' } }))).toEqual({
 				kind: 'conflict',
@@ -173,7 +181,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 
 	describe('submission ordering', () => {
 		it('orders direct and dispatched submissions together within one session', async () => {
-			const store = create();
+			const store = await create();
 			const direct = await store.submissions.admitDirect(directInput());
 			await store.submissions.admitDispatch(dispatchInput());
 			const other = await store.submissions.admitDirect(
@@ -184,7 +192,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 		});
 
 		it('lists queued dispatches in admission order and selects one runnable head per session', async () => {
-			const store = create();
+			const store = await create();
 			await store.submissions.admitDispatch(dispatchInput());
 			await store.submissions.admitDispatch(dispatchInput({ dispatchId: 'dispatch-2' }));
 			await store.submissions.admitDispatch(dispatchInput({ dispatchId: 'dispatch-3', session: 'other' }));
@@ -200,7 +208,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 
 	describe('claim semantics', () => {
 		it('claims only runnable session heads while allowing separate sessions to claim independently', async () => {
-			const store = create();
+			const store = await create();
 			await store.submissions.admitDispatch(dispatchInput());
 			await store.submissions.admitDispatch(dispatchInput({ dispatchId: 'dispatch-2' }));
 			await store.submissions.admitDispatch(dispatchInput({ dispatchId: 'dispatch-3', session: 'other' }));
@@ -230,7 +238,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 
 	describe('lifecycle transitions', () => {
 		it('records input application and recovery requests only for the owning attempt', async () => {
-			const store = create();
+			const store = await create();
 			await store.submissions.admitDispatch(dispatchInput());
 			await store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'));
 
@@ -248,7 +256,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 		});
 
 		it('requeues interrupted attempts only before canonical input application', async () => {
-			const store = create();
+			const store = await create();
 			await store.submissions.admitDispatch(dispatchInput({ dispatchId: 'requeue-safe' }));
 			await store.submissions.admitDispatch(dispatchInput({ dispatchId: 'requeue-unsafe', session: 'other' }));
 			await store.submissions.claimSubmission(attempt('requeue-safe', 'attempt-safe'));
@@ -262,7 +270,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 		});
 
 		it('reports unsettled visibility until a claimed dispatch completes', async () => {
-			const store = create();
+			const store = await create();
 			await store.submissions.admitDispatch(dispatchInput());
 			expect(await store.submissions.hasUnsettledSubmissions()).toBe(true);
 			await store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'));
@@ -273,7 +281,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 		});
 
 		it('ignores stale-attempt settlement and keeps the first owning terminal state', async () => {
-			const store = create();
+			const store = await create();
 			await store.submissions.admitDispatch(dispatchInput());
 			await store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'));
 
@@ -287,14 +295,13 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 				error: 'first failure',
 			});
 		});
-
-		});
+	});
 
 	// ── Durability ───────────────────────────────────────────────────────
 
 	describe('durability', () => {
 		it('initializes attempt_count to 0 and timeout_at to 0 at admission', async () => {
-			const store = create();
+			const store = await create();
 			await store.submissions.admitDispatch(dispatchInput());
 			const submission = await store.submissions.getSubmission('dispatch-1');
 			expect(submission).toMatchObject({
@@ -305,7 +312,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 		});
 
 		it('sets attempt_count to 1 and applies system defaults at claim time', async () => {
-			const store = create();
+			const store = await create();
 			await store.submissions.admitDispatch(dispatchInput());
 			const before = Date.now();
 			await store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'));
@@ -316,7 +323,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 		});
 
 		it('applies custom durability at claim time when provided', async () => {
-			const store = create();
+			const store = await create();
 			await store.submissions.admitDispatch(dispatchInput());
 			const customTimeout = Date.now() + 6 * 60 * 60_000;
 			await store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'), {
@@ -331,7 +338,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 		});
 
 		it('increments attempt_count on recovery via replaceTurnJournalAttempt', async () => {
-			const store = create();
+			const store = await create();
 			await store.submissions.admitDispatch(dispatchInput());
 			await store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'));
 			expect(await store.submissions.getSubmission('dispatch-1')).toMatchObject({ attemptCount: 1 });
@@ -358,7 +365,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 
 	describe('turn journal lifecycle', () => {
 		it('creates, advances, and commits a turn journal through all phases', async () => {
-			const store = create();
+			const store = await create();
 			await store.submissions.admitDispatch(dispatchInput());
 			await store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'));
 
@@ -391,7 +398,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 		});
 
 		it('double-commit returns false', async () => {
-			const store = create();
+			const store = await create();
 			await store.submissions.admitDispatch(dispatchInput());
 			await store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'));
 			await store.submissions.beginTurnJournal({
@@ -401,14 +408,14 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 				attemptId: 'attempt-1',
 				operationId: 'op-1',
 				turnId: 'turn-1',
-					phase: 'before_provider',
-				});
+				phase: 'before_provider',
+			});
 			await store.submissions.commitTurnJournal(attempt('dispatch-1', 'attempt-1'), 'leaf-1');
 			expect(await store.submissions.commitTurnJournal(attempt('dispatch-1', 'attempt-1'), 'leaf-1')).toBe(false);
 		});
 
 		it('resets journal on new turn after commit', async () => {
-			const store = create();
+			const store = await create();
 			await store.submissions.admitDispatch(dispatchInput());
 			await store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'));
 			await store.submissions.beginTurnJournal({
@@ -441,7 +448,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 		});
 
 		it('replaces the journal attempt and returns the updated submission', async () => {
-			const store = create();
+			const store = await create();
 			await store.submissions.admitDispatch(dispatchInput());
 			await store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'));
 			await store.submissions.beginTurnJournal({
@@ -468,14 +475,13 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 				attemptId: 'attempt-2',
 			});
 		});
-
 	});
 
 	// ── Session deletion coordination ─────────────────────────────────────
 
 	describe('session deletion', () => {
 		it('rejects deletion while submissions are queued or running', async () => {
-			const store = create();
+			const store = await create();
 			await store.submissions.admitDispatch(dispatchInput());
 			const sessionKey = 'agent-session:["agent-1","default","default"]';
 
@@ -485,7 +491,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 		});
 
 		it('blocks new submissions until session deletion completes', async () => {
-			const store = create();
+			const store = await create();
 			const sessionKey = 'agent-session:["agent-1","default","default"]';
 			let releaseDeletion: () => void = () => {};
 			const deletionReleased = new Promise<void>((resolve) => {
@@ -505,7 +511,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 		});
 
 		it('shares session deletion work while deletion is in progress', async () => {
-			const store = create();
+			const store = await create();
 			const sessionKey = 'agent-session:["agent-1","default","default"]';
 			let releaseDeletion: () => void = () => {};
 			const deletionReleased = new Promise<void>((resolve) => {
@@ -522,13 +528,16 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 			});
 
 			expect(second).toBe(first);
+			// Allow the first deletion's async phase-1 transaction to complete
+			// and call the deleteSessionTree callback.
+			await new Promise((r) => setTimeout(r, 50));
 			expect(deletionCalls).toBe(1);
 			releaseDeletion();
 			await Promise.all([first, second]);
 		});
 
 		it('keeps new submissions blocked when snapshot deletion fails', async () => {
-			const store = create();
+			const store = await create();
 			const sessionKey = 'agent-session:["agent-1","default","default"]';
 
 			await expect(
@@ -547,7 +556,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 		});
 
 		it('clears terminal rows when a settled session is deleted', async () => {
-			const store = create();
+			const store = await create();
 			const sessionKey = 'agent-session:["agent-1","default","default"]';
 			await store.submissions.admitDispatch(dispatchInput());
 			await store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'));
@@ -559,7 +568,7 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 		});
 
 		it('returns retained receipt after deletion removed the settled dispatch row', async () => {
-			const store = create();
+			const store = await create();
 			const sessionKey = 'agent-session:["agent-1","default","default"]';
 			await store.submissions.admitDispatch(dispatchInput());
 			await store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'));
@@ -580,104 +589,39 @@ describe.each(backends)('AgentExecutionStore ($name)', ({ create }) => {
 
 	describe('edge cases', () => {
 		it('reports no unsettled submissions initially', async () => {
-			const store = create();
+			const store = await create();
 			expect(await store.submissions.hasUnsettledSubmissions()).toBe(false);
 		});
 
 		it('getSubmission returns null for unknown ids', async () => {
-			const store = create();
+			const store = await create();
 			expect(await store.submissions.getSubmission('nonexistent')).toBeNull();
 		});
 
 		it('getTurnJournal returns null for unknown submissions', async () => {
-			const store = create();
+			const store = await create();
 			expect(await store.submissions.getTurnJournal('nonexistent')).toBeNull();
 		});
-
 	});
 });
 
-// ─── sqlite() PersistenceAdapter tests ──────────────────────────────────────
+// ─── Adapter factory tests ──────────────────────────────────────────────────
 
-describe('sqlite() PersistenceAdapter', () => {
-	const tempDirs: string[] = [];
-
-	afterEach(() => {
-		for (const dir of tempDirs.splice(0)) {
-			try { rmSync(dir, { recursive: true }); } catch {}
-		}
-	});
-
-	function createTempDir(): string {
-		const dir = mkdtempSync(join(tmpdir(), 'flue-sqlite-adapter-'));
-		tempDirs.push(dir);
-		return dir;
-	}
-
-	it('creates the parent directory when it does not exist', () => {
-		const dir = createTempDir();
-		const nested = join(dir, 'nested', 'deep', 'flue.db');
-		const adapter = sqlite(nested);
-		adapter.createStore();
-		expect(existsSync(join(dir, 'nested', 'deep'))).toBe(true);
-		adapter.close?.();
-	});
-
-	it('enables WAL mode for file-backed databases', () => {
-		const dir = createTempDir();
-		const dbPath = join(dir, 'wal-test.db');
-		const adapter = sqlite(dbPath);
-		adapter.createStore();
-		// WAL mode creates a -wal file next to the database.
-		const db = new DatabaseSync(dbPath);
-		const result = db.prepare('PRAGMA journal_mode').all() as { journal_mode: string }[];
-		expect(result[0]?.journal_mode).toBe('wal');
-		db.close();
-		adapter.close?.();
-	});
-
-	it('preserves sessions across close() and createStore() cycles', async () => {
-		const dir = createTempDir();
-		const dbPath = join(dir, 'restart-test.db');
-		const adapter = sqlite(dbPath);
-
-		// First lifecycle: save data.
-		const store1 = adapter.createStore() as AgentExecutionStore;
-		await store1.sessions.save('s1', sessionData());
-		await store1.submissions.admitDispatch(dispatchInput());
-		await store1.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'));
-		await store1.submissions.completeSubmission(attempt('dispatch-1', 'attempt-1'));
-		adapter.close?.();
-
-		// Second lifecycle: reopen and verify.
-		const store2 = adapter.createStore() as AgentExecutionStore;
-		expect(await store2.sessions.load('s1')).toEqual(sessionData());
-		const submission = await store2.submissions.getSubmission('dispatch-1');
-		expect(submission).toMatchObject({ status: 'settled', kind: 'dispatch' });
-		expect(await store2.submissions.hasUnsettledSubmissions()).toBe(false);
-		adapter.close?.();
-	});
-
-	it('returns an in-memory store when no path is provided', async () => {
-		const adapter = sqlite();
-		const store = adapter.createStore() as AgentExecutionStore;
+describe('postgres() PersistenceAdapter', () => {
+	it('creates a store and closes cleanly via postgresFromRunner', async () => {
+		const runner = createPgliteRunner();
+		const adapter = postgresFromRunner(runner);
+		const store = await adapter.createStore();
 		await store.sessions.save('s1', sessionData());
 		expect(await store.sessions.load('s1')).toEqual(sessionData());
-		adapter.close?.();
+		await adapter.close!();
 	});
 
-	it('throws on empty string path', () => {
-		expect(() => sqlite('')).toThrow('non-empty file path');
-	});
-
-	it('throws on whitespace-only path', () => {
-		expect(() => sqlite('   ')).toThrow('non-empty file path');
-	});
-
-	it('close() is idempotent', () => {
-		const adapter = sqlite();
-		adapter.createStore();
-		adapter.close?.();
-		adapter.close?.();
+	it('close() is idempotent', async () => {
+		const runner = createPgliteRunner();
+		const adapter = postgresFromRunner(runner);
+		await adapter.createStore();
+		await adapter.close!();
+		await adapter.close!();
 	});
 });

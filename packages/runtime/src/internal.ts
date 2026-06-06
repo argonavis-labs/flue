@@ -28,6 +28,7 @@ export { createNodeAgentCoordinator, createNodeDispatchQueue } from './node/agen
 export { createNodeAgentExecutionStore } from './node/agent-execution-store.ts';
 export { InMemoryRunRegistry } from './node/run-registry.ts';
 export { InMemoryRunStore } from './node/run-store.ts';
+export { DURABILITY_DEFAULT_MAX_RETRY, DURABILITY_DEFAULT_TIMEOUT_MINUTES } from './agent-execution-store.ts';
 export type { PersistenceAdapter } from './agent-execution-store.ts';
 export type { DispatchInput, DispatchQueue } from './runtime/dispatch-queue.ts';
 export type { ExposedTransport, FlueRuntime } from './runtime/flue-app.ts';
@@ -96,6 +97,9 @@ export {
 } from './runtime/websocket-protocol.ts';
 export { closeFlueSocket, isFlueSocket, socketRequestUrl } from './cloudflare/websocket.ts';
 export { bashFactoryToSessionEnv } from './sandbox.ts';
+export { createDispatchAgentSubmissionInput } from './runtime/agent-submissions.ts';
+export type { DispatchAgentSubmissionInput } from './runtime/agent-submissions.ts';
+export { createSessionStorageKey } from './session-identity.ts';
 export { InMemorySessionStore } from './session.ts';
 export { parseSkillMarkdown } from './skill-frontmatter.ts';
 export type { DispatchReceipt } from './types.ts';
