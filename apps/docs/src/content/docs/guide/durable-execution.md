@@ -43,9 +43,11 @@ See [Deploy Agents on Cloudflare](/docs/ecosystem/deploy/cloudflare/) for Durabl
 
 ### Durable Agents on Node.js
 
-On Node.js, sessions live in process memory by default and are lost when the process restarts. Return a custom store through the `persist` option when conversation history must survive restarts or multiple application replicas.
+On Node.js, sessions and accepted input live in process memory by default. Restarting the process loses all in-flight work and session history.
 
-Persisting session history does not make accepted agent input durable while it is being processed. The generated Node.js target keeps its `dispatch(...)` queue in process memory, and direct prompts remain attached to their connection. If your application needs stronger guarantees, provide them through application-owned infrastructure appropriate to your deployment.
+Asynchronous `dispatch(...)` inputs go through an ordered submission lifecycle with SQL admission, per-session FIFO ordering, and journal tracking. Dispatches queue behind earlier same-session work, and separate sessions progress independently. Direct prompts are processed inline while the connection is open.
+
+Because the default backing store is in-memory SQLite, this lifecycle tracking protects against concurrent access within a running process but does not survive a restart. Return a custom store through the `persist` option when conversation history must survive restarts or multiple application replicas.
 
 See [Deploy Agents on Node.js](/docs/ecosystem/deploy/node/) for session persistence setup and deployment guidance.
 
