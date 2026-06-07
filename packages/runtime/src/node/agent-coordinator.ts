@@ -1,4 +1,9 @@
-import type { AgentSubmission, AgentSubmissionStore, SubmissionAttemptRef } from '../agent-execution-store.ts';
+import type {
+	AgentSubmission,
+	AgentSubmissionStore,
+	SubmissionAttemptRef,
+	SubmissionDurability,
+} from '../agent-execution-store.ts';
 import type { CreatedAgent, DispatchReceipt } from '../types.ts';
 import {
 	agentSubmissionDispatchId,
@@ -79,12 +84,16 @@ export function createNodeAgentCoordinator(options: {
 
 		try {
 			await createAgentSubmissionHandler(agent, input, {
-				onInputApplied: async () => {
-					if (!(await submissions.markSubmissionInputApplied(attempt))) {
+				onInputApplied: async (durability: SubmissionDurability) => {
+					if (!(await submissions.markSubmissionInputApplied(attempt, durability))) {
 						throw new Error('[flue] Agent submission attempt lost ownership before input application.');
 					}
 				},
-				timeoutAt: submission.timeoutAt > 0 ? submission.timeoutAt : undefined,
+				startedAt: submission.startedAt,
+				timeoutAt:
+					submission.inputAppliedAt !== undefined && submission.timeoutAt > 0
+						? submission.timeoutAt
+						: undefined,
 				journal: createSubmissionJournalCallbacks(submissions, submission, attempt),
 			})(ctx);
 			await submissions.completeSubmission(attempt);
@@ -101,9 +110,6 @@ export function createNodeAgentCoordinator(options: {
 		while ((runnable = await submissions.listRunnableSubmissions()).length > 0) {
 			let progressed = false;
 			for (const submission of runnable) {
-				// TODO: pass the agent's resolved DurabilityConfig here once
-				// CreatedAgent exposes a static durability accessor. Currently
-				// defaults to 10 retries / 60-minute timeout (set in claimSubmission).
 				const claimed = await submissions.claimSubmission({
 					submissionId: submission.submissionId,
 					attemptId: crypto.randomUUID(),

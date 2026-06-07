@@ -3,6 +3,7 @@ import type {
 	AgentSubmission,
 	AgentSubmissionStore,
 	SubmissionAttemptRef,
+	SubmissionDurability,
 } from '../agent-execution-store.ts';
 import type { FlueContextInternal } from '../client.ts';
 import {
@@ -360,9 +361,6 @@ class CloudflareAgentCoordinator {
 				}
 			}
 			for (const submission of await this.submissions.listRunnableSubmissions()) {
-				// TODO: pass the agent's resolved DurabilityConfig here once
-				// CreatedAgent exposes a static durability accessor. Currently
-				// defaults to 10 retries / 60-minute timeout (set in claimSubmission).
 				const claimed = await this.submissions.claimSubmission({
 					submissionId: submission.submissionId,
 					attemptId: crypto.randomUUID(),
@@ -553,8 +551,12 @@ class CloudflareAgentCoordinator {
 			}
 			const result = await this.runWithInstanceContext(() =>
 				createAgentSubmissionHandler(agent, input, {
-					onInputApplied: () => this.markInputApplied(attempt),
-					timeoutAt: submission.timeoutAt > 0 ? submission.timeoutAt : undefined,
+					onInputApplied: (durability: SubmissionDurability) => this.markInputApplied(attempt, durability),
+					startedAt: submission.startedAt,
+					timeoutAt:
+						submission.inputAppliedAt !== undefined && submission.timeoutAt > 0
+							? submission.timeoutAt
+							: undefined,
 					journal: createSubmissionJournalCallbacks(this.submissions, submission, attempt),
 				})(operationCtx),
 			);
@@ -581,8 +583,11 @@ class CloudflareAgentCoordinator {
 		}
 	}
 
-	private async markInputApplied(attempt: SubmissionAttemptRef): Promise<void> {
-		if (!(await this.submissions.markSubmissionInputApplied(attempt))) {
+	private async markInputApplied(
+		attempt: SubmissionAttemptRef,
+		durability: SubmissionDurability,
+	): Promise<void> {
+		if (!(await this.submissions.markSubmissionInputApplied(attempt, durability))) {
 			throw new Error('[flue] Agent submission attempt lost ownership before input application.');
 		}
 	}

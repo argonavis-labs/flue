@@ -348,10 +348,7 @@ class LmdbSubmissionStore implements AgentSubmissionStore {
 
 	// ── Submission lifecycle ─────────────────────────────────────────────
 
-	async claimSubmission(
-		attempt: SubmissionAttemptRef,
-		durability?: { maxRetry: number; timeoutAt: number },
-	): Promise<AgentSubmission | null> {
+	async claimSubmission(attempt: SubmissionAttemptRef): Promise<AgentSubmission | null> {
 		return this.env.transactionSync(() => {
 			const sub = this.subs.get(attempt.submissionId);
 			if (!sub || sub.status !== 'queued') return null;
@@ -366,8 +363,7 @@ class LmdbSubmissionStore implements AgentSubmissionStore {
 			}
 
 			const now = Date.now();
-			const maxRetry = durability?.maxRetry ?? DURABILITY_DEFAULT_MAX_RETRY;
-			const timeoutAt = durability?.timeoutAt ?? (now + DURABILITY_DEFAULT_TIMEOUT_MINUTES * 60_000);
+			const timeoutAt = now + DURABILITY_DEFAULT_TIMEOUT_MINUTES * 60_000;
 
 			const claimed: SubmissionDoc = {
 				...sub,
@@ -375,7 +371,7 @@ class LmdbSubmissionStore implements AgentSubmissionStore {
 				attemptId: attempt.attemptId,
 				startedAt: now,
 				attemptCount: 1,
-				maxRetry,
+				maxRetry: DURABILITY_DEFAULT_MAX_RETRY,
 				timeoutAt,
 			};
 			this.subs.putSync(attempt.submissionId, claimed);
@@ -383,13 +379,23 @@ class LmdbSubmissionStore implements AgentSubmissionStore {
 		});
 	}
 
-	async markSubmissionInputApplied(attempt: SubmissionAttemptRef): Promise<boolean> {
+	async markSubmissionInputApplied(
+		attempt: SubmissionAttemptRef,
+		durability?: { maxRetry: number; timeoutAt: number },
+	): Promise<boolean> {
 		return this.env.transactionSync(() => {
 			const sub = this.subs.get(attempt.submissionId);
 			if (!sub || sub.status !== 'running' || sub.attemptId !== attempt.attemptId) return false;
+			const firstInputApplication = sub.inputAppliedAt === null;
 			this.subs.putSync(attempt.submissionId, {
 				...sub,
 				inputAppliedAt: sub.inputAppliedAt ?? Date.now(),
+				maxRetry: firstInputApplication
+					? (durability?.maxRetry ?? DURABILITY_DEFAULT_MAX_RETRY)
+					: sub.maxRetry,
+				timeoutAt: firstInputApplication
+					? (durability?.timeoutAt ?? Date.now() + DURABILITY_DEFAULT_TIMEOUT_MINUTES * 60_000)
+					: sub.timeoutAt,
 			});
 			return true;
 		});

@@ -2,6 +2,7 @@ import type {
 	AgentSubmission,
 	AgentSubmissionStore,
 	SubmissionAttemptRef,
+	SubmissionDurability,
 } from '../agent-execution-store.ts';
 import type { FlueContextInternal } from '../client.ts';
 import type {
@@ -50,7 +51,9 @@ interface ProcessAgentSubmissionJournalState {
 }
 
 export interface ProcessAgentSubmissionOptions {
-	onInputApplied?: () => Promise<void> | void;
+	onInputApplied?: (durability: SubmissionDurability) => Promise<void> | void;
+	/** Claim timestamp used as the base for a newly resolved timeout. */
+	startedAt?: number;
 	/** Absolute timestamp (ms) after which the submission should be aborted. */
 	timeoutAt?: number;
 	journal?: {

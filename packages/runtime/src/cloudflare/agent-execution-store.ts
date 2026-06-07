@@ -379,13 +379,9 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 		});
 	}
 
-	async claimSubmission(
-		attempt: SubmissionAttemptRef,
-		durability?: { maxRetry: number; timeoutAt: number },
-	): Promise<AgentSubmission | null> {
+	async claimSubmission(attempt: SubmissionAttemptRef): Promise<AgentSubmission | null> {
 		const now = Date.now();
-		const maxRetry = durability?.maxRetry ?? DURABILITY_DEFAULT_MAX_RETRY;
-		const timeoutAt = durability?.timeoutAt ?? (now + DURABILITY_DEFAULT_TIMEOUT_MINUTES * 60_000);
+		const timeoutAt = now + DURABILITY_DEFAULT_TIMEOUT_MINUTES * 60_000;
 		const row = this.sql
 			.exec(
 				`UPDATE flue_agent_submissions AS current
@@ -402,7 +398,7 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 				 RETURNING ${submissionColumns}`,
 				attempt.attemptId,
 				now,
-				maxRetry,
+				DURABILITY_DEFAULT_MAX_RETRY,
 				timeoutAt,
 				attempt.submissionId,
 			)
@@ -410,13 +406,20 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 		return row ? parseSubmission(row) : null;
 	}
 
-	async markSubmissionInputApplied(attempt: SubmissionAttemptRef): Promise<boolean> {
+	async markSubmissionInputApplied(
+		attempt: SubmissionAttemptRef,
+		durability?: { maxRetry: number; timeoutAt: number },
+	): Promise<boolean> {
 		return this.updateOwnedSubmission(
 			`UPDATE flue_agent_submissions
-			 SET input_applied_at = COALESCE(input_applied_at, ?)
+			 SET input_applied_at = COALESCE(input_applied_at, ?),
+			     max_retry = CASE WHEN input_applied_at IS NULL THEN ? ELSE max_retry END,
+			     timeout_at = CASE WHEN input_applied_at IS NULL THEN ? ELSE timeout_at END
 			 WHERE submission_id = ? AND status = 'running' AND attempt_id = ?
 			 RETURNING submission_id`,
 			Date.now(),
+			durability?.maxRetry ?? DURABILITY_DEFAULT_MAX_RETRY,
+			durability?.timeoutAt ?? Date.now() + DURABILITY_DEFAULT_TIMEOUT_MINUTES * 60_000,
 			attempt.submissionId,
 			attempt.attemptId,
 		);

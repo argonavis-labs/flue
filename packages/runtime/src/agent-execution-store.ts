@@ -45,6 +45,11 @@ export interface SubmissionAttemptRef {
 	readonly attemptId: string;
 }
 
+export interface SubmissionDurability {
+	readonly maxRetry: number;
+	readonly timeoutAt: number;
+}
+
 // ─── Dispatch admission ─────────────────────────────────────────────────────
 
 export interface AgentDispatchReceipt {
@@ -122,8 +127,8 @@ export interface AgentSubmissionStore {
 	admitDirect(input: DirectAgentSubmissionInput): Promise<AgentSubmission>;
 
 	// Submission lifecycle
-	claimSubmission(attempt: SubmissionAttemptRef, durability?: { maxRetry: number; timeoutAt: number }): Promise<AgentSubmission | null>;
-	markSubmissionInputApplied(attempt: SubmissionAttemptRef): Promise<boolean>;
+	claimSubmission(attempt: SubmissionAttemptRef): Promise<AgentSubmission | null>;
+	markSubmissionInputApplied(attempt: SubmissionAttemptRef, durability?: SubmissionDurability): Promise<boolean>;
 	requestSubmissionRecovery(attempt: SubmissionAttemptRef): Promise<boolean>;
 	requeueSubmissionBeforeInputApplied(attempt: SubmissionAttemptRef): Promise<boolean>;
 	completeSubmission(attempt: SubmissionAttemptRef): Promise<boolean>;

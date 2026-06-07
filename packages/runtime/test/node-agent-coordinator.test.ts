@@ -141,10 +141,12 @@ function createRealCoordinator(
 function createFauxCoordinator(
 	dbPath: string,
 	provider: FauxProviderRegistration,
+	durability?: { retry?: number; timeout?: number },
 ): { coordinator: NodeAgentCoordinator; executionStore: AgentExecutionStore } {
 	const executionStore = createNodeAgentExecutionStore(dbPath);
 	const agent = createAgent(() => ({
 		model: `${provider.getModel().provider}/${provider.getModel().id}`,
+		durability,
 	}));
 	const coordinator = createNodeAgentCoordinator({
 		submissions: executionStore.submissions,
@@ -314,6 +316,23 @@ describe('NodeAgentCoordinator', () => {
 	});
 
 	describe('timeout', () => {
+		it('persists configured durability when input is applied', async () => {
+			const dbPath = createTempDbPath();
+			const provider = createFauxProvider();
+			provider.setResponses([fauxAssistantMessage('Done.')]);
+			const { coordinator, executionStore } = createFauxCoordinator(dbPath, provider, {
+				retry: 3,
+				timeout: 120,
+			});
+
+			const input = makeDispatchInput();
+			await coordinator.admitDispatch(input);
+
+			const submission = await executionStore.submissions.getSubmission(input.dispatchId);
+			expect(submission?.maxRetry).toBe(3);
+			expect(submission?.timeoutAt).toBeGreaterThanOrEqual((submission?.startedAt ?? 0) + 120 * 60_000);
+		});
+
 		it('terminalizes a submission after the configured timeout expires', async () => {
 			const dbPath = createTempDbPath();
 			const provider = createFauxProvider();
@@ -324,7 +343,8 @@ describe('NodeAgentCoordinator', () => {
 
 			// Claim with a timeout that's already expired.
 			const pastTimeout = Date.now() - 1000;
-			await store.submissions.claimSubmission(
+			await store.submissions.claimSubmission({ submissionId: input.dispatchId, attemptId: 'attempt-timeout' });
+			await store.submissions.markSubmissionInputApplied(
 				{ submissionId: input.dispatchId, attemptId: 'attempt-timeout' },
 				{ maxRetry: 10, timeoutAt: pastTimeout },
 			);

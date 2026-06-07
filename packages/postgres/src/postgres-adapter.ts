@@ -448,13 +448,9 @@ class PgSubmissionStore implements AgentSubmissionStore {
 
 	// ── Submission lifecycle ─────────────────────────────────────────────
 
-	async claimSubmission(
-		attempt: SubmissionAttemptRef,
-		durability?: { maxRetry: number; timeoutAt: number },
-	): Promise<AgentSubmission | null> {
+	async claimSubmission(attempt: SubmissionAttemptRef): Promise<AgentSubmission | null> {
 		const now = Date.now();
-		const maxRetry = durability?.maxRetry ?? DURABILITY_DEFAULT_MAX_RETRY;
-		const timeoutAt = durability?.timeoutAt ?? (now + DURABILITY_DEFAULT_TIMEOUT_MINUTES * 60_000);
+		const timeoutAt = now + DURABILITY_DEFAULT_TIMEOUT_MINUTES * 60_000;
 
 		// Postgres does not support `UPDATE ... AS alias` with a self-referencing
 		// NOT EXISTS subquery the way SQLite does. Use a CTE to identify the
@@ -477,18 +473,29 @@ class PgSubmissionStore implements AgentSubmissionStore {
 			 FROM candidate
 			 WHERE flue_agent_submissions.sequence = candidate.sequence
 			 RETURNING ${prefixed('flue_agent_submissions')}`,
-			[attempt.attemptId, now, maxRetry, timeoutAt, attempt.submissionId],
+			[attempt.attemptId, now, DURABILITY_DEFAULT_MAX_RETRY, timeoutAt, attempt.submissionId],
 		);
 		return rows[0] ? parseSubmission(rows[0]) : null;
 	}
 
-	async markSubmissionInputApplied(attempt: SubmissionAttemptRef): Promise<boolean> {
+	async markSubmissionInputApplied(
+		attempt: SubmissionAttemptRef,
+		durability?: { maxRetry: number; timeoutAt: number },
+	): Promise<boolean> {
 		const rows = await this.runner.query(
 			`UPDATE flue_agent_submissions
-			 SET input_applied_at = COALESCE(input_applied_at, $1)
-			 WHERE submission_id = $2 AND status = 'running' AND attempt_id = $3
+			 SET input_applied_at = COALESCE(input_applied_at, $1),
+			     max_retry = CASE WHEN input_applied_at IS NULL THEN $2 ELSE max_retry END,
+			     timeout_at = CASE WHEN input_applied_at IS NULL THEN $3 ELSE timeout_at END
+			 WHERE submission_id = $4 AND status = 'running' AND attempt_id = $5
 			 RETURNING submission_id`,
-			[Date.now(), attempt.submissionId, attempt.attemptId],
+			[
+				Date.now(),
+				durability?.maxRetry ?? DURABILITY_DEFAULT_MAX_RETRY,
+				durability?.timeoutAt ?? Date.now() + DURABILITY_DEFAULT_TIMEOUT_MINUTES * 60_000,
+				attempt.submissionId,
+				attempt.attemptId,
+			],
 		);
 		return rows.length > 0;
 	}

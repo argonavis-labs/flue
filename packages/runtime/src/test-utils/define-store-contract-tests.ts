@@ -303,11 +303,12 @@ export function defineStoreContractTests(
 				expect(claimed.timeoutAt).toBeGreaterThanOrEqual(before + 60 * 60_000);
 			});
 
-			it('applies custom durability at claim time when provided', async () => {
+			it('applies custom durability when input is marked applied', async () => {
 				const store = await create();
 				await store.submissions.admitDispatch(dispatchInput());
 				const customTimeout = Date.now() + 6 * 60 * 60_000;
-				await store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'), {
+				await store.submissions.claimSubmission(attempt('dispatch-1', 'attempt-1'));
+				await store.submissions.markSubmissionInputApplied(attempt('dispatch-1', 'attempt-1'), {
 					maxRetry: 5,
 					timeoutAt: customTimeout,
 				});

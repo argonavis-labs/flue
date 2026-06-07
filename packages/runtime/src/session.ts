@@ -27,7 +27,12 @@ import {
 	type TaskToolParams,
 	type TaskToolResultDetails,
 } from './agent.ts';
-import type { AgentSubmissionStore } from './agent-execution-store.ts';
+import {
+	DURABILITY_DEFAULT_MAX_RETRY,
+	DURABILITY_DEFAULT_TIMEOUT_MINUTES,
+	type AgentSubmissionStore,
+	type SubmissionDurability,
+} from './agent-execution-store.ts';
 import {
 	type CompactionSettings,
 	type CompactionTurnHandle,
@@ -2324,6 +2329,7 @@ export class Session implements FlueSession {
 			recoveryError: '[flue] Cannot recover dispatched input after the session has advanced.',
 			onInputApplied: options?.onInputApplied,
 			journal: options?.journal,
+			startedAt: options?.startedAt,
 			timeoutAt: options?.timeoutAt,
 			signal,
 		});
@@ -2349,22 +2355,34 @@ export class Session implements FlueSession {
 			recoveryError: '[flue] Cannot recover direct input after the session has advanced.',
 			onInputApplied: options?.onInputApplied,
 			journal: options?.journal,
+			startedAt: options?.startedAt,
 			timeoutAt: options?.timeoutAt,
 			signal,
 		});
+	}
+
+	private resolveSubmissionDurability(startedAt?: number, timeoutAt?: number): SubmissionDurability {
+		return {
+			maxRetry: this.config.durability?.retry ?? DURABILITY_DEFAULT_MAX_RETRY,
+			timeoutAt:
+				timeoutAt ??
+				(startedAt ?? Date.now()) +
+					(this.config.durability?.timeout ?? DURABILITY_DEFAULT_TIMEOUT_MINUTES) * 60_000,
+		};
 	}
 
 	private async runPersistedContextInput(options: {
 		findInput: () => MessageEntry | undefined;
 		persistInput: () => string;
 		journal?: ProcessAgentSubmissionOptions['journal'];
+		startedAt?: number;
 		timeoutAt?: number;
 		errorLabel: string;
 		outputSource: MessageSource;
 		callSite: string;
 		persistenceError: string;
 		recoveryError: string;
-		onInputApplied?: () => Promise<void> | void;
+		onInputApplied?: (durability: SubmissionDurability) => Promise<void> | void;
 		signal: AbortSignal;
 	}): Promise<PromptResponse> {
 		return this.withCallOverrides(
@@ -2376,7 +2394,8 @@ export class Session implements FlueSession {
 			},
 			async ({ resolvedModel }) => {
 				this.activeJournalCallbacks = options.journal;
-				this.activeTimeoutAt = options.timeoutAt;
+				const durability = this.resolveSubmissionDurability(options.startedAt, options.timeoutAt);
+				this.activeTimeoutAt = durability.timeoutAt;
 				try {
 					let inputEntry = options.findInput();
 					if (!inputEntry) {
@@ -2386,7 +2405,7 @@ export class Session implements FlueSession {
 						inputEntry = options.findInput();
 					}
 					if (!inputEntry) throw new Error(options.persistenceError);
-					await options.onInputApplied?.();
+					await options.onInputApplied?.(durability);
 					const following = this.history.getActivePathSince(inputEntry.id);
 					if (following.some((entry) => entry.type === 'message' && entry.message.role === 'user')) {
 						throw new Error(options.recoveryError);

@@ -460,6 +460,8 @@ export interface AgentConfig {
 	 * uses defaults.
 	 */
 	compaction?: false | CompactionConfig;
+	/** Durability settings resolved from the agent profile. */
+	durability?: DurabilityConfig;
 }
 
 /** Model specifier, or `false` to require call-level model selection. */
