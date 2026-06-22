@@ -99,7 +99,7 @@ ${packagedSkillsImport}
 ${options.deployment ? "import createDebug from 'debug';" : ''}
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { format } from 'node:util';
-import { serve } from '@hono/node-server';
+${options.deployment ? "import { serve } from '@hono/node-server';" : ''}
 import { sqlite } from '@flue/runtime/node';
 import {
   Bash,
@@ -109,6 +109,7 @@ import {
   createFlueContext,
   createNodeAgentCoordinator,
   createNodeDispatchQueue,
+  createRuntimeActivityGate,
   bashFactoryToSessionEnv,
   resolveModel,
   configureFlueRuntime,
@@ -156,7 +157,7 @@ async function createDefaultEnv() {
   }));
 }
 
-export async function startFlueNodeServer(options = {}) {
+export async function loadFlueNodeApplication(options = {}) {
   const runtimeEnv = options.env ?? process.env;
   const isLocalMode = options.local === true;
   const outputContext = new AsyncLocalStorage();
@@ -181,9 +182,12 @@ export async function startFlueNodeServer(options = {}) {
     }
   }
   const runInRuntime = (fn) => outputContext.run(true, fn);
+  let devLifecycle;
+  let persistenceAdapter;
+  let agentCoordinator;
   try {
   return await runInRuntime(async () => {
-  const devLifecycle = isLocalMode && options.internalDevLogs === true ? installDevLifecycleLogger() : undefined;
+  devLifecycle = isLocalMode && options.internalDevLogs === true ? installDevLifecycleLogger() : undefined;
 ${
 	dbEntry
 		? `// Custom persistence from db.ts. connect() is awaited once at startup so
@@ -219,14 +223,16 @@ const defaultAdapter = sqlite();
 if (defaultAdapter.migrate) await defaultAdapter.migrate();
 const { executionStore, runStore, eventStreamStore } = await defaultAdapter.connect();`
 }
-const persistenceAdapter = ${dbEntry ? `userPersistenceAdapter` : `defaultAdapter`};
-const agentCoordinator = createNodeAgentCoordinator({
+persistenceAdapter = ${dbEntry ? `userPersistenceAdapter` : `defaultAdapter`};
+const activityGate = createRuntimeActivityGate();
+agentCoordinator = createNodeAgentCoordinator({
   submissions: executionStore.submissions,
   sessions: executionStore.sessions,
   agents,
   createContext: createAgentContextForRequest,
   eventStreamStore,
   onInteractionStart: devLifecycle?.onAgentInteractionStart,
+  activityGate,
 });
 const dispatchQueue = createNodeDispatchQueue(agentCoordinator);
 
@@ -276,6 +282,7 @@ configureFlueRuntime({
   createAgentAdmission: (agentName, instanceId) =>
     agentCoordinator.createAdmission(agentName, instanceId),
   dispatchQueue,
+  activityGate,
   admitWorkflow: ({ workflowName, input }) => {
     const workflow = workflows.find((record) => record.name === workflowName)?.definition;
     if (!workflow) throw new Error('[flue] Internal workflow admission target is not registered.');
@@ -287,6 +294,7 @@ configureFlueRuntime({
       createContext: createWorkflowContextForRequest,
       runStore,
       eventStreamStore,
+      activityGate,
     });
   },
   channelHandlers,
@@ -295,11 +303,11 @@ configureFlueRuntime({
   eventStreamStore,
 });
 
-// Reconcile any interrupted submissions from a previous process.
-// This is best-effort on startup — errors are logged but do not block the server.
-runInRuntime(() => agentCoordinator.reconcileSubmissions()).catch((error) => {
+try {
+  await runInRuntime(() => agentCoordinator.reconcileSubmissions());
+} catch (error) {
   runInRuntime(() => console.error('[flue] Startup submission reconciliation failed:', error));
-});
+}
 
 // ─── App composition ────────────────────────────────────────────────────────
 
@@ -322,8 +330,69 @@ if (!flueApp || typeof flueApp.fetch !== 'function') {
 const flueApp = createDefaultFlueApp();`
 }
 
-// ─── Start ──────────────────────────────────────────────────────────────────
+  let disposing;
+  return {
+    fetch: (request, env) => runInRuntime(() => flueApp.fetch(request, env)),
+    enterActivity() {
+      return activityGate.enter();
+    },
+    pauseAdmissions() {
+      activityGate.pause();
+    },
+    resumeAdmissions() {
+      activityGate.resume();
+    },
+    waitForIdle() {
+      return activityGate.waitForIdle();
+    },
+    async stop(options = {}) {
+      if (disposing) return disposing;
+      disposing = runInRuntime(async () => {
+        const errors = [];
+        try {
+          await agentCoordinator.shutdown(options.abort === true ? options.timeoutMs : 30_000);
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          if (persistenceAdapter.close) await persistenceAdapter.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        devLifecycle?.dispose();
+        restoreOutput();
+        if (errors.length === 1) throw errors[0];
+        if (errors.length > 1) throw new AggregateError(errors, '[flue] Node application shutdown failed.');
+      });
+      return disposing;
+    },
+    closeSync() {
+      devLifecycle?.dispose();
+      restoreOutput();
+    },
+  };
+  });
+  } catch (error) {
+    const cleanupErrors = [];
+    try {
+      if (agentCoordinator) await agentCoordinator.shutdown(30_000);
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    try {
+      if (persistenceAdapter?.close) await persistenceAdapter.close();
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    devLifecycle?.dispose();
+    restoreOutput();
+    if (cleanupErrors.length) throw new AggregateError([error, ...cleanupErrors], '[flue] Node application startup failed.');
+    throw error;
+  }
+}
 
+export async function startFlueNodeServer(options = {}) {
+  const application = await loadFlueNodeApplication(options);
   const port = options.port ?? 3000;
   let resolveReady;
   let rejectReady;
@@ -332,14 +401,12 @@ const flueApp = createDefaultFlueApp();`
     rejectReady = reject;
   });
   const server = serve({
-    fetch: (request, env) => runInRuntime(() => flueApp.fetch(request, env)),
+    fetch: application.fetch,
     port,
     ...(options.hostname ? { hostname: options.hostname } : {}),
     serverOptions: { requestTimeout: 0 },
   }, () => {
     if (!options.quiet) console.log('[flue] Server listening on http://localhost:' + port);
-    if (isLocalMode) debugStartup('mode=local');
-    debugStartup('agents=%s', ${JSON.stringify(agents.map((a) => a.name).join(', '))});
     options.onReady?.();
     resolveReady();
   });
@@ -357,50 +424,40 @@ const flueApp = createDefaultFlueApp();`
   } catch (error) {
     server.closeAllConnections();
     server.close();
+    await application.stop({ abort: true });
     throw error;
   } finally {
     server.off('error', onServerError);
     options.signal?.removeEventListener('abort', onAbort);
   }
-  let shuttingDown;
+  let stopping;
   return {
     async stop() {
-      if (shuttingDown) return shuttingDown;
-      shuttingDown = runInRuntime(async () => {
+      if (stopping) return stopping;
+      stopping = (async () => {
         const errors = [];
         const httpClosed = new Promise((resolve) => server.close((error) => {
           if (error) errors.push(error);
           resolve();
         }));
         try {
-          await agentCoordinator.shutdown();
-        } catch (error) {
-          errors.push(error);
-        }
-        try {
-          if (persistenceAdapter.close) await persistenceAdapter.close();
+          await application.stop({ abort: true });
         } catch (error) {
           errors.push(error);
         }
         server.closeAllConnections();
         await httpClosed;
-        restoreOutput();
         if (errors.length === 1) throw errors[0];
         if (errors.length > 1) throw new AggregateError(errors, '[flue] Node server shutdown failed.');
-      });
-      return shuttingDown;
+      })();
+      return stopping;
     },
     closeSync() {
       server.closeAllConnections();
       server.close();
-      restoreOutput();
+      application.closeSync();
     },
   };
-  });
-  } catch (error) {
-    restoreOutput();
-    throw error;
-  }
 }
 `;
 	}

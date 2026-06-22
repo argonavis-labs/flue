@@ -17,6 +17,7 @@ import type { AgentInteractionStart } from '../runtime/dev-lifecycle-logger.ts';
 import type { DispatchInput, DispatchQueue } from '../runtime/dispatch-queue.ts';
 import { agentStreamPath } from '../runtime/event-stream-store.ts';
 import type { CreateAgentContextFn } from '../runtime/handle-agent.ts';
+import type { RuntimeActivityGate, RuntimeActivityLease } from '../runtime/runtime-activity-gate.ts';
 import { isStreamExcludedEvent } from '../runtime/run-store.ts';
 import { deleteSessionTree } from '../session.ts';
 import type {
@@ -96,8 +97,9 @@ export function createNodeAgentCoordinator(options: {
 	createContext: CreateAgentContextFn;
 	eventStreamStore: import('../runtime/event-stream-store.ts').EventStreamStore;
 	onInteractionStart?: (interaction: AgentInteractionStart) => void;
+	activityGate?: RuntimeActivityGate;
 }): NodeAgentCoordinator {
-	const { submissions, sessions, agents, createContext, eventStreamStore, onInteractionStart } = options;
+	const { submissions, sessions, agents, createContext, eventStreamStore, onInteractionStart, activityGate } = options;
 	const observers = createAgentSubmissionObserverRegistry();
 
 	// ── Lease ownership ──────────────────────────────────────────────────
@@ -116,7 +118,11 @@ export function createNodeAgentCoordinator(options: {
 	// ── Concurrent claim loop state ──────────────────────────────────────
 
 	/** Submissions currently being processed, keyed by submissionId. */
-	const activeSubmissions = new Map<string, { task: Promise<void>; abort: AbortController }>();
+	const activeSubmissions = new Map<
+		string,
+		{ task: Promise<void>; abort: AbortController; activityLease?: RuntimeActivityLease }
+	>();
+	const admittedActivityLeases = new Map<string, RuntimeActivityLease>();
 
 	/**
 	 * Wake signal. The claim loop sleeps on `wakePromise` when there is
@@ -191,7 +197,11 @@ export function createNodeAgentCoordinator(options: {
 	 * wakes the claim loop so it can pick up newly-runnable work (e.g.
 	 * the next queued submission for the same session).
 	 */
-	function spawnSubmissionTask(claimed: AgentSubmission): void {
+	function spawnSubmissionTask(
+		claimed: AgentSubmission,
+		activityLease = admittedActivityLeases.get(claimed.submissionId),
+	): void {
+		admittedActivityLeases.delete(claimed.submissionId);
 		const controller = new AbortController();
 		const task = (async () => {
 			// Ensure the agent event stream exists before processing.
@@ -232,9 +242,10 @@ export function createNodeAgentCoordinator(options: {
 			})
 			.finally(() => {
 				activeSubmissions.delete(claimed.submissionId);
+				activityLease?.release();
 				wake();
 			});
-		activeSubmissions.set(claimed.submissionId, { task, abort: controller });
+		activeSubmissions.set(claimed.submissionId, { task, abort: controller, activityLease });
 	}
 
 	// ── Claim loop ───────────────────────────────────────────────────────
@@ -531,19 +542,27 @@ export function createNodeAgentCoordinator(options: {
 
 		async admitDispatch(input) {
 			if (stopping) throw new Error('[flue] Coordinator is shutting down.');
-			const agent = agents.find((record) => record.name === input.agent)?.definition;
-			if (!agent) {
-				throw new Error(`[flue] dispatch target agent "${input.agent}" has no agent definition.`);
+			const activityLease = activityGate?.enter();
+			try {
+				const agent = agents.find((record) => record.name === input.agent)?.definition;
+				if (!agent) {
+					throw new Error(`[flue] dispatch target agent "${input.agent}" has no agent definition.`);
+				}
+
+				const admission = await submissions.admitDispatch(input);
+				if (admission.kind !== 'submission') {
+					activityLease?.release();
+					return admission;
+				}
+
+				if (activityLease) admittedActivityLeases.set(admission.submission.submissionId, activityLease);
+				ensureClaimLoop();
+				wake();
+				return admission;
+			} catch (error) {
+				activityLease?.release();
+				throw error;
 			}
-
-			const admission = await submissions.admitDispatch(input);
-			if (admission.kind !== 'submission') return admission;
-
-			// Ensure the claim loop is running and wake it to pick up the
-			// new submission. Processing happens asynchronously.
-			ensureClaimLoop();
-			wake();
-			return admission;
 		},
 
 		createAdmission(agentName: string, instanceId: string): AttachedAgentSubmissionAdmission {
@@ -553,8 +572,10 @@ export function createNodeAgentCoordinator(options: {
 				waitForResult = true,
 			) => {
 				if (stopping) throw new Error('[flue] Coordinator is shutting down.');
+				const activityLease = activityGate?.enter();
 				const agent = agents.find((record) => record.name === agentName)?.definition;
 				if (!agent) {
+					activityLease?.release();
 					throw new Error(`[flue] direct prompt target agent "${agentName}" has no agent definition.`);
 				}
 
@@ -567,15 +588,13 @@ export function createNodeAgentCoordinator(options: {
 				const attachment = observers.attach(input.submissionId, { onEvent });
 				try {
 					await submissions.admitDirect(input);
-					// Wake the claim loop — the observer's completion promise
-					// resolves when processSubmission settles or fails this submission.
+					if (activityLease) admittedActivityLeases.set(input.submissionId, activityLease);
 					ensureClaimLoop();
 					wake();
 					if (!waitForResult) return { submissionId: input.submissionId };
 					return { submissionId: input.submissionId, result: await attachment.completion };
 				} catch (error) {
-					// If admission itself fails (before the claim loop could
-					// pick it up), fail the observer so the caller doesn't hang.
+					activityLease?.release();
 					observers.fail(input.submissionId, error);
 					throw error;
 				} finally {

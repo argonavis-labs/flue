@@ -22,6 +22,7 @@ import { agentStreamPath, type EventStreamStore, runStreamPath } from './event-s
 
 import { generateWorkflowRunId } from './ids.ts';
 import { isBufferedRunEvent, isStreamExcludedEvent, type RunStore } from './run-store.ts';
+import type { RuntimeActivityGate, RuntimeActivityLease } from './runtime-activity-gate.ts';
 import { DirectAgentPayloadSchema } from './schemas.ts';
 
 export function assertWorkflowDefinition(value: unknown, name: string): asserts value is WorkflowDefinition {
@@ -113,6 +114,7 @@ export interface HandleWorkflowOptions {
 	runStore?: RunStore;
 	eventStreamStore: EventStreamStore;
 	runId?: string;
+	activityGate?: RuntimeActivityGate;
 }
 
 /**
@@ -212,6 +214,7 @@ export async function handleWorkflowRequest(opts: HandleWorkflowOptions): Promis
 			startWorkflowAdmission,
 			runStore,
 			eventStreamStore,
+			activityGate: opts.activityGate,
 		});
 
 		if (wait === 'result') return await runSyncMode(execution);
@@ -266,6 +269,7 @@ export interface AdmitDetachedWorkflowOptions {
 	runStore?: RunStore;
 	eventStreamStore: EventStreamStore;
 	runId?: string;
+	activityGate?: RuntimeActivityGate;
 }
 
 interface WorkflowAdmissionOptions {
@@ -278,6 +282,7 @@ interface WorkflowAdmissionOptions {
 	startWorkflowAdmission: StartWorkflowAdmissionFn;
 	runStore?: RunStore;
 	eventStreamStore: EventStreamStore;
+	activityGate?: RuntimeActivityGate;
 }
 
 interface AdmittedWorkflowExecution {
@@ -287,6 +292,7 @@ interface AdmittedWorkflowExecution {
 	startWorkflowAdmission: StartWorkflowAdmissionFn;
 	workflow: WorkflowDefinition;
 	scheduling?: WorkflowSchedulingPhases;
+	activityLease?: RuntimeActivityLease;
 }
 
 async function prepareWorkflowExecution(
@@ -302,24 +308,33 @@ async function prepareWorkflowExecution(
 		startWorkflowAdmission,
 		runStore,
 		eventStreamStore,
+		activityGate,
 	} = opts;
 	if (!runStore) throw new RunStoreUnavailableError();
-	const lifecycle = await createWorkflowRunLifecycle({
-		workflowName,
-		runId,
-		input,
-		request,
-		createContext,
-		runStore,
-		eventStreamStore,
-		requirePersistedAdmission: true,
-	});
+	const activityLease = activityGate?.enter();
+	let lifecycle: WorkflowRunLifecycle;
+	try {
+		lifecycle = await createWorkflowRunLifecycle({
+			workflowName,
+			runId,
+			input,
+			request,
+			createContext,
+			runStore,
+			eventStreamStore,
+			requirePersistedAdmission: true,
+		});
+	} catch (error) {
+		activityLease?.release();
+		throw error;
+	}
 	return {
 		runId,
 		runStore,
 		lifecycle,
 		startWorkflowAdmission,
 		workflow,
+		activityLease,
 	};
 }
 
@@ -332,7 +347,10 @@ function startWorkflowExecution(execution: AdmittedWorkflowExecution): WorkflowS
 		);
 	try {
 		const scheduling = startWorkflowAdmission(runId, run);
-		const completion = Promise.resolve(scheduling.completion);
+		const completion = Promise.resolve(scheduling.completion).finally(() => {
+			execution.activityLease?.release();
+			execution.activityLease = undefined;
+		});
 		completion.catch(() => undefined);
 		const admitted = Promise.resolve(scheduling.admitted).catch(async (error) => {
 			await emitRunEnd(lifecycle, { isError: true, error });
@@ -340,6 +358,8 @@ function startWorkflowExecution(execution: AdmittedWorkflowExecution): WorkflowS
 		});
 		execution.scheduling = { admitted, completion };
 	} catch (error) {
+		execution.activityLease?.release();
+		execution.activityLease = undefined;
 		const completion = Promise.reject(error);
 		completion.catch(() => undefined);
 		execution.scheduling = {
@@ -374,6 +394,7 @@ export async function admitDetachedWorkflow(
 		startWorkflowAdmission: opts.startWorkflowAdmission ?? defaultStartWorkflowAdmission,
 		runStore: opts.runStore,
 		eventStreamStore: opts.eventStreamStore,
+		activityGate: opts.activityGate,
 	});
 	await detachWorkflowExecution(execution);
 	return { runId };

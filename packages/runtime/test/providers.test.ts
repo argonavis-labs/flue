@@ -2,7 +2,11 @@ import { getModel } from '@earendil-works/pi-ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defineAgent, ProviderRegistrationError } from '../src/index.ts';
 import { createFlueContext, InMemorySessionStore, resolveModel } from '../src/internal.ts';
-import { registerProvider, resetProvidersForTests } from '../src/runtime/providers.ts';
+import {
+	registerProvider,
+	resetProviderRuntime,
+	resetProvidersForTests,
+} from '../src/runtime/providers.ts';
 import { createNoopSessionEnv } from './fixtures/session-env.ts';
 
 afterEach(() => {
@@ -200,5 +204,17 @@ describe('registerProvider()', () => {
 		});
 
 		expect(() => resolveModel('no-model-http/')).toThrow();
+	});
+
+	it('removes provider registrations when a new runtime begins', () => {
+		registerProvider('removed-http', {
+			api: 'openai-completions',
+			baseUrl: 'http://removed.test/v1',
+		});
+		expect(resolveModel('removed-http/model')).toBeDefined();
+
+		resetProviderRuntime();
+
+		expect(() => resolveModel('removed-http/model')).toThrow();
 	});
 });

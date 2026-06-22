@@ -7,6 +7,7 @@ import {
 	type KnownProvider,
 	type Model,
 	registerApiProvider as piRegisterApiProvider,
+	resetApiProviders,
 } from '@earendil-works/pi-ai';
 import type { CloudflareGatewayOptions } from '../cloudflare/gateway.ts';
 import { CLOUDFLARE_AI_BINDING_API } from '../cloudflare-model.ts';
@@ -151,8 +152,13 @@ export function registerProvider(providerId: string, registration: ProviderRegis
 	providersById.set(providerId, registration);
 }
 
-export function resetProvidersForTests(): void {
+export function resetProviderRuntime(): void {
 	providersById.clear();
+	resetApiProviders();
+}
+
+export function resetProvidersForTests(): void {
+	resetProviderRuntime();
 }
 
 /** Whether a provider ID has already been registered. */
@@ -189,7 +195,11 @@ export function getRegisteredStoreResponses(providerId: string): boolean {
  * so generated code can register on every isolate boot without dedupe
  * bookkeeping.
  */
-export const registerApiProvider = piRegisterApiProvider;
+export function registerApiProvider(
+	provider: Parameters<typeof piRegisterApiProvider>[0],
+): void {
+	piRegisterApiProvider(provider, 'flue-runtime');
+}
 
 // ─── Model binding extension ────────────────────────────────────────────────
 

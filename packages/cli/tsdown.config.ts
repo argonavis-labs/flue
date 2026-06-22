@@ -16,5 +16,14 @@ export default defineConfig({
 	outDir: 'dist',
 	// `wrangler` is an optional peer dep, lazy-imported by the dev server.
 	// Keep it external so the CLI bundle stays small.
-	deps: { neverBundle: ['wrangler', 'vite', '@cloudflare/vite-plugin'] },
+	deps: {
+		neverBundle: [
+			'wrangler',
+			'vite',
+			'@cloudflare/vite-plugin',
+			'@flue/runtime',
+			'@flue/runtime/internal',
+			'@hono/node-server',
+		],
+	},
 });

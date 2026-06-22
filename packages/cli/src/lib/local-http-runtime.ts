@@ -4,14 +4,10 @@ import * as path from 'node:path';
 import {
 	build,
 	cloudflareViteConfigPath,
-	createBuildContext,
 	createCloudflareViteConfig,
-	createSharedViteConfig,
-	viteGeneratedEntryDependencyResolver,
 	viteInputDir,
 } from './build.ts';
-import { NodePlugin } from './build-plugin-node.ts';
-import { withScopedConsoleCapture } from './scoped-console-capture.ts';
+import { createNodeLocalRuntime } from './node-local-runtime.ts';
 import type { BuildOptions } from './types.ts';
 
 export interface LocalHttpRuntimeOutput {
@@ -103,102 +99,29 @@ export async function startLocalHttpRuntime(
 async function startInMemoryNodeRuntime(
 	options: StartLocalHttpRuntimeOptions & { root: string; sourceRoot: string; port: number },
 ): Promise<StartedRuntime> {
-	const { createServer } = await import('vite');
-	const virtualEntry = 'virtual:flue/node-local-bootstrap';
-	const resolvedEntry = '\0virtual:flue/node-local-bootstrap';
-	const ctx = createBuildContext({
+	const runtime = await createNodeLocalRuntime({
 		root: options.root,
 		sourceRoot: options.sourceRoot,
-		output: options.root,
-		target: 'node',
+		port: options.port,
 		temporaryLocalExposure: true,
+		hostname: '127.0.0.1',
+		env: options.env,
+		onOutput: options.onOutput,
 	});
-	if (ctx.agents.length === 0 && ctx.workflows.length === 0) {
-		throw new Error(`[flue] No agent or workflow files found.\n\nExpected at: ${path.join(options.sourceRoot, 'agents')}/ or ${path.join(options.sourceRoot, 'workflows')}/\nAdd at least one agent or workflow file.`);
-	}
-	const code = new NodePlugin().generateRuntimeEntryPoint(ctx);
-	const shared = createSharedViteConfig(options.root, [], [resolvedEntry]);
-	const server = await createServer({
-		...shared,
-		appType: 'custom',
-		logLevel: 'silent',
-		resolve: { preserveSymlinks: true },
-		optimizeDeps: { noDiscovery: true, include: [] },
-		server: { middlewareMode: true, hmr: false, watch: null },
-		plugins: [
-			...shared.plugins,
-			{
-				name: 'flue-node-local-bootstrap',
-				resolveId(id: string) {
-					if (id === virtualEntry) return resolvedEntry;
-				},
-				load(id: string) {
-					if (id === resolvedEntry) return code;
-				},
-			},
-			viteGeneratedEntryDependencyResolver(options.root, { external: true }),
-		],
-	});
-	let lifecycle: { stop(): Promise<void>; closeSync(): void } | undefined;
 	try {
 		throwIfAborted(options.signal);
-		const loaded = (await withScopedConsoleCapture(options.onOutput, () =>
-			server.ssrLoadModule(virtualEntry),
-		)) as {
-			startFlueNodeServer(options: object): Promise<{ stop(): Promise<void>; closeSync(): void }>;
-		};
-		throwIfAborted(options.signal);
-		lifecycle = await loaded.startFlueNodeServer({
-			port: options.port,
-			hostname: '127.0.0.1',
-			local: true,
-			quiet: true,
-			env: { ...process.env, ...options.env },
-			onOutput: options.onOutput,
-			signal: options.signal,
-		});
+		await runtime.start();
 		throwIfAborted(options.signal);
 	} catch (error) {
-		const cleanupErrors: unknown[] = [];
-		if (lifecycle) {
-			try {
-				await lifecycle.stop();
-			} catch (cleanupError) {
-				cleanupErrors.push(cleanupError);
-				lifecycle.closeSync();
-			}
-		}
-		try {
-			await server.close();
-		} catch (cleanupError) {
-			cleanupErrors.push(cleanupError);
-		}
-		if (cleanupErrors.length) throw new AggregateError([error, ...cleanupErrors], 'Node runtime startup failed.');
+		await runtime.stop().catch(() => runtime.closeSync());
 		throw error;
 	}
 	return {
-		port: options.port,
-		url: `http://127.0.0.1:${options.port}`,
-		async reload() {},
-		async stop() {
-			const errors: unknown[] = [];
-			try {
-				await lifecycle?.stop();
-			} catch (error) {
-				errors.push(error);
-			} finally {
-				try {
-					await server.close();
-				} catch (error) {
-					errors.push(error);
-				}
-			}
-			if (errors.length === 1) throw errors[0];
-			if (errors.length > 1) throw new AggregateError(errors, 'Node runtime shutdown failed.');
-		},
-		killSync() {
-			lifecycle?.closeSync();
-		},
+		port: runtime.port,
+		url: runtime.url,
+		reload: () => runtime.reload(),
+		stop: () => runtime.stop(),
+		killSync: () => runtime.closeSync(),
 	};
 }
 

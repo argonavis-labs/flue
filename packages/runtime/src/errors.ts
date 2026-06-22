@@ -221,6 +221,20 @@ class FlueHttpError extends FlueError {
 
 // ─── HTTP-layer error vocabulary ────────────────────────────────────────────
 
+export class RuntimeUnavailableError extends FlueHttpError {
+	constructor({ state }: { state: 'loading' | 'draining' | 'failed' }) {
+		super({
+			type: 'runtime_unavailable',
+			message: 'The local runtime is temporarily unavailable.',
+			details: 'Retry after the runtime finishes reloading.',
+			dev: '',
+			status: 503,
+			headers: { 'Retry-After': '1' },
+			meta: { state },
+		});
+	}
+}
+
 export class MethodNotAllowedError extends FlueHttpError {
 	constructor({ method, allowed }: { method: string; allowed: readonly string[] }) {
 		super({

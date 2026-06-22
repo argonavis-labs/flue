@@ -58,17 +58,17 @@ test('restarts after discovered config changes and recovers after invalid config
 		assert.match(dev.logs(), /Channels:\s+slack, teams, \+1 other/);
 		assert.match(dev.logs(), /\d{2}:\d{2}:\d{2} watching for file changes\.\.\./);
 		assert.doesNotMatch(dev.logs(), /flue connect|➜/);
-		assert.equal(fs.existsSync(path.join(root, 'dist-one', 'server.mjs')), true);
+		assert.equal(fs.existsSync(path.join(root, 'dist-one', 'server.mjs')), false);
 
 		fs.writeFileSync(path.join(root, 'agents', 'support.mjs'), `import { defineAgent } from '@flue/runtime';\nexport default defineAgent(() => ({ model: false }));\n`);
 		await dev.waitForLog('changed agents/support.mjs');
-		await dev.waitForLog('rebuilt in');
+		await dev.waitForLog('reloaded in');
 		assert.match(dev.logs(), /\d{2}:\d{2}:\d{2} changed agents\/support\.mjs/);
-		assert.match(dev.logs(), /\d{2}:\d{2}:\d{2} rebuilt in \d+ms/);
+		assert.match(dev.logs(), /\d{2}:\d{2}:\d{2} reloaded in \d+ms/);
 
 		fs.writeFileSync(path.join(root, '.config-helper.mjs'), `export default 'dist-two';\n`);
 		fs.appendFileSync(path.join(root, 'flue.config.mjs'), '\n');
-		await waitForPath(path.join(root, 'dist-two', 'server.mjs'));
+		await dev.waitForLog(`http://localhost:${port}`, 2);
 		await waitForServer(port);
 
 		fs.writeFileSync(path.join(root, 'flue.config.ts'), `export default { target: ;\n`);
@@ -79,13 +79,33 @@ test('restarts after discovered config changes and recovers after invalid config
 			path.join(root, 'flue.config.ts'),
 			`export default { target: 'node', output: 'dist-ts' };\n`,
 		);
-		await waitForPath(path.join(root, 'dist-ts', 'server.mjs'));
+		await dev.waitForLog(`http://localhost:${port}`, 3);
 		await waitForServer(port);
 
 		fs.rmSync(path.join(root, 'flue.config.ts'));
 		await dev.waitForLog('flue.config.ts changed; restarting');
 		await dev.waitForLog(`http://localhost:${port}`, 2);
 		await waitForServer(port);
+	} finally {
+		await dev.stop();
+	}
+});
+
+test('keeps the listener alive and recovers after an invalid source reload', async () => {
+	const root = createFixtureRoot();
+	const port = await getAvailablePort();
+	writeWorkflow(root);
+
+	const dev = startDev(root, ['--target', 'node', '--port', String(port)]);
+	try {
+		await waitForServer(port, dev.logs);
+		fs.writeFileSync(path.join(root, 'workflows', 'smoke.mjs'), `export default { broken: ;\n`);
+		await dev.waitForLog('Rebuild failed:');
+		await waitForUnavailable(port, 'failed');
+
+		writeWorkflow(root, true);
+		await dev.waitForLog('reloaded in');
+		await waitForServer(port, dev.logs);
 	} finally {
 		await dev.stop();
 	}
@@ -145,7 +165,7 @@ test('watches an explicit config outside the project root', async () => {
 			configPath,
 			`export default { target: 'node', root: ${JSON.stringify(root)}, output: ${JSON.stringify(path.join(root, 'dist-two'))} };\n`,
 		);
-		await waitForPath(path.join(root, 'dist-two', 'server.mjs'));
+		await dev.waitForLog(`http://localhost:${port}`, 2);
 		await waitForServer(port);
 	} finally {
 		await dev.stop();
@@ -165,8 +185,8 @@ function createFixtureRoot() {
 	return root;
 }
 
-function writeWorkflow(root) {
-	fs.mkdirSync(path.join(root, 'workflows'));
+function writeWorkflow(root, replace = false) {
+	fs.mkdirSync(path.join(root, 'workflows'), { recursive: replace });
 	fs.writeFileSync(
 		path.join(root, 'workflows', 'smoke.mjs'),
 		`import { defineAgent, defineWorkflow } from '@flue/runtime';\nexport const route = async (_c, next) => next();\nexport default defineWorkflow({ agent: defineAgent(() => ({ model: false })), async run() { return { ok: true }; } });\n`,
@@ -220,10 +240,6 @@ async function getAvailablePort() {
 	return address.port;
 }
 
-function waitForPath(file) {
-	return waitFor(() => fs.existsSync(file), `Timed out waiting for path: ${file}`);
-}
-
 async function waitForServer(port, logs = () => '') {
 	let body;
 	await waitFor(
@@ -241,6 +257,21 @@ async function waitForServer(port, logs = () => '') {
 		() => `Timed out waiting for server on port ${port}\n\n${logs()}`,
 	);
 	assert.deepEqual(body.result, { ok: true });
+}
+
+async function waitForUnavailable(port, state) {
+	await waitFor(async () => {
+		try {
+			const response = await fetch(`http://127.0.0.1:${port}/workflows/smoke?wait=result`, {
+				method: 'POST',
+			});
+			if (response.status !== 503) return false;
+			const body = await response.json();
+			return body.error?.type === 'runtime_unavailable' && body.error?.meta?.state === state;
+		} catch {
+			return false;
+		}
+	}, `Timed out waiting for runtime ${state} state on port ${port}`);
 }
 
 function waitForServerDown(port) {

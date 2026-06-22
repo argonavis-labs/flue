@@ -27,6 +27,7 @@ import {
 	type LocalHttpRuntime,
 	startBuiltLocalHttpRuntime,
 } from './local-http-runtime.ts';
+import { createNodeLocalRuntime, type NodeLocalRuntime } from './node-local-runtime.ts';
 import { devLog, devServerBanner, error, note } from './terminal.ts';
 import type { BuildOptions } from './types.ts';
 
@@ -120,20 +121,17 @@ export async function dev(options: DevOptions): Promise<void> {
 		envFile: fs.existsSync(envFile) ? envFile : undefined,
 	};
 
-	try {
-		if (options.target === 'cloudflare') {
+	if (options.target === 'cloudflare') {
+		try {
 			await envLoader.withApplied(() => build(buildOptions));
-		} else {
-			await build(buildOptions);
+		} catch (err) {
+			throw new Error(`Initial build failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
-	} catch (err) {
-		throw new Error(`Initial build failed: ${err instanceof Error ? err.message : String(err)}`);
+		envLoader.restore();
 	}
-
-	if (options.target === 'cloudflare') envLoader.restore();
 	const reloader: DevReloader =
 		options.target === 'node'
-			? new NodeReloader({ root, output, port })
+			? new NodeReloader({ root, sourceRoot, port, envLoader })
 			: new CloudflareReloader({ root, sourceRoot, port });
 
 	await reloader.start();
@@ -157,7 +155,7 @@ export async function dev(options: DevOptions): Promise<void> {
 	const rebuild =
 		options.target === 'cloudflare'
 			? () => envLoader.withApplied(() => build(buildOptions))
-			: () => build(buildOptions);
+			: async () => ({ changed: true });
 	const rebuilder = createRebuilder(reloader, rebuild);
 	const watcher = createWatcher({
 		root,
@@ -252,7 +250,7 @@ function createRebuilder(
 			await reloader.reload(changed || force);
 			const duration = Date.now() - start;
 			debugWatch('rebuild completed duration=%dms', duration);
-			devLog(`${pc.dim('rebuilt in')} ${duration}ms`);
+			devLog(`${pc.dim('reloaded in')} ${duration}ms`);
 		} catch (err) {
 			// Don't exit the dev loop on a rebuild error — the user is editing
 			// code, they'll fix it and trigger another rebuild.
@@ -409,42 +407,36 @@ function createWatcher(options: WatcherOptions): WatcherHandle {
 // ─── Node reloader ──────────────────────────────────────────────────────────
 
 class NodeReloader implements DevReloader {
-	private runtime: LocalHttpRuntime | null = null;
-	private readonly serverPath: string;
+	private runtime: NodeLocalRuntime | null = null;
 	private readonly root: string;
+	private readonly sourceRoot: string;
 	private readonly port: number;
+	private readonly envLoader: EnvLoader;
 	url: string;
 
-	constructor(opts: { root: string; output: string; port: number }) {
+	constructor(opts: { root: string; sourceRoot: string; port: number; envLoader: EnvLoader }) {
 		this.root = opts.root;
+		this.sourceRoot = opts.sourceRoot;
 		this.port = opts.port;
-		this.serverPath = path.join(opts.output, 'server.mjs');
+		this.envLoader = opts.envLoader;
 		this.url = `http://localhost:${this.port}`;
 	}
 
 	async start(): Promise<void> {
-		debugServer('spawning node server path=%s port=%d', this.serverPath, this.port);
-		this.runtime = await startBuiltLocalHttpRuntime({
-			target: 'node',
+		debugServer('starting node module runtime port=%d', this.port);
+		this.runtime = await createNodeLocalRuntime({
 			root: this.root,
-			output: path.dirname(this.serverPath),
+			sourceRoot: this.sourceRoot,
 			port: this.port,
-			stopTimeoutMs: 1_000,
-			watch: true,
+			temporaryLocalExposure: false,
+			env: process.env,
 			internalDevLogs: true,
 			onOutput: ({ line }) => this.renderLine(line),
-			onExit: ({ code, signal }) => {
-				if (code !== 0 && code !== null) {
-					error(`Node server exited unexpectedly (code=${code}, signal=${signal ?? 'none'})`);
-				}
-			},
 		});
+		await this.runtime.start();
 		debugServer('node server ready port=%d', this.port);
 	}
 
-	// Node has no downstream watcher — every root change requires a
-	// rebuild + child respawn. The watcher's ignore list already filters
-	// dist/, node_modules/, etc.
 	shouldRebuildOn(_relPath: string): boolean {
 		return true;
 	}
@@ -459,7 +451,7 @@ class NodeReloader implements DevReloader {
 	}
 
 	killSync(): void {
-		this.runtime?.killSync();
+		this.runtime?.closeSync();
 	}
 
 	// ── Internals ──

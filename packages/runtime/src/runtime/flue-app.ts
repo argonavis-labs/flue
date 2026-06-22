@@ -41,6 +41,7 @@ import { generateWorkflowRunId } from './ids.ts';
 import { invokeWorkflow, type WorkflowInvokeRequest, type WorkflowInvocationReceipt } from './invoke.ts';
 import type { WorkflowDefinition } from '../workflow-definition.ts';
 import type { RunStore, WorkflowRunPointer } from './run-store.ts';
+import type { RuntimeActivityGate } from './runtime-activity-gate.ts';
 
 import {
 	AgentAdmissionResponseSchema,
@@ -77,6 +78,7 @@ interface RuntimeBase {
 	channelHandlers?: Record<string, Record<string, (c: Context) => Response | Promise<Response>>>;
 	dispatchQueue: DispatchQueue;
 	admitWorkflow: (input: { workflowName: string; input: unknown }) => Promise<{ runId: string }>;
+	activityGate?: RuntimeActivityGate;
 }
 
 export interface NodeRuntime extends RuntimeBase {
@@ -479,6 +481,7 @@ const workflowRouteHandler: MiddlewareHandler = async (c) => {
 				createContext: rt.createWorkflowContext,
 				runStore: rt.runStore,
 				eventStreamStore: rt.eventStreamStore,
+				activityGate: rt.activityGate,
 			});
 		}
 
@@ -599,7 +602,16 @@ const channelRouteHandler: MiddlewareHandler = async (c) => {
 		});
 	}
 
-	const response = normalizeFetchResponse(await handler(c));
+	const lease = rt.activityGate?.enter();
+	let response: Response | undefined;
+	try {
+		response = normalizeFetchResponse(await handler(c));
+		if (response?.body && lease) response = retainActivityLease(response, lease);
+		else lease?.release();
+	} catch (error) {
+		lease?.release();
+		throw error;
+	}
 	if (!response) {
 		throw new TypeError(
 			`[flue] Channel "${name}" handler for ${c.req.method} ${suffix} must return a Response.`,
@@ -607,6 +619,44 @@ const channelRouteHandler: MiddlewareHandler = async (c) => {
 	}
 	return response;
 };
+
+function retainActivityLease(
+	response: Response,
+	lease: { release(): void },
+): Response {
+	const body = response.body;
+	if (!body) {
+		lease.release();
+		return response;
+	}
+	const reader = body.getReader();
+	return new Response(
+		new ReadableStream<Uint8Array>({
+			async pull(controller) {
+				try {
+					const result = await reader.read();
+					if (result.done) {
+						lease.release();
+						controller.close();
+						return;
+					}
+					controller.enqueue(result.value);
+				} catch (error) {
+					lease.release();
+					controller.error(error);
+				}
+			},
+			async cancel(reason) {
+				try {
+					await reader.cancel(reason);
+				} finally {
+					lease.release();
+				}
+			},
+		}),
+		{ status: response.status, statusText: response.statusText, headers: response.headers },
+	);
+}
 
 function normalizeFetchResponse(value: unknown): Response | undefined {
 	if (value instanceof globalThis.Response) return value;

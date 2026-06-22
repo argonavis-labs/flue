@@ -42,6 +42,11 @@ export {
 } from './cloudflare/agent-coordinator.ts';
 export { createSqlSessionStore } from './cloudflare/agent-execution-store.ts';
 export { createNodeAgentCoordinator, createNodeDispatchQueue } from './node/agent-coordinator.ts';
+export { createRuntimeActivityGate } from './runtime/runtime-activity-gate.ts';
+export type {
+	RuntimeActivityGate,
+	RuntimeActivityLease,
+} from './runtime/runtime-activity-gate.ts';
 export { InMemoryRunStore } from './node/run-store.ts';
 export type {
 	DirectAgentSubmissionInput,
@@ -103,7 +108,8 @@ export {
 } from './runtime/handle-agent.ts';
 export { handleStreamHead, handleStreamRead } from './runtime/handle-stream-routes.ts';
 export { generateWorkflowRunId } from './runtime/ids.ts';
-export { hasRegisteredProvider } from './runtime/providers.ts';
+export { RuntimeUnavailableError, toHttpResponse } from './errors.ts';
+export { hasRegisteredProvider, resetProviderRuntime } from './runtime/providers.ts';
 export type {
 	ListRunsOpts,
 	ListRunsResponse,

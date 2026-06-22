@@ -38,6 +38,7 @@
 		"@cloudflare/vite-plugin": "^1.39.2",
 		"@flue/runtime": "workspace:*",
 		"@flue/sdk": "workspace:*",
+		"@hono/node-server": "^2.0.3",
 		"@vercel/detect-agent": "^1.2.3",
 		"debug": "^4.4.3",
 		"ink": "^7.1.0",

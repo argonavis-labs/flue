@@ -64,7 +64,7 @@ For repeated header names, the final value wins case-insensitively.
 | ----------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `--target <name>` | Configuration value                                        | Select `node` or `cloudflare` for a temporary local runtime.                                                                         |
 | `--root <path>`   | Selected config-file directory, or config search directory | Select the project root.                                                                                                            |
-| `--output <path>` | `<root>/dist`                                              | Select configured build output; temporary execution artifacts are isolated from deployment output.                                  |
+| `--output <path>` | `<root>/dist`                                              | Configure deployment build output. Temporary Node execution does not write runtime artifacts there.                                 |
 | `--config <path>` | Auto-discovered `flue.config.*`                            | Select a configuration file.                                                                                                        |
 | `--env <path>`    | `<config-base>/.env`, when present                         | Select one alternate `.env`-format file loaded before configuration. Relative paths resolve from `<config-base>`. Shell values win. |
 
