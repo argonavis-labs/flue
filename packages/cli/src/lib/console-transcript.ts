@@ -1,6 +1,6 @@
 import type { FlueEvent } from '@flue/sdk';
 
-type TranscriptTone = 'normal' | 'dim' | 'error' | 'success' | 'accent';
+type TranscriptTone = 'normal' | 'dim' | 'error' | 'success' | 'accent' | 'user';
 
 export interface TranscriptRecord {
 	readonly id: number;
@@ -34,10 +34,11 @@ export function reduceConsoleTranscript(
 	action: TranscriptAction,
 ): ConsoleTranscript {
 	if (action.type === 'server') {
+		if (isSuppressedServerOutput(action.line)) return state;
 		return append(state, `server ${action.stream}  ${action.line}`, action.stream === 'stdout' ? 'dim' : 'error');
 	}
-	if (action.type === 'prompt') return append(state, `you  ${action.message}`, 'accent');
-	if (action.type === 'result') return append(state, `result  ${detail(action.result)}`, 'success');
+	if (action.type === 'prompt') return append(state, action.message, 'user');
+	if (action.type === 'result') return state;
 	if (action.type === 'error') return append(state, `error  ${errorMessage(action.error)}`, 'error');
 	if (action.type === 'status') return append(state, action.message, 'dim');
 	return reduceEvent(state, action.event);
@@ -53,7 +54,7 @@ function reduceEvent(state: ConsoleTranscript, event: FlueEvent): ConsoleTranscr
 		const text = messageText(event.message) || (key ? state.streaming[key] : undefined) || '';
 		const streaming = { ...state.streaming };
 		if (key) delete streaming[key];
-		return text ? append({ ...state, streaming }, `agent  ${text}`, 'normal') : { ...state, streaming };
+		return text ? append({ ...state, streaming }, text, 'normal') : { ...state, streaming };
 	}
 	if (event.type === 'thinking_start') return append(state, 'thinking', 'dim');
 	if (event.type === 'tool_start') return append(state, `tool  ${event.toolName} ${toolDetail(event.toolName, event.args)}`, 'dim');
@@ -64,6 +65,8 @@ function reduceEvent(state: ConsoleTranscript, event: FlueEvent): ConsoleTranscr
 			event.isError ? 'error' : 'dim',
 		);
 	}
+	if (event.type === 'operation_start' && event.operationKind === 'prompt') return state;
+	if (event.type === 'operation' && event.operationKind === 'prompt') return state;
 	if (event.type === 'operation_start') return append(state, `${event.operationKind} started`, 'dim');
 	if (event.type === 'operation') {
 		const value = event.error ?? event.result;
@@ -79,8 +82,15 @@ function reduceEvent(state: ConsoleTranscript, event: FlueEvent): ConsoleTranscr
 	if (event.type === 'run_start') return append(state, `run ${event.runId} started`, 'dim');
 	if (event.type === 'run_resume') return append(state, `run ${event.runId} resumed`, 'dim');
 	if (event.type === 'run_end') return append(state, `run ${event.runId} ${event.isError ? 'failed' : 'completed'} ${event.durationMs}ms`, event.isError ? 'error' : 'success');
-	if (event.type === 'submission_settled') return append(state, `prompt ${event.outcome}`, event.outcome === 'failed' ? 'error' : 'success');
+	if (event.type === 'submission_settled') return state;
 	return state;
+}
+
+function isSuppressedServerOutput(line: string): boolean {
+	return (
+		line.includes('ExperimentalWarning: SQLite is an experimental feature and might change at any time') ||
+		line.includes('Use `node --trace-warnings')
+	);
 }
 
 function append(state: ConsoleTranscript, raw: string, tone: TranscriptTone): ConsoleTranscript {
@@ -93,7 +103,7 @@ function append(state: ConsoleTranscript, raw: string, tone: TranscriptTone): Co
 export function transcriptDisplayRecords(state: ConsoleTranscript): readonly TranscriptRecord[] {
 	const pending = Object.values(state.streaming)
 		.filter(Boolean)
-		.map((text, index) => ({ id: state.nextId + index, text: sanitize(`agent  ${text}`), tone: 'normal' as const }));
+		.map((text, index) => ({ id: state.nextId + index, text: sanitize(text), tone: 'normal' as const }));
 	return [...state.records, ...pending];
 }
 

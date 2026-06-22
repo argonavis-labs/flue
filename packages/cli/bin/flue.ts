@@ -694,6 +694,7 @@ async function devCommand(args: DevArgs) {
 			output: cfg.output,
 			target: cfg.target,
 			port: args.port || undefined,
+			strictPort: args.port !== 0,
 			envFile: envLoader.file,
 			envLoader,
 			configFiles: devConfigFiles(args),

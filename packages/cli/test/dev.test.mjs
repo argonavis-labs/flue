@@ -128,7 +128,30 @@ test('prints namespaced diagnostics when DEBUG enables dev logging', async () =>
 	}
 });
 
-test('does not report ready when the requested port is occupied', async () => {
+test('uses the next available Node port when the default port is occupied', async () => {
+	const root = createFixtureRoot();
+	writeWorkflow(root);
+	const blocker = createServer();
+	const blockedDefault = await new Promise((resolve) => {
+		blocker.once('error', () => resolve(false));
+		blocker.listen(3583, () => resolve(true));
+	});
+
+	const dev = startDev(root, ['--target', 'node']);
+	try {
+		const selectedPort = await waitForSelectedPort(dev.logs);
+		assert.notEqual(selectedPort, 3583);
+		await waitForServer(selectedPort, dev.logs);
+	} finally {
+		await dev.stop();
+		if (blockedDefault) {
+			blocker.close();
+			await once(blocker, 'close');
+		}
+	}
+});
+
+test('does not report ready when an explicit requested port is occupied', async () => {
 	const root = createFixtureRoot();
 	const port = await getAvailablePort();
 	writeWorkflow(root);
@@ -227,6 +250,16 @@ function startDev(cwd, args, env = {}) {
 			]);
 		},
 	};
+}
+
+async function waitForSelectedPort(logs) {
+	let selected;
+	await waitFor(() => {
+		const match = logs().match(/http:\/\/localhost:(\d+)/);
+		selected = match ? Number(match[1]) : undefined;
+		return selected !== undefined;
+	}, () => `Timed out waiting for selected dev port\n\n${logs()}`);
+	return selected;
 }
 
 async function getAvailablePort() {

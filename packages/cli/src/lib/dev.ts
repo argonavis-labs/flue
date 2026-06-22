@@ -13,6 +13,7 @@
  * Cloudflare path filters to "structural" changes only.
  */
 import * as fs from 'node:fs';
+import { createServer } from 'node:net';
 import * as path from 'node:path';
 import createDebug from 'debug';
 import {
@@ -49,6 +50,7 @@ export interface DevOptions {
 	target: 'node' | 'cloudflare';
 	/** Defaults to 3583 ("FLUE" on a phone keypad). */
 	port?: number;
+	strictPort?: boolean;
 	envFile?: string;
 	envLoader?: EnvLoader;
 	configFiles?: readonly string[];
@@ -103,7 +105,10 @@ export async function dev(options: DevOptions): Promise<void> {
 	const root = path.resolve(options.root);
 	const sourceRoot = path.resolve(options.sourceRoot);
 	const output = path.resolve(options.output ?? path.join(root, 'dist'));
-	const port = options.port ?? DEFAULT_DEV_PORT;
+	const requestedPort = options.port ?? DEFAULT_DEV_PORT;
+	const port = options.target === 'node' && options.strictPort !== true
+		? await selectAvailableDevPort(requestedPort)
+		: requestedPort;
 	debugDev('starting target=%s root=%s source=%s output=%s port=%d', options.target, root, sourceRoot, output, port);
 
 	const envFile = options.envLoader?.file ?? selectEnvFile(options.envFile, root);
@@ -522,6 +527,21 @@ class CloudflareReloader implements DevReloader {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+async function selectAvailableDevPort(start: number): Promise<number> {
+	for (let port = start; port <= 65_535; port += 1) {
+		if (await canListen(port)) return port;
+	}
+	throw new Error(`No available port found at or above ${start}.`);
+}
+
+async function canListen(port: number): Promise<boolean> {
+	return new Promise<boolean>((resolve) => {
+		const server = createServer();
+		server.once('error', () => resolve(false));
+		server.listen(port, () => server.close(() => resolve(true)));
+	});
+}
 
 function isSourceStructurePath(root: string, sourceRoot: string, relPath: string): boolean {
 	const prefix = path.relative(root, sourceRoot).replace(/\\/g, '/');

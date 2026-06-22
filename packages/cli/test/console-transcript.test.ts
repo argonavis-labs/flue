@@ -16,11 +16,27 @@ describe('reduceConsoleTranscript()', () => {
 		});
 		transcript = reduceConsoleTranscript(transcript, { type: 'event', event: event({ type: 'tool', toolName: 'shell', toolCallId: 'tool-1', isError: false, durationMs: 5, result: 'x'.repeat(500) }) });
 
-		expect(transcript.records[0]?.text).toBe('agent final');
+		expect(transcript.records[0]?.text).toBe('final');
 		expect(transcript.records[1]?.text.length).toBeLessThan(300);
 		expect(sanitize('\u001b[31mred\u0000')).toBe('red');
 		expect(sanitize('before\u001b]8;;https://example.com\u001b\\linked\u001b]8;;\u001b\\ after')).toBe('beforelinked after');
 		expect(sanitize('before\u001b]0;title\u0007after')).toBe('beforeafter');
+	});
+
+	it('suppresses the Node SQLite experimental warning from server output', () => {
+		let transcript = createConsoleTranscript();
+		transcript = reduceConsoleTranscript(transcript, {
+			type: 'server',
+			stream: 'stderr',
+			line: '(node:123) ExperimentalWarning: SQLite is an experimental feature and might change at any time',
+		});
+		transcript = reduceConsoleTranscript(transcript, {
+			type: 'server',
+			stream: 'stderr',
+			line: '(Use `node --trace-warnings ...` to show where the warning was created)',
+		});
+
+		expect(transcript.records).toEqual([]);
 	});
 
 	it('retains only the latest 1000 records', () => {
