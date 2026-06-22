@@ -109,7 +109,7 @@ node dist/server.mjs
 
 `flue build --target node` compiles your project into a `./dist` directory without packaging `.env` credentials into the server. The built server uses [Hono](https://hono.dev/) under the hood and listens on port 3000 by default (configurable via `PORT`). Your project's `node_modules` are still needed at runtime — the build externalizes your dependencies rather than bundling them.
 
-You can also invoke any workflow from the CLI without starting a server. `flue run` loads project-root `.env` automatically; pass `--env` only to select one alternate file:
+You can also invoke an agent or workflow through a temporary local server. `flue run` executes the normal `app.ts` and middleware, temporarily exposes route-free resources through an existing authored `flue()` mount, and loads project-root `.env` automatically; pass `--env` only to select one alternate file:
 
 ```bash
 npx flue run translate --target node \

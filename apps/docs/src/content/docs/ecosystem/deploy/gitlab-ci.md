@@ -63,7 +63,7 @@ npx flue run hello --target node \
   --input '{"name": "World"}'
 ```
 
-`flue run` builds the project, invokes the workflow through a private local child-process communication, streams progress to stderr, and prints the final result as JSON to stdout. The workflow does not need public transport exposure for this local command.
+`flue run` starts the configured application temporarily, invokes the workflow through its existing `flue()` mount, streams progress to stderr, and prints the final result as JSON to stdout. Normal `app.ts` and middleware execute. The workflow does not need authored HTTP exposure because this local runtime temporarily exposes route-free resources.
 
 ### 4. Wire it into GitLab CI/CD
 
@@ -324,7 +324,7 @@ This pattern — prompt or skill call, check the result, decide what to do next 
 
 ## Running workflows locally
 
-During development, `flue run` is your main tool. It builds the project and runs the workflow in one step:
+During development, `flue run` starts the configured application temporarily and runs the workflow in one step:
 
 ```bash
 # Run with input
@@ -336,4 +336,4 @@ npx flue run triage --target node \
   --input '{"issueIid": 42}' | jq '.severity'
 ```
 
-The CLI builds your project root, invokes the workflow through a private local child-process communication, streams progress to stderr, and prints the final result to stdout.
+The CLI invokes the workflow over the temporary application's normal HTTP surface, so `app.ts` and middleware run. Progress goes to stderr and the final result to stdout.

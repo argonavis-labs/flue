@@ -12,14 +12,14 @@ export interface AgentRunInput {
 	images?: AgentPromptImage[];
 }
 
-export interface AgentRunTarget {
+interface AgentRunTarget {
 	kind: 'agent';
 	name: string;
 	instanceId: string;
 	input: AgentRunInput;
 }
 
-export interface WorkflowRunTarget {
+interface WorkflowRunTarget {
 	kind: 'workflow';
 	name: string;
 	input?: unknown;

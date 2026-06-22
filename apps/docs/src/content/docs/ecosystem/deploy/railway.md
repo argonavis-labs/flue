@@ -83,7 +83,7 @@ Exposed workflow runs are streamed through `GET /runs/:runId` with long-poll or 
 
 ## Going further
 
-- **Scheduled workflows.** Model periodic tasks (nightly summaries, cache refreshes) as a separate service with a **Cron Schedule** whose start command is `npx flue run <workflow> --target node`. Each fire builds, runs the workflow once, and exits — close any Postgres connections so the process terminates cleanly. Railway enforces a minimum interval of five minutes, evaluates schedules in UTC, and skips a fire if the previous run is still active.
+- **Scheduled workflows.** Prefer invoking the deployed application's authenticated workflow endpoint from a **Cron Schedule**, or attach the CLI with `npx flue run workflow:<name> --server https://<host>/<flue-mount>`. This avoids rebuilding and starting a second application runtime for every fire. Railway enforces a minimum interval of five minutes, evaluates schedules in UTC, and skips a fire if the previous run is still active.
 - **Queue-backed workers.** For continuous, queue-driven delivery, run a second always-on service that makes attached agent requests and waits for results, or have application code call `dispatch(...)` for asynchronous delivery identified by `dispatchId`. A worker service has no public port; it just runs `node dist/server.mjs` (or a custom entry) and processes work.
 
 ## References

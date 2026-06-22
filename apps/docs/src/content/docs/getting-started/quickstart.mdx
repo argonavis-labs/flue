@@ -56,22 +56,13 @@ The default export of `agents/hello-world.ts` is what registers the agent — th
 
 ### 3. Talk to your agent locally
 
-For a Node.js target, open an interactive session with the discovered agent:
+Open an interactive console for the discovered agent:
 
 ```bash
-npx flue connect hello-world local
+npx flue console hello-world
 ```
 
-Once connected, type a message and press Enter. In this command, `hello-world` is the module name and `local` is the ID for this agent instance.
-
-```text
-$ npx flue connect hello-world local
-[flue] Connected to hello-world/local. Enter a prompt per line; Ctrl-D to exit.
-Hello! What can you help me with?
-{
-  "text": "I can help answer questions, draft content, summarize information, and more."
-}
-```
+The console starts your configured Node.js or Cloudflare runtime, displays the generated agent-instance ID, and waits for your first message. Type a prompt and press Enter; follow-up prompts continue on the same instance until you exit.
 
 Congratulations! You have created your first Flue agent and opened a local conversation with it. From here, you can shape its behavior, add capabilities, or deploy it as part of an application.
 

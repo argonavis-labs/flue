@@ -91,7 +91,7 @@ Exposed workflow runs use long-lived `GET /runs/:runId` reads (long-poll/SSE). K
 ## Going further
 
 - **Regions and scaling.** `fly scale count` adds Machines and `fly scale vm` resizes them; run more than one Machine across regions for availability. Multi-Machine deployments require shared Postgres for session state — in-memory state is per-Machine.
-- **Scheduled workflows.** Model periodic jobs (nightly summaries, cache refreshes) as Fly [scheduled Machines](https://fly.io/docs/machines/) that run `npx flue run <workflow> --target node` once and exit, rather than as inbound agent traffic against the always-on server.
+- **Scheduled workflows.** Use Fly [scheduled Machines](https://fly.io/docs/machines/) to call the deployed application's authenticated workflow endpoint, or run `npx flue run workflow:<name> --server https://<host>/<flue-mount>`. Remote attachment exercises the deployed application without building and starting another local runtime.
 
 ## References
 

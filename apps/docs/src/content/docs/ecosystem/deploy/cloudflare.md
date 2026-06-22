@@ -157,7 +157,7 @@ curl http://localhost:3583/workflows/translate?wait=result \
   -d '{"text": "Hello world", "language": "French"}'
 ```
 
-`flue run` starts the generated server in Node.js, so it only supports `--target node`. Cloudflare builds use Worker-only runtime modules — `flue dev --target cloudflare` is the equivalent for testing them locally.
+For one finite local operation, `flue run --target cloudflare <name>` starts the same Vite/workerd application runtime without watch mode, invokes an agent or workflow through an existing authored `flue()` mount, and exits. `flue console --target cloudflare <name>` uses that runtime for an interactive transcript. Both run normal application middleware and temporarily expose route-free discovered resources through the mount.
 
 Route middleware sees the original inbound HTTP request before Flue forwards accepted work into its Durable Object. Durable direct-agent processing is a later boundary: after admission, Flue uses a deterministic internal request and does not persist or reconstruct the caller's original headers, cookies, query parameters, URL, or body as operation-time `ctx.req`. Authenticate before admission and carry any non-secret correlation you need later in application-owned input or storage.
 

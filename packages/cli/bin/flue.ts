@@ -1,12 +1,10 @@
 #!/usr/bin/env node
 import { type ChildProcess, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFlueClient, type FlueEvent } from '@flue/sdk';
-import { ulid } from 'ulidx';
 import { type ParseArgsOptionsConfig, parseArgs as parseNodeArgs } from 'node:util';
+import type { FlueEvent } from '@flue/sdk';
 import { determineAgent } from '@vercel/detect-agent';
 import MiniSearch from 'minisearch';
 import pc from 'picocolors';
@@ -18,13 +16,15 @@ import {
 	type UserFlueConfig,
 } from '../src/lib/config.ts';
 import { resolveConfigCandidates } from '../src/lib/config-paths.ts';
+import { type ConsoleController, createConsoleController } from '../src/lib/console-controller.ts';
+import { closeConsoleForSignal, closeExecutionForSignal } from '../src/lib/console-shutdown.ts';
+import { openConsoleUi } from '../src/lib/console-ui.tsx';
 import { DEFAULT_DEV_PORT, dev } from '../src/lib/dev.ts';
 import { createEnvLoader, type EnvLoader, selectEnvFile } from '../src/lib/env.ts';
+import { createExecutionLifecycle, type ExecutionLifecycle } from '../src/lib/execution-lifecycle.ts';
 import { createLineEventPresenter } from '../src/lib/line-event-presenter.ts';
-import { type LocalHttpRuntime, startLocalHttpRuntime } from '../src/lib/local-http-runtime.ts';
-import { assertRunIdAllowed, parseAgentInput, runTarget } from '../src/lib/run-controller.ts';
-import { isAbsoluteServer, parseHeaders, resolveServerUrl } from '../src/lib/run-http.ts';
-import { resolveRunResource, type RunResource } from '../src/lib/run-resource.ts';
+import { parseAgentInput, runTarget } from '../src/lib/run-controller.ts';
+import { parseHeaders, resolveServerUrl } from '../src/lib/run-http.ts';
 import {
 	brand,
 	brandRows,
@@ -102,6 +102,7 @@ function printUsage(log: (message: string) => void = console.error) {
 		'Usage:\n' +
 			'  flue dev   [--target <node|cloudflare>] [--root <path>] [--output <path>] [--config <path>] [--port <number>] [--env <path>]\n' +
 			'  flue run     <name> [--target <node|cloudflare>] [--id <id>] [--input <json>] [--server <path|url>] [--header \'Name: value\'] [--root <path>] [--output <path>] [--config <path>] [--env <path>]\n' +
+			'  flue console <name> [--target <node|cloudflare>] [--id <id>] [--input <json>] [--server <path|url>] [--header \'Name: value\'] [--root <path>] [--output <path>] [--config <path>] [--env <path>]\n' +
 
 			'  flue build   [--target <node|cloudflare>] [--root <path>] [--output <path>] [--config <path>] [--env <path>]\n' +
 			'  flue init  --target <node|cloudflare> [--root <path>] [--force]\n' +
@@ -112,6 +113,7 @@ function printUsage(log: (message: string) => void = console.error) {
 			'Commands:\n' +
 			'  dev    Long-running watch-mode dev server. Rebuilds and reloads on file changes.\n' +
 			'  run      Invoke one agent or workflow through its normal HTTP application, then exit.\n' +
+			'  console  Inspect one agent instance or workflow invocation in an interactive terminal.\n' +
 
 			'  build    Build a deployable artifact to ./dist (production deploys).\n' +
 			'  init   Scaffold a starter flue.config.ts in the target directory.\n' +
@@ -157,7 +159,7 @@ function printUsage(log: (message: string) => void = console.error) {
 }
 
 interface RunArgs {
-	command: 'run';
+	command: 'run' | 'console';
 	resource: string;
 	target: 'node' | 'cloudflare' | undefined;
 	input: string | undefined;
@@ -341,7 +343,7 @@ function targetFlag(value: string | undefined): 'node' | 'cloudflare' | undefine
 }
 
 function parseFlags(
-	command: 'build' | 'dev' | 'run',
+	command: 'build' | 'dev' | 'run' | 'console',
 	args: string[],
 	allowed: ReadonlySet<string>,
 ): {
@@ -581,9 +583,9 @@ function parseArgs(argv: string[]): ParsedArgs {
 		};
 	}
 
-	if (command === 'run') {
+	if (command === 'run' || command === 'console') {
 		const flags = parseFlags(
-			'run',
+			command,
 			rest,
 			new Set([
 				'--target',
@@ -599,12 +601,12 @@ function parseArgs(argv: string[]): ParsedArgs {
 		);
 		const [resource, ...extra] = flags.positionals;
 		if (!resource) {
-			console.error('Missing agent or workflow name for run command.');
+			console.error(`Missing agent or workflow name for ${command} command.`);
 			printUsage();
 			process.exit(1);
 		}
 		if (extra.length > 0) {
-			console.error(`Unexpected extra arguments for \`flue run\`: ${extra.join(' ')}`);
+			console.error(`Unexpected extra arguments for \`flue ${command}\`: ${extra.join(' ')}`);
 			printUsage();
 			process.exit(1);
 		}
@@ -624,7 +626,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 		}
 
 		return {
-			command: 'run',
+			command,
 			resource,
 			target: flags.target,
 			input: flags.input,
@@ -828,112 +830,121 @@ function displayPath(root: string, filePath: string): string {
 	return relative && !relative.startsWith('..') && !path.isAbsolute(relative) ? relative : filePath;
 }
 
-function snapshotFiles(paths: readonly string[]): Map<string, string | undefined> {
-	return new Map(paths.map((file) => [file, fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : undefined]));
-}
+let activeExecution: ExecutionLifecycle | undefined;
+let activeConsole: ConsoleController | undefined;
+let activeConsoleUi: { close(): void } | undefined;
 
-function restoreFiles(snapshot: ReadonlyMap<string, string | undefined>): void {
-	for (const [file, content] of snapshot) {
-		if (content === undefined) {
-			fs.rmSync(file, { force: true });
-		} else {
-			fs.mkdirSync(path.dirname(file), { recursive: true });
-			fs.writeFileSync(file, content);
-		}
+async function consoleCommand(args: RunArgs) {
+	if (!process.stdin.isTTY || !process.stderr.isTTY) {
+		throw new Error('[flue] `flue console` requires an interactive TTY. Use `flue run` for non-interactive execution.');
 	}
+	const input = args.input === undefined ? undefined : JSON.parse(args.input);
+	const outputBuffer: Array<{ line: string; stream: 'stdout' | 'stderr' }> = [];
+	let controller: ConsoleController | undefined;
+	const lifecycle = createExecutionLifecycle({
+		resource: args.resource,
+		target: args.target,
+		server: args.server,
+		headers: args.headers,
+		explicitRoot: args.explicitRoot,
+		explicitOutput: args.explicitOutput,
+		configFile: args.configFile,
+		envFile: args.envFile,
+		instanceId: args.id,
+		onRuntimeOutput: (line, stream) => {
+			if (controller) controller.recordServerOutput(line, stream);
+			else outputBuffer.push({ line, stream });
+		},
+		onStatus: (status) => controller?.setLifecycleStatus(status),
+	});
+	activeExecution = lifecycle;
+	let failure: unknown;
+	try {
+		const prepared = await lifecycle.prepare();
+		if (prepared.resource.kind === 'agent' && input !== undefined) parseAgentInput(input);
+		controller = createConsoleController({ lifecycle, initialInput: input });
+		activeConsole = controller;
+		for (const output of outputBuffer) controller.recordServerOutput(output.line, output.stream);
+		const ui = openConsoleUi(controller);
+		activeConsoleUi = ui;
+		void controller.start();
+		await ui.waitUntilExit();
+		await controller.close();
+	} catch (error) {
+		failure = error;
+	} finally {
+		try {
+			await (controller?.close() ?? lifecycle.close());
+		} catch (error) {
+			failure ??= error;
+		}
+		if (activeConsole === controller) activeConsole = undefined;
+		activeConsoleUi = undefined;
+		if (activeExecution === lifecycle) activeExecution = undefined;
+	}
+	if (failure !== undefined && process.exitCode !== 130 && process.exitCode !== 143) throw failure;
 }
-
-let activeRunController: AbortController | undefined;
 
 async function run(args: RunArgs) {
-	const attachRemote = isAbsoluteServer(args.server);
-	let cfg: FlueConfig | undefined;
-	let configPath: string | undefined;
-	let envFile: string | undefined;
-	let resource: RunResource;
-	if (attachRemote) {
-		const qualified = args.resource.match(/^(agent|workflow):(.+)$/);
-		if (!qualified) {
-			throw new Error(
-				`[flue] Absolute --server requires a qualified resource: agent:${args.resource} or workflow:${args.resource}.`,
-			);
-		}
-		resource = {
-			kind: qualified[1] as RunResource['kind'],
-			name: qualified[2] as string,
-			filePath: '',
-		} as RunResource;
-	} else {
-		const resolved = await resolveApplicationCommand(args);
-		cfg = resolved.cfg;
-		configPath = resolved.configPath;
-		envFile = fs.existsSync(resolved.envLoader.file) ? resolved.envLoader.file : undefined;
-		resource = resolveRunResource(cfg.sourceRoot, args.resource);
-	}
-	assertRunIdAllowed(resource.kind, args.id);
-	const input = args.input === undefined ? undefined : JSON.parse(args.input);
-	if (resource.kind === 'agent' && input === undefined) {
-		throw new Error('[flue] Agent `flue run` requires --input.');
-	}
-	const instanceId = resource.kind === 'agent' ? (args.id ?? ulid()) : undefined;
-	let runtime: LocalHttpRuntime | undefined;
-	let temporaryOutput: string | undefined;
-	let cloudflareScratch: Map<string, string | undefined> | undefined;
-	let cloudflareInputDirExisted = true;
-	const controller = new AbortController();
-	activeRunController = controller;
+	let resourceKind: 'agent' | 'workflow' | undefined;
+	const lifecycle = createExecutionLifecycle({
+		resource: args.resource,
+		target: args.target,
+		server: args.server,
+		headers: args.headers,
+		explicitRoot: args.explicitRoot,
+		explicitOutput: args.explicitOutput,
+		configFile: args.configFile,
+		envFile: args.envFile,
+		instanceId: args.id,
+		onRuntimeOutput: (line) => {
+			if (line.trim()) console.error(pc.dim(line));
+		},
+		onResourceResolved: (resource) => {
+			resourceKind = resource.kind;
+		},
+	});
+	activeExecution = lifecycle;
 	const presenter = createLineEventPresenter({
 		write: (line) => console.error(line),
 		dim: pc.dim,
 	});
 	try {
-		if (!attachRemote) {
-			temporaryOutput = fs.mkdtempSync(path.join(os.tmpdir(), 'flue-run-'));
-			if (cfg?.target === 'cloudflare') {
-				cloudflareInputDirExisted = fs.existsSync(path.join(cfg.root, '.flue-vite'));
-				cloudflareScratch = snapshotFiles([
-					path.join(cfg.root, '.flue-vite', '_entry.ts'),
-					path.join(cfg.root, '.flue-vite.wrangler.jsonc'),
-				]);
-			}
-			runtime = await startLocalHttpRuntime({
-				root: cfg?.root as string,
-				sourceRoot: cfg?.sourceRoot as string,
-				output: temporaryOutput,
-				target: cfg?.target as 'node' | 'cloudflare',
-				configFile: configPath,
-				envFile,
-				env: process.env,
-				signal: controller.signal,
-				onOutput: ({ line }) => {
-					if (line.trim()) console.error(pc.dim(line));
-				},
-			});
+		const execution = await lifecycle.start();
+		const input = args.input === undefined ? undefined : JSON.parse(args.input);
+		if (execution.resource.kind === 'agent' && input === undefined) {
+			throw new Error('[flue] Agent `flue run` requires --input.');
 		}
-		const baseUrl = attachRemote
-			? resolveServerUrl(args.server)
-			: resolveServerUrl(args.server, runtime?.url as string);
 		brandRows('flue run', [
-			[resource.kind, resource.name],
-			['id', instanceId],
-			['target', attachRemote ? undefined : cfg?.target],
-			['server', baseUrl],
-			['config', configPath && cfg ? displayPath(cfg.root, configPath) : undefined],
-			['env', envFile && cfg ? displayPath(cfg.root, envFile) : undefined],
+			[execution.resource.kind, execution.resource.name],
+			['id', execution.instanceId],
+			['target', execution.target],
+			['server', execution.baseUrl],
+			[
+				'config',
+				execution.configPath && execution.root
+					? displayPath(execution.root, execution.configPath)
+					: undefined,
+			],
+			[
+				'env',
+				execution.envFile && execution.root
+					? displayPath(execution.root, execution.envFile)
+					: undefined,
+			],
 		]);
-		const client = createFlueClient({ baseUrl, headers: parseHeaders(args.headers) });
 		const target =
-			resource.kind === 'agent'
+			execution.resource.kind === 'agent'
 				? {
 						kind: 'agent' as const,
-						name: resource.name,
-						instanceId: instanceId as string,
+						name: execution.resource.name,
+						instanceId: execution.instanceId as string,
 						input: parseAgentInput(input),
 					}
-				: { kind: 'workflow' as const, name: resource.name, input };
+				: { kind: 'workflow' as const, name: execution.resource.name, input };
 		let runIdShown = false;
 		const completed = await runTarget(
-			client,
+			execution.client,
 			target,
 			(event: FlueEvent) => {
 				if (!runIdShown && event.type === 'run_start') {
@@ -943,33 +954,25 @@ async function run(args: RunArgs) {
 				}
 				presenter.present(event);
 			},
-			controller.signal,
+			lifecycle.signal,
 		);
 		presenter.flush();
 		if (completed.kind === 'workflow' && !runIdShown) row('run', completed.runId);
 		if (completed.result !== undefined && completed.result !== null) {
 			console.log(JSON.stringify(completed.result, null, 2));
 		}
-		success(`${resource.kind} completed`);
+		success(`${execution.resource.kind} completed`);
 	} catch (err) {
 		presenter.flush();
-		if (!controller.signal.aborted) {
-			cliError(`${resource.kind === 'agent' ? 'Agent' : 'Workflow'} failed: ${err instanceof Error ? err.message : String(err)}`);
+		if (!lifecycle.signal.aborted) {
+			cliError(`${resourceKind === 'agent' ? 'Agent' : resourceKind === 'workflow' ? 'Workflow' : 'Run'} failed: ${err instanceof Error ? err.message : String(err)}`);
 			process.exitCode = 1;
 		}
 	} finally {
 		try {
-			await runtime?.stop();
+			await lifecycle.close();
 		} finally {
-			activeRunController = undefined;
-			if (cloudflareScratch) restoreFiles(cloudflareScratch);
-			if (!cloudflareInputDirExisted && cfg) {
-				const inputDir = path.join(cfg.root, '.flue-vite');
-				try {
-					if (fs.readdirSync(inputDir).length === 0) fs.rmdirSync(inputDir);
-				} catch {}
-			}
-			if (temporaryOutput) fs.rmSync(temporaryOutput, { recursive: true, force: true });
+			if (activeExecution === lifecycle) activeExecution = undefined;
 		}
 	}
 }
@@ -1472,8 +1475,18 @@ const args = parseArgs(process.argv.slice(2));
 // handlers that would otherwise run first and preempt its graceful path.
 if (args.command !== 'dev') {
 	const shutdown = (signal: NodeJS.Signals) => {
-		activeRunController?.abort(new DOMException('Aborted', 'AbortError'));
-		process.exitCode = signal === 'SIGINT' ? 130 : 143;
+		if (activeConsole) {
+			const controller = activeConsole;
+			void closeConsoleForSignal(signal, controller, () => activeConsoleUi?.close()).catch((error) => {
+				cliError(error instanceof Error ? error.message : String(error));
+			});
+		} else if (activeExecution) {
+			void closeExecutionForSignal(signal, activeExecution).catch((error) => {
+				cliError(error instanceof Error ? error.message : String(error));
+			});
+		} else {
+			process.exitCode = signal === 'SIGINT' ? 130 : 143;
+		}
 	};
 	process.on('SIGINT', () => shutdown('SIGINT'));
 	process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -1495,10 +1508,12 @@ async function main() {
 		initCommand(args);
 	} else if (args.command === 'run') {
 		await run(args);
+	} else if (args.command === 'console') {
+		await consoleCommand(args);
 	}
 }
 
 void main().catch((err) => {
 	cliError(err instanceof Error ? err.message : String(err));
-	process.exit(1);
+	if (process.exitCode === undefined) process.exitCode = 1;
 });

@@ -38,8 +38,8 @@ cli/add -- flue add
   Reference for discovering and applying Flue implementation blueprints.
 cli/build -- flue build
   Reference for creating deployable Flue application artifacts.
-cli/connect -- flue connect
-  Reference for opening an interactive local agent-instance session from the command line.
+cli/console -- flue console
+  Reference for interactively exercising an agent or inspecting one workflow invocation.
 cli/dev -- flue dev
   Reference for starting a watch-mode local Flue development server.
 cli/docs -- flue docs
@@ -49,7 +49,7 @@ cli/init -- flue init
 cli/overview -- CLI
   Use the Flue CLI to configure, develop, exercise, inspect, and build an application.
 cli/run -- flue run
-  Reference for executing one workflow invocation from the command line.
+  Reference for executing one agent prompt or workflow invocation from the command line.
 cli/update -- flue update
   Reference for updating integrations from newer Flue blueprint upgrade guides.
 concepts/agents -- What is an agent?

@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import * as path from 'node:path';
 import { createServer } from 'node:net';
+import * as path from 'node:path';
 import {
 	build,
 	cloudflareViteConfigPath,
@@ -24,6 +24,7 @@ export interface StartLocalHttpRuntimeOptions {
 	envFile?: string;
 	env?: NodeJS.ProcessEnv;
 	onOutput?: (output: LocalHttpRuntimeOutput) => void;
+	onBuildComplete?: () => void;
 	onExit?: (exit: { code: number | null; signal: NodeJS.Signals | null }) => void;
 	readyTimeoutMs?: number;
 	stopTimeoutMs?: number;
@@ -84,6 +85,7 @@ export async function startLocalHttpRuntime(
 		temporaryLocalExposure: true,
 	};
 	await build(buildOptions);
+	options.onBuildComplete?.();
 	throwIfAborted(options.signal);
 	return startBuiltLocalHttpRuntime({
 		...options,
@@ -191,7 +193,7 @@ async function startCloudflareRuntime(
 		port: options.port,
 		url,
 		reload: () => server.restart(),
-		stop: () => closeWithTimeout(server.close(), options.stopTimeoutMs ?? 5_000),
+		stop: () => closeViteServer(server, options.stopTimeoutMs ?? 5_000),
 		killSync() {},
 	};
 }
@@ -295,13 +297,27 @@ function killChildSync(child: ChildProcess): void {
 	} catch {}
 }
 
-async function closeWithTimeout(close: Promise<void>, timeoutMs: number): Promise<void> {
-	await Promise.race([
-		close,
-		new Promise<void>((resolve) => {
-			setTimeout(resolve, timeoutMs).unref();
-		}),
-	]);
+async function closeViteServer(
+	server: Awaited<ReturnType<typeof import('vite')['createServer']>>,
+	timeoutMs: number,
+): Promise<void> {
+	const close = server.close();
+	let timer: NodeJS.Timeout | undefined;
+	try {
+		await Promise.race([
+			close,
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(() => {
+					const httpServer = server.httpServer;
+					if (httpServer && 'closeAllConnections' in httpServer) httpServer.closeAllConnections();
+					reject(new Error(`Timed out closing Cloudflare Vite server after ${timeoutMs}ms.`));
+				}, timeoutMs);
+				timer.unref();
+			}),
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

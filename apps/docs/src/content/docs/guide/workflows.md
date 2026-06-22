@@ -68,13 +68,13 @@ Start inline when behavior belongs to one workflow. Extract an Action when anoth
 
 ### CLI
 
-Run a discovered workflow locally without exposing HTTP:
+Run a discovered workflow locally without adding authored workflow HTTP exposure:
 
 ```bash
 pnpm exec flue run summarize --input '{"text":"Flue workflows complete finite operations."}'
 ```
 
-`flue run` validates the JSON supplied to `--input`, reports run events, and prints the successful result as JSON. Its temporary child process does not publish run-inspection routes and its history disappears when the command exits.
+`flue run` validates the JSON supplied to `--input`, starts the configured Node.js or Cloudflare application temporarily, and invokes the workflow through its existing `flue()` mount. The normal `app.ts` pipeline and middleware execute; route-free resources are available only within this temporary local runtime. The command reports run events, prints the successful result as JSON, and exits.
 
 ### Application code
 
@@ -128,7 +128,7 @@ const events = await client.runs.events(runId);
 
 Invocation returns `{ runId }`, or `{ runId, result }` with `wait: 'result'`. The `runs` export also controls SDK `client.runs` and raw `GET` and `HEAD` requests to `/runs/<runId>`. Without the corresponding export, HTTP clients receive `404`. Run data may contain sensitive inputs, results, and model activity, so do not treat a run ID as a credential.
 
-These exports do not affect `flue run`, schedules, ambient `invoke()`, or server-side `listRuns()` and `getRun()`. See the [Workflow API HTTP exports](/docs/api/workflow-api/#http-exports) for the complete contract.
+These exports do not affect schedules, ambient `invoke()`, or server-side `listRuns()` and `getRun()`. A temporary local `flue run` or `flue console` process additionally exposes route-free resources through an existing authored `flue()` mount; remote attachment uses the server's authored exposure. See the [Workflow API HTTP exports](/docs/api/workflow-api/#http-exports) for the complete contract.
 
 ## Use the workflow harness
 

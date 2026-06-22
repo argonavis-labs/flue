@@ -105,7 +105,7 @@ Exposed workflow runs are served through long-lived `GET /runs/:runId` reads (lo
 
 ## Going further
 
-- **Scheduled workflows.** Model periodic tasks (nightly summaries, cache refreshes) as a Render cron job rather than inbound agent traffic. Add a `type: cron` service with a `schedule` (standard cron syntax, evaluated in UTC) whose `startCommand` is `npx flue run <workflow> --target node`. Each fire builds, runs the workflow once, and exits — close any Postgres connections so the process terminates cleanly. Render runs at most one instance of a given cron job at a time and stops a run after 12 hours.
+- **Scheduled workflows.** Model periodic tasks as a Render cron job that calls the deployed application's authenticated workflow endpoint, or set its command to `npx flue run workflow:<name> --server https://<host>/<flue-mount>`. Remote attachment avoids rebuilding and starting a second application runtime for every fire. Render runs at most one instance of a given cron job at a time and stops a run after 12 hours.
 - **Background workers.** For continuous, queue-driven delivery, add a `type: worker` service. A worker has no public port; it runs `node dist/server.mjs` (or a custom entry), makes attached agent requests and waits for results, or has application code call `dispatch(...)` for asynchronous delivery identified by `dispatchId`.
 
 ## References

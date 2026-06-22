@@ -1,10 +1,10 @@
 ---
 title: CLI
 description: Use the Flue CLI to configure, develop, exercise, inspect, and build an application.
-lastReviewedAt: 2026-06-20
+lastReviewedAt: 2026-06-22
 ---
 
-Install `@flue/cli` as a development dependency, then invoke the `flue` executable through your package manager:
+Install `@flue/cli` as a development dependency, then invoke `flue` through your package manager:
 
 ```bash
 npm install --save-dev @flue/cli
@@ -13,68 +13,62 @@ npx flue dev
 
 The CLI requires Node.js `>=22.19.0`. Cloudflare development and deployment also require `wrangler` as a development dependency.
 
-The CLI follows the application lifecycle: initialize a target, develop against it locally, exercise agents and workflows, and create the artifact you deploy. Each command page documents its complete arguments, options, output, and target-specific behavior.
-
-## Initialize and configure
-
-Use `flue init` once to create a starter `flue.config.ts` for Node.js or Cloudflare:
-
-```bash
-npx flue init --target node
-```
-
-The configuration selects the normal runtime target and can set the project root and build output. CLI flags provide one-time overrides. See [`flue init`](/docs/cli/init/), [Configuration](/docs/reference/configuration/), and [Project Layout](/docs/guide/project-layout/) for the available settings and source discovery conventions.
-
 ## Develop locally
 
-Use `flue dev` while authoring an application:
+`flue dev` serves the application for its configured Node.js or Cloudflare target, watches source files, and rebuilds on changes:
 
 ```bash
 npx flue dev
 ```
 
-Development mode builds the discovered application for its configured target, serves it locally, and rebuilds as source files change. Use it to exercise the same routes and runtime environment that callers use. Agents and workflows are not public merely because they are built; [Routing](/docs/guide/routing/) explains how to expose them and add application-owned routes.
+Use its real HTTP and SDK surface while authoring application routes and integrations. Agents and workflows are not public merely because they are discovered; [Routing](/docs/guide/routing/) explains authored exposure.
 
-Keep local credentials and platform values in environment configuration rather than source. See [`flue dev`](/docs/cli/dev/) for watch behavior, ports, environment files, and target-specific details.
+## Exercise one resource
 
-## Exercise agents and workflows
-
-For a Node.js target, the CLI can exercise discovered agents and workflows without public HTTP routes.
-
-Use `flue connect` for an interactive connection to one continuing agent instance:
+`flue run` executes one agent prompt or workflow invocation and exits:
 
 ```bash
-npx flue connect support-assistant ticket-8472
-```
-
-Use `flue run` for one finite workflow invocation:
-
-```bash
+npx flue run assistant --input '{"message":"Summarize this repository."}'
 npx flue run summarize-ticket --input '{"ticket":"Ticket details"}'
 ```
 
-These commands use private local execution and do not pass through application ingress middleware. Deployed applications instead receive input through their published routes and transports. See [`flue connect`](/docs/cli/connect/) and [`flue run`](/docs/cli/run/) for their exact contracts.
+`flue console` opens an interactive transcript. Agents accept follow-up prompts on one instance; workflow consoles remain open for read-only inspection after one invocation:
 
-Workflow runs exposed by a running application can be inspected through SDK [`client.runs`](/docs/sdk/runs/) or the raw [`/runs` APIs](/docs/api/streaming-protocol/). A one-shot `flue run` process streams its own events and does not publish run-inspection routes.
+```bash
+npx flue console support-assistant
+npx flue console summarize-ticket --input '{"ticket":"Ticket details"}'
+```
+
+Without an absolute `--server`, both commands start the configured Node.js or Cloudflare runtime temporarily. They call through the authored `app.ts` and an existing `flue()` mount, so normal application and resource middleware executes. Route-free resources are temporarily available through that mount for local use; this does not alter deployment behavior or create a mount.
+
+Use `--server /api/flue` for a non-root authored local mount. An absolute URL attaches to an already-running local or deployed application:
+
+```bash
+npx flue run workflow:summarize-ticket \
+  --server https://example.com/api/flue \
+  --input '{"ticket":"Ticket details"}'
+```
+
+See [`flue run`](/docs/cli/run/) and [`flue console`](/docs/cli/console/) for input, identity, headers, resource qualification, and server behavior.
 
 ## Build and deploy
 
-Use `flue build` to create target-specific deployment output:
+`flue build` creates target-specific deployment output:
 
 ```bash
 npx flue build
 ```
 
-A build packages the discovered application for its runtime target. It does not choose a model, add credentials, expose additional routes, or configure platform-owned bindings. See [`flue build`](/docs/cli/build/) for output details, then continue to the [Node.js](/docs/ecosystem/deploy/node/) or [Cloudflare](/docs/ecosystem/deploy/cloudflare/) deployment guide.
+A build packages the discovered application for its runtime target. It does not choose a model, add credentials, expose additional routes, or configure platform-owned bindings. Continue to the [Node.js](/docs/ecosystem/deploy/node/) or [Cloudflare](/docs/ecosystem/deploy/cloudflare/) deployment guide.
 
 ## Command reference
 
 | Command                              | Description                                                                     |
 | ------------------------------------ | ------------------------------------------------------------------------------- |
 | [`flue init`](/docs/cli/init/)       | Create an initial `flue.config.ts`.                                             |
-| [`flue dev`](/docs/cli/dev/)         | Start a watch-mode local development server.                                    |
-| [`flue connect`](/docs/cli/connect/) | Open an interactive local agent-instance connection.                            |
-| [`flue run`](/docs/cli/run/)         | Execute one workflow invocation locally.                                        |
+| [`flue dev`](/docs/cli/dev/)         | Serve and watch the local application.                                          |
+| [`flue run`](/docs/cli/run/)         | Execute one agent prompt or workflow invocation, then exit.                     |
+| [`flue console`](/docs/cli/console/) | Interact with an agent or inspect one workflow invocation in a terminal UI.     |
 | [`flue build`](/docs/cli/build/)     | Create deployable application artifacts.                                        |
 | [`flue add`](/docs/cli/add/)         | Fetch sandbox, channel, or database installation blueprints for a coding agent. |
 | [`flue update`](/docs/cli/update/)   | Fetch a current blueprint so a coding agent can apply its newer upgrade guides. |

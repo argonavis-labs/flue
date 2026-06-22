@@ -1,4 +1,4 @@
-export const DEFAULT_LOCAL_SERVER_ORIGIN = 'http://127.0.0.1:3583';
+const DEFAULT_LOCAL_SERVER_ORIGIN = 'http://127.0.0.1:3583';
 
 export function isAbsoluteServer(value: string | undefined): boolean {
 	if (value === undefined) return false;
