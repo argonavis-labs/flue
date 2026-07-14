@@ -1881,7 +1881,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					throw new Error('unreachable');
 				},
 			};
-			return this.wrapModelTool(tool, 'custom', (_toolCallId, params, signal) => {
+			return this.wrapModelTool(tool, 'custom', (toolCallId, params, signal) => {
 				if (preparedToolAdapter) {
 					return {
 						args: params,
@@ -1901,7 +1901,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				return {
 					args: parsed.input,
 					run: async () => {
-						const output = validateToolOutput(toolDef, await toolDef.run(parsed.context));
+						const output = validateToolOutput(
+							toolDef,
+							await toolDef.run({ ...parsed.context, toolCallId }),
+						);
 						return {
 							content: [
 								{
