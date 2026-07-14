@@ -182,3 +182,8 @@ export function resolveModel(model: string): Model<Api> {
 	}
 	return resolved;
 }
+
+export {
+	type AgentConversationSignalInput,
+	appendAgentConversationSignal,
+} from './cloudflare/app-signals.ts';
