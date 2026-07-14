@@ -14,6 +14,12 @@ import {
 
 export interface SendMessageOptions {
 	images?: DeliveredAttachment[];
+	/**
+	 * Client-supplied submission id. Reusing the id on a retry resolves to the
+	 * same submission instead of admitting a duplicate turn. Omit it and the
+	 * server mints one.
+	 */
+	submissionId?: string;
 }
 
 export class AgentSession {
@@ -68,6 +74,7 @@ export class AgentSession {
 					body: message,
 					...(options.images?.length ? { attachments: options.images } : {}),
 				},
+				submissionId: options.submissionId,
 			});
 			this.dispatch({ type: 'local_send_admitted', localId, submissionId: receipt.submissionId });
 			if (this.observation?.getSnapshot().phase === 'absent') this.observation.refresh();
@@ -118,6 +125,7 @@ function publicSnapshot(state: AgentState): AgentSnapshot {
 		historyReady: state.historyReady,
 		error: state.error,
 		failedSends: state.failedSends,
+		settlements: state.settlements,
 	};
 }
 
