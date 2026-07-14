@@ -1,4 +1,5 @@
 import {
+	cloneReducedInstanceState,
 	createReducedInstanceState,
 	type ReducedInstanceState,
 	reduceConversationRecordsInPlace,
@@ -6,22 +7,77 @@ import {
 } from './conversation-reducer.ts';
 import type { ConversationStreamStore } from './runtime/conversation-stream-store.ts';
 
+/**
+ * Reduced state for the whole log, shared per store+path.
+ *
+ * Every full-state load rebuilt the state from record zero, deep-cloning the
+ * accumulated state once per batch. The record writer takes this load on every
+ * cold start, so a long conversation paid a full quadratic replay to append one
+ * message.
+ */
+const REDUCED_STATE_CACHE = Symbol.for('flue.reducedStateCache');
+
+interface FullCacheEntry {
+	incarnation: string;
+	state: ReducedInstanceState;
+}
+
+type FullCacheHost = ConversationStreamStore & {
+	[REDUCED_STATE_CACHE]?: Map<string, FullCacheEntry>;
+};
+
+function fullStateCache(store: ConversationStreamStore): Map<string, FullCacheEntry> {
+	const host = store as FullCacheHost;
+	const cache = host[REDUCED_STATE_CACHE] ?? new Map<string, FullCacheEntry>();
+	host[REDUCED_STATE_CACHE] = cache;
+	return cache;
+}
+
+/**
+ * Build the reduced state for the whole log, reusing the cached state and
+ * replaying only what has been appended since.
+ *
+ * The returned state is SHARED — callers must treat it as immutable and fork it
+ * (via {@link cloneReducedInstanceState}) before mutating. A warm load that finds
+ * no new records hands back the very same object; one that finds new records
+ * forks once, so a state handed to an earlier caller is never mutated underneath
+ * it.
+ */
 export async function loadReducedConversationState(options: {
 	store: ConversationStreamStore;
 	path: string;
 }): Promise<ReducedInstanceState> {
-	// The state is built here and never escapes until it is returned, so the
-	// caller owns it outright and each batch can reduce into it in place.
-	const state = createReducedInstanceState();
-	let offset = '-1';
+	const meta = await options.store.getMeta(options.path);
+	const incarnation = meta?.incarnation;
+	const cache = fullStateCache(options.store);
+	// A stream deleted and recreated restarts its offsets, so a cache entry from
+	// the previous incarnation must not be advanced — rebuild from scratch.
+	const cached = incarnation === undefined ? undefined : cache.get(options.path);
+	const warm = cached?.incarnation === incarnation ? cached?.state : undefined;
+
+	let state = warm ?? createReducedInstanceState();
+	// The cached state is shared with whoever loaded it before us; a fresh one is
+	// ours alone. Fork lazily, so a load with nothing new to apply costs nothing.
+	let owned = warm === undefined;
+	let offset = state.recordsThroughOffset;
+
 	while (true) {
 		const read = await options.store.read(options.path, { offset, limit: 1000 });
 		for (const batch of read.batches) {
+			if (!owned) {
+				state = cloneReducedInstanceState(state);
+				owned = true;
+			}
 			reduceConversationRecordsInPlace(state, batch.records, batch.offset);
 			offset = batch.offset;
 		}
-		if (read.upToDate) return state;
+		if (read.upToDate) break;
 	}
+
+	if (incarnation !== undefined && (owned || warm === undefined)) {
+		cache.set(options.path, { incarnation, state });
+	}
+	return state;
 }
 
 /**
@@ -90,6 +146,7 @@ export function putPrefixState(
 }
 
 export function clearReducedStateCache(store: ConversationStreamStore): void {
+	(store as FullCacheHost)[REDUCED_STATE_CACHE]?.clear();
 	(store as PrefixCacheHost)[PREFIX_STATE_CACHE]?.clear();
 }
 

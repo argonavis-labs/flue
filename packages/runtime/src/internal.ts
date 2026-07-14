@@ -200,3 +200,11 @@ export {
 	reduceConversationRecordsInPlace,
 	reductionDiagnostics,
 } from './conversation-reducer.ts';
+
+// Test seams: runner-next's contract tests drive the submission store and the
+// record writer directly to pin durability and reduction behavior.
+export { ConversationRecordWriter } from './conversation-writer.ts';
+export {
+	createSqlAgentExecutionStoreFromSql,
+	ensureSqlAgentExecutionTables,
+} from './sql-agent-execution-store.ts';
