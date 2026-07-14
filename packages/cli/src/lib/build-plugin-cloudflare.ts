@@ -1,6 +1,9 @@
 /** Cloudflare build plugin. Produces a Worker + DO entry point for workflow runs and agent interactions. */
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
+	createCloudflareDeploymentManifest,
+	findCloudflareWranglerConfigPath,
 	type FlueAdditions,
 	mergeFlueAdditions,
 	readUserWranglerConfig,
@@ -649,6 +652,28 @@ export default {
 		// `containers[].image` points to.
 
 		return { wranglerConfig: JSON.stringify(merged, null, 2) };
+	}
+
+	async additionalOutputs(ctx: BuildContext): Promise<Record<string, string>> {
+		const wranglerPath = findCloudflareWranglerConfigPath(ctx.output);
+		let config: Record<string, unknown>;
+		try {
+			config = JSON.parse(fs.readFileSync(wranglerPath, 'utf-8')) as Record<string, unknown>;
+		} catch (err) {
+			throw new Error(
+				`[flue] Failed to read generated Cloudflare wrangler output for deployment manifest: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+		// The manifest sits beside the artifacts it describes, so paths in it are
+		// relative to the output root rather than to whoever runs the deploy.
+		const artifactRoot = path.relative(ctx.output, path.dirname(wranglerPath)) || '.';
+		return {
+			'flue-cloudflare-deployment.v1.json': `${JSON.stringify(
+				createCloudflareDeploymentManifest(config, artifactRoot),
+				null,
+				2,
+			)}\n`,
+		};
 	}
 }
 

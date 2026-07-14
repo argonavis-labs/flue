@@ -302,3 +302,117 @@ export function mergeFlueAdditions(
 
 	return merged;
 }
+
+// ─── Deployment manifest ────────────────────────────────────────────────────
+
+/** Worker topology a deploy driver needs, read off the generated wrangler output. */
+export interface CloudflareDeploymentManifest {
+	v: 1;
+	worker: {
+		name: string;
+		artifactRoot: string;
+		main: string;
+		accountId?: string;
+		compatibilityDate: string;
+		compatibilityFlags: string[];
+		observability?: unknown;
+	};
+	vars: Record<string, unknown>;
+	durableObjects: Array<{ binding: string; className: string }>;
+	workerLoaders: Array<{ binding: string }>;
+}
+
+/**
+ * Project the generated wrangler config into a stable deployment manifest.
+ *
+ * A deploy driver should not have to re-derive the worker's name, entrypoint,
+ * compatibility, or Durable Object bindings from a config it did not author.
+ */
+export function createCloudflareDeploymentManifest(
+	config: Record<string, unknown>,
+	artifactRoot: string,
+): CloudflareDeploymentManifest {
+	const requireString = (value: unknown, name: string): string => {
+		if (typeof value !== 'string' || value.length === 0) {
+			throw new Error(`[flue] Generated Cloudflare deployment manifest is missing ${name}.`);
+		}
+		return value;
+	};
+
+	const durableObjects = config.durable_objects as { bindings?: unknown } | undefined;
+	const durableObjectBindings = Array.isArray(durableObjects?.bindings)
+		? (durableObjects.bindings as Array<Record<string, unknown>>)
+		: [];
+	const workerLoaders = Array.isArray(config.worker_loaders)
+		? (config.worker_loaders as Array<Record<string, unknown>>)
+		: [];
+
+	return {
+		v: 1,
+		worker: {
+			name: requireString(config.name, 'worker.name'),
+			artifactRoot: requireString(artifactRoot, 'worker.artifactRoot'),
+			main: requireString(config.main, 'worker.main'),
+			...(typeof config.account_id === 'string' ? { accountId: config.account_id } : {}),
+			compatibilityDate: requireString(config.compatibility_date, 'worker.compatibilityDate'),
+			compatibilityFlags: Array.isArray(config.compatibility_flags)
+				? config.compatibility_flags.filter((flag): flag is string => typeof flag === 'string')
+				: [],
+			...(typeof config.observability === 'object' && config.observability !== null
+				? { observability: config.observability }
+				: {}),
+		},
+		vars:
+			typeof config.vars === 'object' && config.vars !== null && !Array.isArray(config.vars)
+				? (config.vars as Record<string, unknown>)
+				: {},
+		durableObjects: durableObjectBindings.map((binding) => {
+			if (typeof binding?.name !== 'string' || typeof binding.class_name !== 'string') {
+				throw new Error(
+					'[flue] Generated Cloudflare deployment manifest found an invalid Durable Object binding.',
+				);
+			}
+			// A cross-script or cross-environment binding names a Worker this manifest
+			// does not describe, so a deploy driver could not honor it.
+			if (binding.script_name !== undefined || binding.environment !== undefined) {
+				throw new Error(
+					'[flue] Generated Cloudflare deployment manifest only supports local Durable Object bindings.',
+				);
+			}
+			return { binding: binding.name, className: binding.class_name };
+		}),
+		workerLoaders: workerLoaders.map((loader) => {
+			if (typeof loader?.binding !== 'string') {
+				throw new Error(
+					'[flue] Generated Cloudflare deployment manifest found an invalid WorkerLoader binding.',
+				);
+			}
+			return { binding: loader.binding };
+		}),
+	};
+}
+
+/** Locate the single wrangler.json the Cloudflare build generated under `output`. */
+export function findCloudflareWranglerConfigPath(output: string): string {
+	const directPath = path.join(output, 'wrangler.json');
+	if (fs.existsSync(directPath)) return directPath;
+
+	const matches: string[] = [];
+	const visit = (dir: string): void => {
+		for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+			const absolutePath = path.join(dir, entry.name);
+			if (entry.isDirectory()) visit(absolutePath);
+			else if (entry.isFile() && entry.name === 'wrangler.json') matches.push(absolutePath);
+		}
+	};
+	if (fs.existsSync(output)) visit(output);
+
+	// More than one means we cannot tell which Worker the manifest should describe.
+	const [match] = matches;
+	if (matches.length !== 1 || match === undefined) {
+		throw new Error(
+			`[flue] Expected exactly one generated Cloudflare wrangler output under ${output} before emitting the deployment manifest; found ${matches.length}.`,
+		);
+	}
+	return match;
+}
