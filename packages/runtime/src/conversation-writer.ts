@@ -7,7 +7,10 @@ import type {
 	ConversationRecord,
 } from './conversation-records.ts';
 import type { ReducedInstanceState } from './conversation-reducer.ts';
-import { reduceConversationRecords } from './conversation-reducer.ts';
+import {
+	cloneReducedInstanceState,
+	reduceConversationRecordsInPlace,
+} from './conversation-reducer.ts';
 import type {
 	ConversationProducerClaim,
 	ConversationStreamIdentity,
@@ -48,6 +51,11 @@ export class ConversationRecordWriter {
 	private tail: Promise<void> = Promise.resolve();
 	private nextProducerSequence: number;
 	private reducedState: ReducedInstanceState | undefined;
+	/**
+	 * Whether `reducedState` is this writer's private copy rather than one shared
+	 * with the read cache. Set on the first append, which forks it.
+	 */
+	private ownsReducedState = false;
 	private pendingRecords: ConversationRecord[] = [];
 	private pendingOptions: ConversationAppendOptions | undefined;
 	private pendingTimer: ReturnType<typeof setTimeout> | undefined;
@@ -216,8 +224,20 @@ export class ConversationRecordWriter {
 	): Promise<{ offset: string }> {
 		const operation = this.tail.then(async () => {
 			this.assertActive();
+			// The loader hands back a state that may be shared through the read cache,
+			// so fork it once on the first append and then apply every later append in
+			// place on this private copy. Cloning per flush meant a full deep clone of
+			// the whole conversation roughly once a second on a live turn.
+			if (this.reducedState && !this.ownsReducedState) {
+				this.reducedState = cloneReducedInstanceState(this.reducedState);
+				this.ownsReducedState = true;
+			}
 			const reduced = this.reducedState
-				? reduceConversationRecords(this.reducedState, records, this.reducedState.recordsThroughOffset)
+				? reduceConversationRecordsInPlace(
+						this.reducedState,
+						records,
+						this.reducedState.recordsThroughOffset,
+					)
 				: undefined;
 			const producerSequence = this.nextProducerSequence;
 			const input = {
