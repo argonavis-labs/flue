@@ -39,6 +39,7 @@ export const CLOUDFLARE_AGENT_INTERNAL_DISPATCH_PATH = '/__flue/internal/dispatc
 
 const FLUE_AGENT_SUBMISSION_WAKE_CALLBACK = '__flueWakeAgentSubmissions';
 const FLUE_AGENT_SUBMISSION_WAKE_SECONDS = 30;
+const FLUE_AGENT_SUBMISSION_WAKE_MAX_SECONDS = 300;
 const FLUE_AGENT_SUBMISSION_ATTEMPT_STALE_MS = 15 * 60 * 1000;
 const FLUE_AGENT_SUBMISSION_ATTEMPT_FIBER = 'flue:submission-attempt';
 
@@ -381,8 +382,37 @@ class CloudflareAgentCoordinator {
 
 	private async restoreSubmissionWake(): Promise<boolean> {
 		if (!(await this.submissions.hasUnsettledSubmissions())) return false;
-		await this.armSubmissionWake();
+		await this.armSubmissionWake({ delaySeconds: await this.submissionWakeBackoffSeconds() });
 		return true;
+	}
+
+	/**
+	 * A submission interrupted by a Durable Object reset is re-driven on the next
+	 * scheduled wake, and each interrupted re-drive spends one attempt of the
+	 * durability budget. On a flat 30s wake, a deploy storm burns the whole budget
+	 * in minutes and terminalizes the submission `failed` before it can make any
+	 * progress — the user's input is never applied. Spacing re-drives out by the
+	 * highest running attempt waits the storm out instead.
+	 *
+	 * Fresh work keeps the snappy base cadence, and a read failure degrades to the
+	 * base delay rather than blocking recovery outright.
+	 */
+	private async submissionWakeBackoffSeconds(): Promise<number> {
+		let maxAttempt = 1;
+		try {
+			for (const submission of await this.submissions.listRunningSubmissions()) {
+				if (typeof submission.attemptCount === 'number' && submission.attemptCount > maxAttempt) {
+					maxAttempt = submission.attemptCount;
+				}
+			}
+		} catch {
+			return FLUE_AGENT_SUBMISSION_WAKE_SECONDS;
+		}
+		if (maxAttempt <= 1) return FLUE_AGENT_SUBMISSION_WAKE_SECONDS;
+		const backoff = FLUE_AGENT_SUBMISSION_WAKE_SECONDS * 2 ** (maxAttempt - 1);
+		const capped = Math.min(backoff, FLUE_AGENT_SUBMISSION_WAKE_MAX_SECONDS);
+		// Jitter so a fleet of DOs reset by one deploy does not re-drive in lockstep.
+		return Math.round(capped * (0.75 + Math.random() * 0.25));
 	}
 
 	private async reconcileSubmissions(
