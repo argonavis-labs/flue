@@ -8,7 +8,10 @@ import type {
 	ConversationRecord,
 	SubmissionSettledRecord,
 } from './conversation-records.ts';
-import type { ReducedInstanceState } from './conversation-reducer.ts';
+import type {
+	ReducedConversationState,
+	ReducedInstanceState,
+} from './conversation-reducer.ts';
 import { toolResultOutput, toolResultText } from './message-rendering.ts';
 import type { PromptUsage } from './types.ts';
 
@@ -99,7 +102,9 @@ export type ConversationStreamChunk = ConversationStreamChunkBody & {
 const DEFAULT_HARNESS = 'default';
 const DEFAULT_SESSION = 'default';
 
-function selectRootConversation(state: ReducedInstanceState) {
+export function selectRootConversation(
+	state: ReducedInstanceState,
+): ReducedConversationState | undefined {
 	const roots = [...state.conversations.values()].filter(
 		(conversation) => conversation.kind === 'root',
 	);
@@ -128,14 +133,18 @@ export function projectAgentConversationSnapshot(
 
 export function projectAgentConversationBatch(options: {
 	state: ReducedInstanceState;
-	previousState?: ReducedInstanceState;
+	/**
+	 * Root conversation as of *before* these records were applied. Only used as a
+	 * fallback when the post-batch state has no root conversation. Callers that
+	 * reduce in place cannot pass a whole previous state, and do not need to:
+	 * `state.conversations` is append-only.
+	 */
+	previousRoot?: ReducedConversationState;
 	records: readonly ConversationRecord[];
 	/** Durable batch ordinal these records were read at; stamped onto each chunk. */
 	batchOrdinal: number;
 }): ConversationStreamChunk[] {
-	const conversation =
-		selectRootConversation(options.state) ??
-		(options.previousState ? selectRootConversation(options.previousState) : undefined);
+	const conversation = selectRootConversation(options.state) ?? options.previousRoot;
 	if (!conversation) return [];
 	const conversationId = conversation.conversationId;
 	const relevant = options.records.filter((record) => record.conversationId === conversationId);

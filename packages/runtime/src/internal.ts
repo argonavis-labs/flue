@@ -187,3 +187,16 @@ export {
 	type AgentConversationSignalInput,
 	appendAgentConversationSignal,
 } from './cloudflare/app-signals.ts';
+
+export {
+	clearReducedStateCache,
+	loadReducedConversationPrefix,
+	loadReducedConversationState,
+} from './conversation-reader.ts';
+export {
+	cloneReducedInstanceState,
+	createReducedInstanceState,
+	reduceConversationRecords,
+	reduceConversationRecordsInPlace,
+	reductionDiagnostics,
+} from './conversation-reducer.ts';

@@ -1,12 +1,17 @@
 import {
 	projectAgentConversationBatch,
 	projectAgentConversationSnapshot,
+	selectRootConversation,
 } from '../conversation-public.ts';
 import {
 	loadReducedConversationPrefix,
 	loadReducedConversationState,
+	putPrefixState,
 } from '../conversation-reader.ts';
-import { reduceConversationRecords } from '../conversation-reducer.ts';
+import {
+	cloneReducedInstanceState,
+	reduceConversationRecordsInPlace,
+} from '../conversation-reducer.ts';
 import {
 	AttachmentNotFoundError,
 	InvalidRequestError,
@@ -154,10 +159,16 @@ async function updatesResponse(options: {
 	if (live === 'sse') {
 		return sseResponse(options.store, options.path, offset, options.request.signal);
 	}
-	let state = await loadReducedConversationPrefix({
+	// Take the state the previous page left at this offset rather than rebuilding
+	// it from the start of the log. A miss falls back to the cold loader, which
+	// builds a state this request owns outright — so either way the projector may
+	// reduce in place, and hands the result to the next page.
+	const incarnation = meta.incarnation;
+	const state = await loadReducedConversationPrefix({
 		store: options.store,
 		path: options.path,
 		offset,
+		incarnation,
 	});
 	let read = await options.store.read(options.path, { offset });
 	if (live === 'long-poll' && read.batches.length === 0) {
@@ -165,25 +176,34 @@ async function updatesResponse(options: {
 		if (waited === 'aborted') return new Response(null, { status: 499, headers: SECURITY_HEADERS });
 		read = waited;
 	}
-	const projected = projectRead(state, read);
-	state = projected.state;
+	const projected = projectRead(state, read, { owned: true });
+	putPrefixState(options.store, options.path, projected.offset, incarnation, projected.state);
 	return dsJsonResponse(projected.items, read, projected.offset);
 }
 
 function projectRead(
 	initialState: Awaited<ReturnType<typeof loadReducedConversationPrefix>>,
 	read: ConversationStreamReadResult,
+	options?: { owned?: boolean },
 ) {
-	let state = initialState;
+	if (read.batches.length === 0) {
+		return { state: initialState, items: [], offset: initialState.recordsThroughOffset };
+	}
+	// Stock deep-cloned the entire reduced state once per batch — up to a hundred
+	// batches a page — solely so `previousState` could serve as a fallback
+	// root-conversation lookup. Taking the root conversation *before* the batch and
+	// passing that instead makes the clone unnecessary: one fork per read, and none
+	// at all when the caller already owns the state.
+	const state = options?.owned ? initialState : cloneReducedInstanceState(initialState);
 	const items: unknown[] = [];
 	let offset = initialState.recordsThroughOffset;
 	for (const batch of read.batches) {
-		const previousState = state;
-		state = reduceConversationRecords(state, batch.records, batch.offset);
+		const previousRoot = selectRootConversation(state);
+		reduceConversationRecordsInPlace(state, batch.records, batch.offset);
 		items.push(
 			...projectAgentConversationBatch({
 				state,
-				previousState,
+				previousRoot,
 				records: batch.records,
 				batchOrdinal: parseOffset(batch.offset),
 			}),
@@ -235,7 +255,10 @@ function sseResponse(
 			try {
 				while (active) {
 					const read = await store.read(path, { offset: currentOffset });
-					const projected = projectRead(state, read);
+					// An SSE connection builds its state from the uncached loader and then
+					// holds it for the connection's lifetime — nothing else references it —
+					// so the projector may reduce in place instead of cloning per wake.
+					const projected = projectRead(state, read, { owned: true });
 					state = projected.state;
 					if (projected.items.length > 0) {
 						controller.enqueue(

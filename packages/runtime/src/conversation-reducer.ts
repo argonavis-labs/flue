@@ -176,6 +176,23 @@ export function createReducedInstanceState(): ReducedInstanceState {
 	};
 }
 
+/**
+ * Allocation counters for the tests that pin clone-elision and prefix-cache
+ * behavior. Not a public contract — these exist because the cost being defended
+ * against (a full-state deep clone per batch) is invisible to a functional
+ * assertion.
+ */
+export const reductionDiagnostics = {
+	fullStateClones: 0,
+	recordsReplayed: 0,
+	prefixCacheHits: 0,
+	reset(): void {
+		this.fullStateClones = 0;
+		this.recordsReplayed = 0;
+		this.prefixCacheHits = 0;
+	},
+};
+
 export function reduceConversationRecords(
 	state: ReducedInstanceState,
 	records: readonly ConversationRecord[],
@@ -187,7 +204,27 @@ export function reduceConversationRecords(
 	return next;
 }
 
-function cloneReducedInstanceState(state: ReducedInstanceState): ReducedInstanceState {
+/**
+ * Apply records directly to `state` instead of onto a fresh deep clone.
+ *
+ * The caller MUST own `state` exclusively — a cached or shared state must be
+ * forked with {@link cloneReducedInstanceState} first. Cloning the entire state
+ * once per batch makes a full-log replay quadratic in allocations, which is what
+ * OOMed large chat Durable Objects on every wake.
+ */
+export function reduceConversationRecordsInPlace(
+	state: ReducedInstanceState,
+	records: readonly ConversationRecord[],
+	offset = state.recordsThroughOffset,
+): ReducedInstanceState {
+	for (const record of records) applyConversationRecord(state, record);
+	reductionDiagnostics.recordsReplayed += records.length;
+	state.recordsThroughOffset = offset;
+	return state;
+}
+
+export function cloneReducedInstanceState(state: ReducedInstanceState): ReducedInstanceState {
+	reductionDiagnostics.fullStateClones += 1;
 	return {
 		recordsThroughOffset: state.recordsThroughOffset,
 		conversationScopes: new Map(state.conversationScopes),
