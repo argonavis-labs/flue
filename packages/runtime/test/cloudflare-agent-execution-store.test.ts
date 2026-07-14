@@ -94,6 +94,8 @@ describe('createSqlAgentExecutionStore()', () => {
 				'lease_expires_at',
 				'settlement_record_id',
 				'settlement_record_json',
+				'progress_marker',
+				'no_progress_streak',
 			]),
 		);
 		const tableNames = new Set(

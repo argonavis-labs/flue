@@ -320,6 +320,21 @@ export interface DurabilityConfig {
 	 */
 	maxAttempts?: number;
 	/**
+	 * Maximum *consecutive* recovery attempts that produce no new durable output
+	 * before the submission is parked as failed.
+	 *
+	 * `maxAttempts` alone cannot distinguish a submission that is grinding
+	 * usefully (streaming real work between interruptions) from one that is
+	 * deterministically dying at the same point every time. A deploy storm burns
+	 * the budget on the first; a poison turn burns it on the second, but only
+	 * after the full budget has been spent. Charging only the recoveries that did
+	 * not advance separates them: real progress is free, and the deterministic
+	 * failure signature is parked fast.
+	 *
+	 * Unset means the streak is tracked but never parks on its own.
+	 */
+	maxNoProgressAttempts?: number;
+	/**
 	 * Maximum wall-clock milliseconds for a single submission. Submissions
 	 * that exceed this limit are aborted and settled as failed. Defaults to
 	 * 3,600,000 (one hour). Set higher for long-running agents (e.g.

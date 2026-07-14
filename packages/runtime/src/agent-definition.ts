@@ -232,12 +232,16 @@ function assertCompaction(definition: AgentProfile['compaction'], label: string)
 function assertDurability(definition: AgentProfile['durability'], label: string): void {
 	if (definition === undefined) return;
 	for (const key of Object.keys(definition)) {
-		if (key !== 'maxAttempts' && key !== 'timeoutMs') {
+		if (key !== 'maxAttempts' && key !== 'timeoutMs' && key !== 'maxNoProgressAttempts') {
 			throw new Error(`[flue] ${label} durability received unknown field "${key}".`);
 		}
 	}
 	assertPositiveInteger(definition.maxAttempts, `${label} durability.maxAttempts`);
 	assertPositiveInteger(definition.timeoutMs, `${label} durability.timeoutMs`);
+	assertPositiveInteger(
+		definition.maxNoProgressAttempts,
+		`${label} durability.maxNoProgressAttempts`,
+	);
 }
 
 function assertPositiveInteger(value: number | undefined, label: string): void {

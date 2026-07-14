@@ -41,6 +41,13 @@ export interface AgentSubmission {
 	readonly inputAppliedAt?: number;
 	readonly recoveryRequestedAt?: number;
 	/**
+	 * Opaque description of how far this submission's durable output had got as of
+	 * the last recovery. Compared, never interpreted.
+	 */
+	readonly progressMarker?: string | null;
+	/** Consecutive recoveries that produced no new durable output. */
+	readonly noProgressStreak?: number;
+	/**
 	 * When set, abort was requested for this submission. This is a durable
 	 * abort+recovery *signal*, NOT a terminal classification: the aborted
 	 * outcome is read only from the settlement (a `submission_aborted` advisory,
@@ -158,6 +165,13 @@ export interface AgentSubmissionStore {
 		attempt: SubmissionAttemptRef,
 		nextAttemptId: string,
 		lease?: { ownerId: string; leaseExpiresAt: number },
+		/**
+		 * Progress-aware accounting. When supplied, a recovery whose durable output
+		 * advanced past `marker` costs no attempt and resets the no-progress streak;
+		 * one that did not advance costs an attempt and extends the streak. Omit to
+		 * charge the attempt unconditionally (the stock behavior).
+		 */
+		progress?: { marker: string | null },
 	): Promise<AgentSubmission | null>;
 
 	// Admission
