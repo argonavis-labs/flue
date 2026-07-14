@@ -28,6 +28,12 @@ export type DeliveredMessage =
 /** Options for one direct-agent prompt. */
 export interface AgentPromptOptions {
 	message: DeliveredMessage;
+	/**
+	 * Client-supplied submission id. Supplying one makes the send idempotent:
+	 * a retry that reuses the id resolves to the same submission rather than
+	 * admitting a duplicate turn. Omit it and the server mints one.
+	 */
+	submissionId?: string;
 	signal?: AbortSignal;
 }
 
@@ -53,7 +59,10 @@ export async function sendAgent(
 	return http.json<AgentSendResult>({
 		method: 'POST',
 		path: `/agents/${encodeURIComponent(name)}/${encodeURIComponent(id)}`,
-		body: options.message,
+		body: {
+			...options.message,
+			...(options.submissionId === undefined ? {} : { submissionId: options.submissionId }),
+		},
 		signal: options.signal,
 	});
 }

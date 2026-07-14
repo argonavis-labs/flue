@@ -55,6 +55,32 @@ export const DeliveredMessageSchema = v.variant('kind', [
 	DeliveredSignalMessageSchema,
 ]);
 
+const DirectAgentRequestSchema = v.variant('kind', [
+	v.object({
+		kind: v.literal('user'),
+		body: v.string(),
+		attachments: v.optional(v.array(DeliveredAttachmentSchema)),
+		submissionId: v.optional(v.pipe(v.string(), v.nonEmpty())),
+	}),
+	v.object({
+		kind: v.literal('signal'),
+		type: v.pipe(v.string(), v.nonEmpty('Signal message "type" must not be empty.')),
+		body: v.string(),
+		attributes: v.optional(v.record(v.string(), v.string())),
+		tagName: v.optional(
+			v.pipe(
+				v.string(),
+				v.regex(
+					/^[A-Za-z_][A-Za-z0-9_.-]*$/,
+					'Signal message "tagName" must be a valid XML tag name ' +
+						'(letters, digits, "_", "-", "."; must not start with a digit, "-", or ".").',
+				),
+			),
+		),
+		submissionId: v.optional(v.pipe(v.string(), v.nonEmpty())),
+	}),
+]);
+
 /**
  * Validate a raw value as a {@link DeliveredMessage}. Shared by `dispatch()`
  * admission and the direct HTTP route so both transports produce the same
@@ -72,6 +98,20 @@ export function parseDeliveredMessage(value: unknown): DeliveredMessage {
 			'Delivered messages must be { kind: "user", body: string, attachments?: attachment[] } ' +
 				'or { kind: "signal", type: string, body: string, attributes?: Record<string, string>, tagName?: string }.',
 	});
+}
+
+/** Parse a direct HTTP admission and separate its transport id from the message. */
+export function parseDirectAgentRequest(value: unknown): {
+	readonly message: DeliveredMessage;
+	readonly submissionId?: string;
+} {
+	const parsed = v.safeParse(DirectAgentRequestSchema, value);
+	if (!parsed.success) return { message: parseDeliveredMessage(value) };
+	const { submissionId, ...message } = parsed.output;
+	return {
+		message,
+		...(submissionId === undefined ? {} : { submissionId }),
+	};
 }
 
 export const WorkflowRouteParamSchema = v.object({ name: v.string() });

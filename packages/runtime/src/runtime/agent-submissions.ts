@@ -104,6 +104,7 @@ interface AttachedAgentSubmissionReceipt {
 
 export type AttachedAgentSubmissionAdmission = (
 	message: DeliveredMessage,
+	submissionId?: string,
 	traceCarrier?: FlueTraceCarrier,
 ) => Promise<AttachedAgentSubmissionReceipt>;
 
@@ -122,11 +123,16 @@ export function createDirectAgentSubmissionInput(options: {
 	agent: string;
 	id: string;
 	message: DeliveredMessage;
+	/**
+	 * Reuse a client-supplied id instead of minting one, so a retried send
+	 * resolves to the submission the first attempt already admitted.
+	 */
+	submissionId?: string;
 	traceCarrier?: FlueTraceCarrier;
 }): AgentSubmissionInput {
 	return {
 		kind: 'direct',
-		submissionId: crypto.randomUUID(),
+		submissionId: options.submissionId ?? crypto.randomUUID(),
 		agent: options.agent,
 		id: options.id,
 		message: options.message,

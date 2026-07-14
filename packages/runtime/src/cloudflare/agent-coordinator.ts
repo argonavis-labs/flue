@@ -272,8 +272,8 @@ class CloudflareAgentCoordinator {
 			request,
 			id: this.instance.name,
 			agentName: this.agentName,
-			admitAttachedSubmission: (message, traceCarrier) =>
-				this.admitAttachedSubmission(message, traceCarrier),
+			admitAttachedSubmission: (message, submissionId, traceCarrier) =>
+				this.admitAttachedSubmission(message, submissionId, traceCarrier),
 		});
 	}
 
@@ -699,9 +699,11 @@ class CloudflareAgentCoordinator {
 
 	private async admitAttachedSubmission(
 		message: DeliveredMessage,
+		submissionId?: string,
 		traceCarrier?: FlueTraceCarrier,
 	) {
 		const input = createDirectAgentSubmissionInput({
+			submissionId,
 			agent: this.agentName,
 			id: this.instance.name,
 			message,
