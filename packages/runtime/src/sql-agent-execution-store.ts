@@ -93,12 +93,62 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 		attempt: SubmissionAttemptRef,
 		nextAttemptId: string,
 		lease?: { ownerId: string; leaseExpiresAt: number },
+		progress?: { marker: string | null },
 	): Promise<AgentSubmission | null> {
 		const now = Date.now();
+
+		if (progress === undefined) {
+			const row = this.sql
+				.exec(
+					`UPDATE flue_agent_submissions
+				 SET attempt_id = ?, recovery_requested_at = NULL, started_at = ?, attempt_count = attempt_count + 1${
+						lease ? ', owner_id = ?, lease_expires_at = ?' : ''
+					}
+				 WHERE submission_id = ? AND status = 'running' AND attempt_id = ?
+				 RETURNING ${submissionColumns}`,
+					...(lease
+						? [
+								nextAttemptId,
+								now,
+								lease.ownerId,
+								lease.leaseExpiresAt,
+								attempt.submissionId,
+								attempt.attemptId,
+							]
+						: [nextAttemptId, now, attempt.submissionId, attempt.attemptId]),
+				)
+				.toArray()[0];
+			return row ? this.parseSubmission(row) : null;
+		}
+
+		const current = this.sql
+			.exec(
+				`SELECT progress_marker, no_progress_streak FROM flue_agent_submissions
+				 WHERE submission_id = ? AND status = 'running' AND attempt_id = ?
+				 LIMIT 1`,
+				attempt.submissionId,
+				attempt.attemptId,
+			)
+			.toArray()[0];
+		if (!current) return null;
+
+		const storedMarker =
+			typeof current.progress_marker === 'string' ? current.progress_marker : null;
+		const storedStreak =
+			typeof current.no_progress_streak === 'number' ? current.no_progress_streak : 0;
+
+		// The first recovery has nothing to compare against, so it cannot claim
+		// progress — only a marker that differs from a previously stored one proves
+		// durable output advanced between interruptions.
+		const advanced =
+			progress.marker !== null && storedMarker !== null && progress.marker !== storedMarker;
+		const nextMarker = progress.marker ?? storedMarker;
+		const nextStreak = advanced ? 0 : storedStreak + 1;
+
 		const row = this.sql
 			.exec(
 				`UPDATE flue_agent_submissions
-				 SET attempt_id = ?, recovery_requested_at = NULL, started_at = ?, attempt_count = attempt_count + 1${
+				 SET attempt_id = ?, recovery_requested_at = NULL, started_at = ?, attempt_count = attempt_count + ?, progress_marker = ?, no_progress_streak = ?${
 						lease ? ', owner_id = ?, lease_expires_at = ?' : ''
 					}
 				 WHERE submission_id = ? AND status = 'running' AND attempt_id = ?
@@ -107,12 +157,23 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 					? [
 							nextAttemptId,
 							now,
+							advanced ? 0 : 1,
+							nextMarker,
+							nextStreak,
 							lease.ownerId,
 							lease.leaseExpiresAt,
 							attempt.submissionId,
 							attempt.attemptId,
 						]
-					: [nextAttemptId, now, attempt.submissionId, attempt.attemptId]),
+					: [
+							nextAttemptId,
+							now,
+							advanced ? 0 : 1,
+							nextMarker,
+							nextStreak,
+							attempt.submissionId,
+							attempt.attemptId,
+						]),
 			)
 			.toArray()[0];
 		return row ? this.parseSubmission(row) : null;
@@ -568,7 +629,7 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 }
 
 const submissionColumns =
-	'sequence, submission_id, session_key, kind, payload, status, accepted_at, canonical_ready_at, attempt_id, input_applied_at, recovery_requested_at, abort_requested_at, started_at, error, attempt_count, max_retry, timeout_at, owner_id, lease_expires_at';
+	'sequence, submission_id, session_key, kind, payload, status, accepted_at, canonical_ready_at, attempt_id, input_applied_at, recovery_requested_at, abort_requested_at, started_at, error, attempt_count, max_retry, timeout_at, owner_id, lease_expires_at, progress_marker, no_progress_streak';
 
 function submissionColumnsFor(table: string): string {
 	return submissionColumns
@@ -683,6 +744,8 @@ function parseSubmission(
 		timeoutAt: row.timeout_at,
 		...(typeof row.owner_id === 'string' ? { ownerId: row.owner_id } : {}),
 		leaseExpiresAt: typeof row.lease_expires_at === 'number' ? row.lease_expires_at : 0,
+		progressMarker: typeof row.progress_marker === 'string' ? row.progress_marker : null,
+		noProgressStreak: typeof row.no_progress_streak === 'number' ? row.no_progress_streak : 0,
 	};
 }
 
@@ -710,9 +773,27 @@ function ensureSubmissionTable(sql: SqlStorage): void {
 		 owner_id TEXT,
 		 lease_expires_at INTEGER NOT NULL DEFAULT 0,
 		 settlement_record_id TEXT,
-		 settlement_record_json TEXT
+		 settlement_record_json TEXT,
+		 progress_marker TEXT,
+		 no_progress_streak INTEGER NOT NULL DEFAULT 0
 		)`,
 	);
+	// CREATE TABLE IF NOT EXISTS is a no-op against a table an older build already
+	// created, so an existing Durable Object never gains the two columns above.
+	// Add them explicitly; both are nullable-or-defaulted, so this is additive and
+	// safe to run against a live DO on every boot.
+	const submissionColumnNames = sql
+		.exec("SELECT name FROM pragma_table_info('flue_agent_submissions')")
+		.toArray()
+		.map((column) => String(column.name));
+	if (!submissionColumnNames.includes('progress_marker')) {
+		sql.exec('ALTER TABLE flue_agent_submissions ADD COLUMN progress_marker TEXT');
+	}
+	if (!submissionColumnNames.includes('no_progress_streak')) {
+		sql.exec(
+			'ALTER TABLE flue_agent_submissions ADD COLUMN no_progress_streak INTEGER NOT NULL DEFAULT 0',
+		);
+	}
 	sql.exec(
 		`CREATE TABLE IF NOT EXISTS flue_agent_dispatch_receipts (
 		 dispatch_id TEXT PRIMARY KEY,

@@ -77,6 +77,20 @@ export interface ProcessAgentSubmissionOptions {
 export interface AgentSubmissionSession {
 	readonly conversationId: string;
 	inspectSubmissionInput(input: AgentSubmissionInput): Promise<AgentSubmissionInspection> | AgentSubmissionInspection;
+	/**
+	 * Opaque marker for how far this submission's durable output has got. Recovery
+	 * compares consecutive markers to decide whether an interrupted attempt made
+	 * real progress; it never interprets the value.
+	 */
+	describeSubmissionProgress(
+		input: AgentSubmissionInput,
+		options?: { submissionId?: string },
+	): Promise<string | null> | string | null;
+	/**
+	 * Consecutive no-progress recoveries allowed before the submission is parked,
+	 * or null when the streak is tracked but never parks on its own.
+	 */
+	readonly maxNoProgressAttempts: number | null;
 	processSubmissionInput(
 		input: AgentSubmissionInput,
 		options?: ProcessAgentSubmissionOptions,
@@ -225,9 +239,24 @@ export async function reconcileInterruptedSubmission(
 	const dispatchId = agentSubmissionDispatchId(input);
 	const ctx = createContext(dispatchId);
 	if (submission.kind === 'direct') ctx.setSubmissionId?.(submission.submissionId);
-	const state = await createAgentSubmissionSessionHandler(agent, input, (s) =>
-		s.inspectSubmissionInput(input),
-	)(ctx) as AgentSubmissionInspection;
+	const inspected = (await createAgentSubmissionSessionHandler(agent, input, async (s) => {
+		const state = await s.inspectSubmissionInput(input);
+		return {
+			state,
+			// Only a submission we are about to re-drive has a budget to charge, so
+			// only those need a progress marker.
+			progressMarker:
+				state === 'continuable' || state === 'uncertain'
+					? await s.describeSubmissionProgress(input, { submissionId: submission.submissionId })
+					: null,
+			noProgressLimit: s.maxNoProgressAttempts,
+		};
+	})(ctx)) as {
+		state: AgentSubmissionInspection;
+		progressMarker: string | null;
+		noProgressLimit: number | null;
+	};
+	const state = inspected.state;
 	if (state === 'completed') {
 		if (submission.kind === 'direct') {
 			await settleDirectSubmission(
@@ -366,8 +395,36 @@ export async function reconcileInterruptedSubmission(
 			attempt,
 			crypto.randomUUID(),
 			lease,
+			{ marker: inspected.progressMarker ?? null },
 		);
 		if (!replacement?.attemptId) return undefined;
+		// Consecutive recoveries that each produced nothing new are the signature of
+		// a deterministic failure — a poison turn that will die at the same point
+		// however many attempts remain. Park it now instead of grinding the full
+		// budget down and making the user wait for a foregone conclusion.
+		// Hoisted to a const so the narrowing survives into the error factory closure.
+		const noProgressLimit = inspected.noProgressLimit;
+		if (
+			typeof noProgressLimit === 'number' &&
+			noProgressLimit > 0 &&
+			(replacement.noProgressStreak ?? 0) >= noProgressLimit
+		) {
+			await failInterruptedSubmission(
+				submissions,
+				replacement,
+				{ submissionId: replacement.submissionId, attemptId: replacement.attemptId },
+				agent,
+				'exhausted_retry_budget',
+				() =>
+					new SubmissionRetryExhaustedError({
+						attemptCount: replacement.noProgressStreak ?? 0,
+						maxAttempts: noProgressLimit,
+					}),
+				createContext,
+				conversationWriter,
+			);
+			return undefined;
+		}
 		if (state === 'continuable') {
 			const recoveryCtx = createContext(dispatchId);
 			if (submission.kind === 'direct') recoveryCtx.setSubmissionId?.(submission.submissionId);

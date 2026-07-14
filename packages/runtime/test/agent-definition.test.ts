@@ -222,6 +222,24 @@ describe('defineAgentProfile()', () => {
 		expect(() => defineAgentProfile({ durability: { timeoutMs: -1 } })).toThrow('positive integer');
 	});
 
+	it('accepts durability config with maxNoProgressAttempts', () => {
+		expect(() =>
+			defineAgentProfile({ durability: { maxAttempts: 5, maxNoProgressAttempts: 3 } }),
+		).not.toThrow();
+	});
+
+	it('rejects durability config with non-positive maxNoProgressAttempts', () => {
+		expect(() => defineAgentProfile({ durability: { maxNoProgressAttempts: 0 } })).toThrow(
+			'positive integer',
+		);
+		expect(() => defineAgentProfile({ durability: { maxNoProgressAttempts: -1 } })).toThrow(
+			'positive integer',
+		);
+		expect(() => defineAgentProfile({ durability: { maxNoProgressAttempts: 1.5 } })).toThrow(
+			'positive integer',
+		);
+	});
+
 	it('rejects durability config when declared on a subagent profile', () => {
 		expect(() =>
 			defineAgentProfile({

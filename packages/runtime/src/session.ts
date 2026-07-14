@@ -1041,6 +1041,71 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			{ contextWindow: this.agentLoop.state.model?.contextWindow ?? 0 },
 		));
 	}
+	/** See {@link DurabilityConfig.maxNoProgressAttempts}. */
+	get maxNoProgressAttempts(): number | null {
+		return this.config.durability?.maxNoProgressAttempts ?? null;
+	}
+
+	/**
+	 * Opaque marker for how much durable assistant output this submission has
+	 * persisted so far.
+	 *
+	 * Recovery accounting only ever *compares* consecutive markers: a changed
+	 * marker means the interrupted attempt streamed real work between
+	 * interruptions, so it should not consume the retry budget. It deliberately
+	 * includes the current attempt's durable in-progress deltas, which are not yet
+	 * sealed into canonical history at reconciliation time — without them an
+	 * attempt that streamed for minutes before being cut off would look identical
+	 * to one that died instantly.
+	 *
+	 * Returns null when no marker can be derived, which recovery treats as
+	 * unknown and therefore charges.
+	 */
+	async describeSubmissionProgress(
+		input: AgentSubmissionInput,
+		options?: { submissionId?: string },
+	): Promise<string | null> {
+		const conversation = await this.conversationWriter.getConversation(this.conversationId);
+		if (!conversation) return null;
+		const inputEntryId = this.canonicalInputEntryId(input);
+		if (!conversation.entries.has(inputEntryId)) return null;
+		const following = getActiveConversationPathSince(conversation, inputEntryId);
+		if (!following) return null;
+
+		let assistantEntries = 0;
+		let persistedChars = 0;
+		for (const entry of following) {
+			if (entry.type !== 'message' || entry.message.role !== 'assistant') continue;
+			assistantEntries += 1;
+			const content = entry.message.content;
+			if (!Array.isArray(content)) continue;
+			for (const block of content) {
+				// Canonical assistant blocks are `text` / `thinking`; the in-progress
+				// blocks read below are `text` / `reasoning`. Reasoning output must count
+				// here, or an attempt interrupted while it was still thinking scores as
+				// no-progress and gets charged for work it actually did.
+				if (block.type === 'text') persistedChars += block.text.length;
+				else if (block.type === 'thinking') persistedChars += block.thinking.length;
+			}
+		}
+
+		const inProgress =
+			options?.submissionId === undefined
+				? null
+				: await this.conversationWriter.findInProgressAssistant(
+						this.conversationId,
+						options.submissionId,
+					);
+		if (inProgress) {
+			for (const block of inProgress.blocks.values()) {
+				if ((block.type === 'text' || block.type === 'reasoning') && Array.isArray(block.deltas)) {
+					persistedChars += block.deltas.join('').length;
+				}
+			}
+		}
+
+		return `entries:${assistantEntries};chars:${persistedChars}`;
+	}
 
 	processSubmissionInput(
 		input: AgentSubmissionInput,

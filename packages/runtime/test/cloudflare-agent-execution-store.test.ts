@@ -94,6 +94,8 @@ describe('createSqlAgentExecutionStore()', () => {
 				'lease_expires_at',
 				'settlement_record_id',
 				'settlement_record_json',
+				'progress_marker',
+				'no_progress_streak',
 			]),
 		);
 		const tableNames = new Set(
@@ -279,5 +281,99 @@ describe('createSqlAgentExecutionStore()', () => {
 		).toThrow(
 			'[flue] Cloudflare durable agent class "FlueAssistantAgent" could not initialize its SQLite execution store. Underlying error: This database records an unrecognized schema version ("unversioned"; this runtime supports version 5).',
 		);
+	});
+});
+
+describe('replaceSubmissionAttempt() progress-aware recovery charging', () => {
+	/** Admits and claims one running submission so recoveries can be recorded. */
+	async function runningSubmission() {
+		const { sql, transactionSync } = makeFakeSql();
+		const store = createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
+		await store.submissions.admitDispatch(dispatchInput());
+		await store.submissions.markSubmissionCanonicalReady('dispatch-1');
+		const claimed = await store.submissions.claimSubmission({
+			submissionId: 'dispatch-1',
+			attemptId: 'attempt-1',
+			ownerId: 'owner-1',
+			leaseExpiresAt: Date.now() + 30_000,
+		});
+		expect(claimed).toMatchObject({ status: 'running', attemptCount: 1 });
+		return store;
+	}
+
+	it('does not charge a recovery whose marker advanced, and resets the streak', async () => {
+		const store = await runningSubmission();
+
+		// First recovery: nothing stored to compare against, so it cannot claim
+		// progress — it is charged and seeds the marker.
+		const first = await store.submissions.replaceSubmissionAttempt(
+			{ submissionId: 'dispatch-1', attemptId: 'attempt-1' },
+			'attempt-2',
+			undefined,
+			{ marker: 'offset-10' },
+		);
+		expect(first).toMatchObject({ attemptCount: 2, noProgressStreak: 1, progressMarker: 'offset-10' });
+
+		// Second recovery: the durable output advanced past the stored marker, so
+		// the interruption costs no attempt and the no-progress streak resets.
+		const second = await store.submissions.replaceSubmissionAttempt(
+			{ submissionId: 'dispatch-1', attemptId: 'attempt-2' },
+			'attempt-3',
+			undefined,
+			{ marker: 'offset-20' },
+		);
+		expect(second).toMatchObject({ attemptCount: 2, noProgressStreak: 0, progressMarker: 'offset-20' });
+	});
+
+	it('charges a recovery whose marker did not advance, and extends the streak', async () => {
+		const store = await runningSubmission();
+
+		await store.submissions.replaceSubmissionAttempt(
+			{ submissionId: 'dispatch-1', attemptId: 'attempt-1' },
+			'attempt-2',
+			undefined,
+			{ marker: 'offset-10' },
+		);
+
+		// Same marker as stored: the attempt died without new durable output.
+		const unchanged = await store.submissions.replaceSubmissionAttempt(
+			{ submissionId: 'dispatch-1', attemptId: 'attempt-2' },
+			'attempt-3',
+			undefined,
+			{ marker: 'offset-10' },
+		);
+		expect(unchanged).toMatchObject({ attemptCount: 3, noProgressStreak: 2, progressMarker: 'offset-10' });
+
+		// A null marker can never prove progress; it is charged and the previously
+		// stored marker is retained for the next comparison.
+		const nullMarker = await store.submissions.replaceSubmissionAttempt(
+			{ submissionId: 'dispatch-1', attemptId: 'attempt-3' },
+			'attempt-4',
+			undefined,
+			{ marker: null },
+		);
+		expect(nullMarker).toMatchObject({
+			attemptCount: 4,
+			noProgressStreak: 3,
+			progressMarker: 'offset-10',
+		});
+	});
+
+	it('charges unconditionally when called without progress accounting', async () => {
+		const store = await runningSubmission();
+
+		// The stock (legacy) call path: every recovery spends budget regardless of
+		// whether the interrupted attempt produced durable output.
+		const replaced = await store.submissions.replaceSubmissionAttempt(
+			{ submissionId: 'dispatch-1', attemptId: 'attempt-1' },
+			'attempt-2',
+		);
+		expect(replaced).toMatchObject({ attemptCount: 2 });
+
+		const again = await store.submissions.replaceSubmissionAttempt(
+			{ submissionId: 'dispatch-1', attemptId: 'attempt-2' },
+			'attempt-3',
+		);
+		expect(again).toMatchObject({ attemptCount: 3 });
 	});
 });
