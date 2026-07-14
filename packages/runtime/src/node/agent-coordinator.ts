@@ -628,6 +628,7 @@ export function createNodeAgentCoordinator(options: {
 		createAdmission(agentName: string, instanceId: string): AttachedAgentSubmissionAdmission {
 			return async (
 				message: DeliveredMessage,
+				submissionId?: string,
 				traceCarrier?: import('../execution-interceptor.ts').FlueTraceCarrier,
 			) => {
 				if (stopping) throw new Error('[flue] Coordinator is shutting down.');
@@ -639,6 +640,7 @@ export function createNodeAgentCoordinator(options: {
 				}
 
 				const input = createDirectAgentSubmissionInput({
+					submissionId,
 					agent: agentName,
 					id: instanceId,
 					message,
