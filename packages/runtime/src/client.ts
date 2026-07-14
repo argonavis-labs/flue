@@ -270,6 +270,7 @@ export async function initializeRootHarness(
 		env,
 		definition.instructions,
 		definition.skills,
+		definition.promptFrame,
 	);
 	const agentConfig: AgentConfig = {
 		...config.agentConfig,
@@ -277,6 +278,7 @@ export async function initializeRootHarness(
 		instructions: definition.instructions,
 		definitionSkills: definition.skills,
 		skills: localContext.skills,
+		promptFrame: definition.promptFrame,
 		actions: definition.actions,
 		subagents: Object.fromEntries(
 			(definition.subagents ?? [])
