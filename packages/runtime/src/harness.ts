@@ -386,7 +386,7 @@ function normalizeSessionName(name: string | undefined): string {
 	return name ?? DEFAULT_SESSION_NAME;
 }
 
-function createConversationIdentity(): {
+export function createConversationIdentity(): {
 	conversationId: string;
 	affinityKey: string;
 	createdAt: string;
