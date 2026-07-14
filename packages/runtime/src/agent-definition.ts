@@ -33,6 +33,7 @@ const AgentProfileSchema = v.strictObject(
 		actions: v.optional(v.array(v.unknown())),
 		subagents: v.optional(v.array(v.unknown())),
 		thinkingLevel: v.optional(v.string()),
+		promptFrame: v.optional(v.picklist(['full', 'none'])),
 		compaction: v.optional(v.union([v.literal(false), v.looseObject({})])),
 		durability: v.optional(v.looseObject({})),
 	},
@@ -119,6 +120,7 @@ export function resolveAgentProfile(options: AgentRuntimeConfig | undefined): Ag
 		thinkingLevel: hasOwn(options, 'thinkingLevel')
 			? options?.thinkingLevel
 			: profile?.thinkingLevel,
+		promptFrame: hasOwn(options, 'promptFrame') ? options?.promptFrame : profile?.promptFrame,
 		compaction: hasOwn(options, 'compaction') ? options?.compaction : profile?.compaction,
 		durability: hasOwn(options, 'durability') ? options?.durability : profile?.durability,
 	};

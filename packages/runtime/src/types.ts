@@ -330,6 +330,16 @@ export interface DurabilityConfig {
 
 // ─── Agent Config (internal, passed to the harness at runtime) ──────────────
 
+/**
+ * How much of the system prompt the framework owns.
+ *
+ * `'full'` (default) prepends the discovered workspace frame — headless
+ * preamble, AGENTS.md, skills catalog, date, cwd, directory listing — ahead of
+ * the agent's instructions. `'none'` contributes nothing: the instructions are
+ * the entire system prompt and the application owns every byte of it.
+ */
+export type PromptFrame = 'full' | 'none';
+
 export interface AgentConfig {
 	/** Discovered at runtime from AGENTS.md + .agents/skills/ in the session's cwd. */
 	systemPrompt: string;
@@ -337,6 +347,7 @@ export interface AgentConfig {
 	instructions?: string;
 	/** Agent-definition skills merged into each discovered skill catalog. */
 	definitionSkills?: Skill[];
+	promptFrame?: PromptFrame;
 	/** Discovered at runtime from .agents/skills/ in the session's cwd. */
 	skills: Record<string, Skill>;
 	subagents?: Record<string, AgentProfile>;
@@ -381,6 +392,8 @@ export interface AgentProfile {
 	subagents?: AgentProfile[];
 	/** Default reasoning effort. Individual operations may override this value. */
 	thinkingLevel?: ThinkingLevel;
+	/** How much of the system prompt the framework owns. Defaults to `"full"`. */
+	promptFrame?: PromptFrame;
 	/**
 	 * Automatic conversation-compaction configuration. `false` disables
 	 * threshold compaction; overflow recovery and explicit `session.compact()`
@@ -417,6 +430,8 @@ export interface AgentRuntimeConfig {
 	subagents?: AgentProfile[];
 	/** Default reasoning effort. Individual operations may override this value. */
 	thinkingLevel?: ThinkingLevel;
+	/** How much of the system prompt the framework owns. Defaults to `"full"`. */
+	promptFrame?: PromptFrame;
 	/**
 	 * Automatic conversation-compaction configuration. `false` disables
 	 * threshold compaction; overflow recovery and explicit `session.compact()`
