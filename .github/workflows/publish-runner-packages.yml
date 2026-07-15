@@ -73,7 +73,7 @@ jobs:
               test "$existing_sha" = "$GITHUB_SHA"
               echo "$name@$VERSION already published from this commit"
             else
-              npm publish "packages/$package" --access restricted
+              npm publish "./packages/$package" --access restricted
             fi
           done
 
