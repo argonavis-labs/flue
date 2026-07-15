@@ -45,6 +45,11 @@ jobs:
         run: node scripts/prepare-publish.mjs
 
       - name: Test runtime, SDK, React, and CLI
+        env:
+          # GitHub Actions sets CI=1, which makes picocolors emit ANSI codes
+          # even without a TTY; the CLI tests assert on plain-text output
+          # (e.g. `changed workflows/smoke.mjs`) and fail on colored logs.
+          NO_COLOR: 1
         run: pnpm turbo run test --filter=@flue/runtime --filter=@flue/sdk --filter=@flue/react --filter=@flue/cli -- --testTimeout=30000
 
       - name: Publish to GitHub Packages
