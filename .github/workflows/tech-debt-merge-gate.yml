@@ -1,0 +1,151 @@
+name: Flue Tech-Debt Merge Gate
+
+# Block a Flue package-source PR until Runner Next records it in
+# docs/tech-debt.md. Docs-only and CI-only PRs pass. The
+# `tech-debt-recheck` label reruns the gate after the Runner Next entry
+# merges.
+#
+# Security: this workflow uses pull_request_target so it always runs the
+# version on Flue's default branch, not the version proposed by the PR it
+# is judging. It only reads the PR's changed-file list and, when package
+# files change, one markdown file from a private Runner Next repository.
+# It never checks out or executes the PR branch.
+#
+# Required repository configuration (not in this file):
+#   - A GitHub App installed on argonavis-labs/runner-next with read
+#     access to repository contents, plus these repository secrets:
+#       RUNNER_NEXT_TECH_DEBT_APP_ID
+#       RUNNER_NEXT_TECH_DEBT_PRIVATE_KEY
+#   - A branch protection rule on Flue's default branch requiring this
+#     status check and requiring pull requests.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, ready_for_review, reopened, labeled]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Runner Next tech-debt entry
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Detect package changes
+        id: changed
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const packagePrefixes = [
+              'packages/runtime/',
+              'packages/sdk/',
+              'packages/react/',
+              'packages/cli/',
+            ];
+
+            const files = [];
+            let page = 1;
+            while (true) {
+              const { data } = await github.rest.pulls.listFiles({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                per_page: 100,
+                page,
+              });
+              files.push(...data);
+              if (data.length < 100) break;
+              page++;
+            }
+
+            const changedPackages = new Set();
+            for (const file of files) {
+              for (const prefix of packagePrefixes) {
+                if (file.filename.startsWith(prefix)) {
+                  changedPackages.add(prefix);
+                }
+              }
+            }
+
+            const hasChanges = changedPackages.size > 0;
+            core.setOutput('hasPackageChanges', hasChanges ? 'true' : 'false');
+            core.notice(
+              hasChanges
+                ? `Package changes detected: ${[...changedPackages].join(', ')}`
+                : 'No package changes detected; gate passes without reading Runner Next.'
+            );
+
+      - name: Create Runner Next access token
+        if: steps.changed.outputs.hasPackageChanges == 'true'
+        id: runner-next-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RUNNER_NEXT_TECH_DEBT_APP_ID }}
+          private-key: ${{ secrets.RUNNER_NEXT_TECH_DEBT_PRIVATE_KEY }}
+          owner: argonavis-labs
+          repositories: runner-next
+
+      - name: Verify Runner Next Tech Debt Tracker entry
+        if: steps.changed.outputs.hasPackageChanges == 'true'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        env:
+          RUNNER_NEXT_TOKEN: ${{ steps.runner-next-token.outputs.token }}
+        with:
+          script: |
+            const prNumber = context.issue.number;
+            const marker = `<!-- flue-pr: argonavis-labs/flue#${prNumber} -->`;
+            const link = `https://github.com/argonavis-labs/flue/pull/${prNumber}`;
+            const deletePrefix = '**Delete this entry when**';
+
+            const runnerOctokit = github.getOctokit(process.env.RUNNER_NEXT_TOKEN);
+
+            let content;
+            try {
+              const { data: file } = await runnerOctokit.rest.repos.getContent({
+                owner: 'argonavis-labs',
+                repo: 'runner-next',
+                path: 'docs/tech-debt.md',
+                ref: 'main',
+              });
+
+              if (!('content' in file) || typeof file.content !== 'string') {
+                throw new Error('Unexpected response shape for docs/tech-debt.md');
+              }
+
+              content = Buffer.from(file.content, 'base64').toString('utf8');
+            } catch (error) {
+              core.error('Could not read Runner Next docs/tech-debt.md.');
+              throw error;
+            }
+
+            // Split on the boundary between bullet entries. Each Tech Debt
+            // Tracker entry starts with "- [ ]" at the beginning of a line.
+            const entries = content
+              .split(/\n(?=- \[ \])/)
+              .filter((entry) => entry.trim().startsWith('- [ ]'));
+
+            const matching = entries.filter(
+              (entry) =>
+                entry.includes(marker) &&
+                entry.includes(link) &&
+                entry.includes(deletePrefix)
+            );
+
+            if (matching.length === 0) {
+              core.setFailed(
+                `No Tech Debt Tracker entry found for this PR. ` +
+                `An entry in argonavis-labs/runner-next:docs/tech-debt.md must contain all three of:\n` +
+                `  ${marker}\n` +
+                `  ${link}\n` +
+                `  ${deletePrefix} ...`
+              );
+              return;
+            }
+
+            core.notice('Tech Debt Tracker entry verified; gate passes.');
