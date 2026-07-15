@@ -21,7 +21,10 @@ concurrency:
 
 jobs:
   gate:
-    name: Runner Next entry check
+    # The job name is the check-run name branch protection matches on;
+    # it must stay in sync with the required status check configured on
+    # Flue's default branch.
+    name: Flue Cross-Repo Gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -56,10 +59,26 @@ jobs:
               page++;
             }
 
+            // The list-files API silently caps at 3000 files, so a gated
+            // package change past the cap would never appear here. Judge
+            // only a complete list; otherwise fail closed.
+            const expectedCount = context.payload.pull_request.changed_files;
+            if (files.length !== expectedCount) {
+              core.setFailed(
+                `Changed-file listing is incomplete (got ${files.length}, ` +
+                `PR reports ${expectedCount}); failing closed rather than ` +
+                'judging a partial list.'
+              );
+              return;
+            }
+
             const changedPackages = new Set();
             for (const file of files) {
+              // A rename out of a gated package mutates that package, and
+              // only previous_filename still records the gated path.
+              const paths = [file.filename, file.previous_filename].filter(Boolean);
               for (const prefix of packagePrefixes) {
-                if (file.filename.startsWith(prefix)) {
+                if (paths.some((path) => path.startsWith(prefix))) {
                   changedPackages.add(prefix);
                 }
               }
@@ -82,24 +101,27 @@ jobs:
           private-key: ${{ secrets.FLUE_FORK_MANAGER_PRIVATE_KEY }}
           owner: argonavis-labs
           repositories: runner-next
+          # The App itself may hold wider grants; the minted token never
+          # needs more than reading one file.
+          permission-contents: read
 
       - name: Verify Runner Next entry
         if: steps.changed.outputs.hasPackageChanges == 'true'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        env:
-          RUNNER_NEXT_TOKEN: ${{ steps.runner-next-token.outputs.token }}
         with:
+          # Authenticate this step's client as the Runner Next App; the
+          # injected `github` object is an octokit instance and exposes no
+          # way to construct a second client from a raw token.
+          github-token: ${{ steps.runner-next-token.outputs.token }}
           script: |
             const prNumber = context.issue.number;
             const marker = `<!-- flue-pr: argonavis-labs/flue#${prNumber} -->`;
             const link = `https://github.com/argonavis-labs/flue/pull/${prNumber}`;
             const deletePrefix = '**Delete this entry when**';
 
-            const runnerOctokit = github.getOctokit(process.env.RUNNER_NEXT_TOKEN);
-
             let content;
             try {
-              const { data: file } = await runnerOctokit.rest.repos.getContent({
+              const { data: file } = await github.rest.repos.getContent({
                 owner: 'argonavis-labs',
                 repo: 'runner-next',
                 path: 'docs/tech-debt.md',
@@ -117,10 +139,12 @@ jobs:
             }
 
             // Split on the boundary between bullet entries. Each Tech Debt
-            // Tracker entry starts with "- [ ]" at the beginning of a line.
+            // Tracker entry starts with a "- [ ]" checkbox at the beginning
+            // of a line; tolerate "- [x]" so a checked-off entry still
+            // counts until it is deleted.
             const entries = content
-              .split(/\n(?=- \[ \])/)
-              .filter((entry) => entry.trim().startsWith('- [ ]'));
+              .split(/\n(?=- \[[ xX]\] )/)
+              .filter((entry) => /^- \[[ xX]\] /.test(entry.trim()));
 
             const matching = entries.filter(
               (entry) =>
