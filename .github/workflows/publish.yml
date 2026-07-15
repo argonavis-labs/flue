@@ -36,10 +36,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build runtime, SDK, React, and CLI
-        run: pnpm --filter @flue/runtime --filter @flue/sdk --filter @flue/react --filter @flue/cli run build
+        run: pnpm turbo run build --filter=@flue/runtime --filter=@flue/sdk --filter=@flue/react --filter=@flue/cli
 
       - name: Test runtime, SDK, React, and CLI
-        run: pnpm --filter @flue/runtime --filter @flue/sdk --filter @flue/react --filter @flue/cli run test
+        run: pnpm turbo run test --filter=@flue/runtime --filter=@flue/sdk --filter=@flue/react --filter=@flue/cli
 
       - name: Prepare publish artifacts
         run: node scripts/prepare-publish.mjs
