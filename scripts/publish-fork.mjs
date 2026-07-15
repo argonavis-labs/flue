@@ -40,9 +40,12 @@ async function gitShortSha() {
 
 function forkVersion(baseVersion, sha) {
 	// Strip any existing fork prerelease suffix so re-runs and manual bumps are
-	// deterministic and do not accumulate `...-argonavis.sha-argonavis.sha`.
-	const clean = baseVersion.replace(/-argonavis\.[a-f0-9]+$/i, '');
-	return `${clean}-argonavis.${sha}`;
+	// deterministic and do not accumulate `...-argonavis.gsha-argonavis.gsha`.
+	const clean = baseVersion.replace(/-argonavis\.g?[a-f0-9]+$/i, '');
+	// Prefix the sha with git's conventional `g`: an all-digit sha with a
+	// leading zero would otherwise form a numeric prerelease identifier with a
+	// leading zero, which is invalid semver and rejected by npm.
+	return `${clean}-argonavis.g${sha}`;
 }
 
 async function isPublished(name, version) {
@@ -84,7 +87,7 @@ async function publishPackage(pkg, publishVersions) {
 			if (!depBase) continue;
 			if (depType === 'peerDependencies') {
 				// Preserve the original semver range; the fork prerelease version
-				// (e.g. 1.0.0-beta.9-argonavis.abc1234) satisfies the existing
+				// (e.g. 1.0.0-beta.9-argonavis.gabc1234) satisfies the existing
 				// `>=1.0.0-beta.3 <1.0.0` range.
 				continue;
 			}
