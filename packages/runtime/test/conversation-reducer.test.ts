@@ -668,7 +668,7 @@ describe('reduceConversationRecords()', () => {
 				turnId: 'turn_07',
 				signal: { tagName: 'dispatch', attributes: { agent: 'planner', dispatchId: 'dispatch_01' } },
 				parts: [{ type: 'text', text: '{"input":"go"}', state: 'done' }],
-				metadata: { timestamp: '2026-06-25T00:00:01.000Z' },
+				metadata: { timestamp: '2026-06-25T00:00:01.000Z', origin: 'signal' },
 			},
 		]);
 	});

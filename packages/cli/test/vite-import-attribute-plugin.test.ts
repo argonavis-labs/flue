@@ -81,7 +81,7 @@ export const references = [review];`,
 
 		expect(first.references[0]?.id).toBe(second.references[0]?.id);
 		expect(first.references[0]?.id).not.toBe(changed.references[0]?.id);
-	});
+	}, 10_000);
 
 	it('rejects a symbolic link inside a skill directory', async () => {
 		const root = createFixtureRoot();

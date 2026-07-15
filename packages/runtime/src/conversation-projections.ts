@@ -96,6 +96,8 @@ export interface ConversationUiMessage {
 	metadata?: {
 		/** Server-authored message creation time as an ISO 8601 string. */
 		timestamp?: string;
+		/** Runner compatibility marker for machine-originated signal context. */
+		origin?: 'signal';
 		usage?: PromptUsage;
 		model?: { provider: string; id: string };
 	};
@@ -299,7 +301,7 @@ function projectCompletedMessage(entry: ReducedMessageEntry): ConversationUiMess
 			...(entry.turnId ? { turnId: entry.turnId } : {}),
 			...(Object.keys(signal).length > 0 ? { signal } : {}),
 			parts: [{ type: 'text', text: message.content, state: 'done' }],
-			metadata: { timestamp: entry.timestamp },
+			metadata: { timestamp: entry.timestamp, origin: 'signal' },
 		};
 	}
 	if (message.role !== 'assistant') return undefined;

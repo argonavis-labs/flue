@@ -402,10 +402,11 @@ export async function reconcileInterruptedSubmission(
 		// a deterministic failure — a poison turn that will die at the same point
 		// however many attempts remain. Park it now instead of grinding the full
 		// budget down and making the user wait for a foregone conclusion.
+		const noProgressLimit = inspected.noProgressLimit;
 		if (
-			typeof inspected.noProgressLimit === 'number' &&
-			inspected.noProgressLimit > 0 &&
-			(replacement.noProgressStreak ?? 0) >= inspected.noProgressLimit
+			typeof noProgressLimit === 'number' &&
+			noProgressLimit > 0 &&
+			(replacement.noProgressStreak ?? 0) >= noProgressLimit
 		) {
 			await failInterruptedSubmission(
 				submissions,
@@ -416,7 +417,7 @@ export async function reconcileInterruptedSubmission(
 				() =>
 					new SubmissionRetryExhaustedError({
 						attemptCount: replacement.noProgressStreak ?? 0,
-						maxAttempts: inspected.noProgressLimit,
+						maxAttempts: noProgressLimit,
 					}),
 				createContext,
 				conversationWriter,

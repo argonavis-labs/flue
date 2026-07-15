@@ -101,6 +101,8 @@ export interface FlueConversationMessage {
 		 * until its canonical copy (with the server time) arrives.
 		 */
 		timestamp?: string;
+		/** Runner compatibility marker for machine-originated signal context. */
+		origin?: 'signal';
 		usage?: PromptUsage;
 		model?: { provider: string; id: string };
 	};

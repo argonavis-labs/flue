@@ -42,6 +42,14 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Test release packages
+        run: >-
+          pnpm turbo run check:types test
+          --filter=@argonavis-labs/flue-runtime
+          --filter=@argonavis-labs/flue-sdk
+          --filter=@argonavis-labs/flue-react
+          --filter=@argonavis-labs/flue-cli
+
       - name: Build and verify carried behavior
         run: pnpm run check:runner-behaviors
 

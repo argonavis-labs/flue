@@ -31,7 +31,7 @@ echo "── behaviors carried by the fork ────────────�
 have cli  'flue-cloudflare-deployment.v1.json' '01 cloudflare deployment manifest          (session foundation)'
 have runtime 'submissionId: options.submissionId ?? crypto.randomUUID()' \
                                                '02a client-supplied submissionId           (session foundation)'
-have sdk  'options.submissionId ? { submissionId' '02b submissionId on prompt/send body      (session foundation)'
+have sdk  'submissionId: options.submissionId' '02b submissionId on prompt/send body      (session foundation)'
 have runtime 'toolCallId'                      '02c toolCallId in custom-tool context      (session foundation)'
 have runtime 'declare function createTools' '03  createTools() re-export               (browser-tools-inline)'
 have runtime 'appendAgentConversationSignal'   '04a appendAgentConversationSignal          (blocking cards)'

@@ -235,7 +235,7 @@ function encodeRecord(
 						...(record.submissionId ? { submissionId: record.submissionId } : {}),
 						...(record.turnId ? { turnId: record.turnId } : {}),
 						...(Object.keys(signal).length > 0 ? { signal } : {}),
-						metadata: { timestamp: record.timestamp },
+							metadata: { timestamp: record.timestamp, origin: 'signal' },
 						parts: [{ type: 'text', text: record.content, state: 'done' }],
 					},
 				},
