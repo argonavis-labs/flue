@@ -57,7 +57,7 @@ async function isPublished(name, version) {
 	}
 }
 
-async function publishPackage(pkg, sha) {
+async function publishPackage(pkg, publishVersions) {
 	const packageDir = join(repoRoot, 'packages', pkg.base);
 	const manifestPath = join(packageDir, 'package.json');
 	const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
@@ -69,10 +69,13 @@ async function publishPackage(pkg, sha) {
 	}
 
 	const newName = baseToNewName.get(pkg.base);
-	const publishVersion = forkVersion(manifest.version, sha);
+	const publishVersion = publishVersions.get(pkg.base);
 
 	// Rewrite internal dependency references. Keep the original @flue/* keys so
 	// emitted dist files resolve inside consumers that install via npm aliases.
+	// Pin to the dependency's own fork version, not this package's: the base
+	// versions can drift apart, and a pin built from the dependent's version
+	// would then point at a version that was never published.
 	for (const depType of ['dependencies', 'peerDependencies']) {
 		const deps = manifest[depType];
 		if (!deps) continue;
@@ -86,7 +89,7 @@ async function publishPackage(pkg, sha) {
 				continue;
 			}
 			const targetName = baseToNewName.get(depBase);
-			deps[depName] = `npm:${targetName}@${publishVersion}`;
+			deps[depName] = `npm:${targetName}@${publishVersions.get(depBase)}`;
 		}
 	}
 
@@ -122,9 +125,22 @@ async function main() {
 	const sha = await gitShortSha();
 	console.error(`[publish-fork] Publishing fork build from ${sha}`);
 
+	// Resolve every package's fork version before any manifest is rewritten so
+	// internal dependency pins can reference the dependency's own version.
+	const publishVersions = new Map(
+		await Promise.all(
+			packages.map(async (pkg) => {
+				const manifest = JSON.parse(
+					await readFile(join(repoRoot, 'packages', pkg.base, 'package.json'), 'utf8'),
+				);
+				return [pkg.base, forkVersion(manifest.version, sha)];
+			}),
+		),
+	);
+
 	for (const pkg of packages) {
 		// eslint-disable-next-line no-await-in-loop
-		await publishPackage(pkg, sha);
+		await publishPackage(pkg, publishVersions);
 	}
 }
 
