@@ -1,0 +1,53 @@
+name: Publish Flue fork packages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Queue publish runs instead of cancelling: a cancelled run can leave a commit
+# with only some of the four packages published, and it is never retried
+# because the next run publishes under a different sha-suffixed version.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@argonavis-labs'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build runtime, SDK, React, and CLI
+        run: pnpm turbo run build --filter=@flue/runtime --filter=@flue/sdk --filter=@flue/react --filter=@flue/cli
+
+      - name: Prepare publish artifacts
+        run: node scripts/prepare-publish.mjs
+
+      - name: Test runtime, SDK, React, and CLI
+        run: pnpm turbo run test --filter=@flue/runtime --filter=@flue/sdk --filter=@flue/react --filter=@flue/cli -- --testTimeout=30000
+
+      - name: Publish to GitHub Packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/publish-fork.mjs

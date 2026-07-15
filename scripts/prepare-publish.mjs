@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Prepares publish artifacts for the core packages (`@flue/cli`,
- * `@flue/runtime`, and `@flue/sdk`):
+ * Prepares publish artifacts for the fork packages (`@flue/cli`,
+ * `@flue/runtime`, `@flue/sdk`, and `@flue/react`):
  * - Copies `apps/docs/src/content/docs` into `<package>/docs` for agent consumption.
  * - Syncs the root README.md into each package.
  * - Embeds the `flue docs` catalog into the installable Flue skill.
@@ -9,7 +9,8 @@
  * Run from anywhere: `node scripts/prepare-publish.mjs`
  */
 import { execFile } from 'node:child_process';
-import { copyFile, cp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, cp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -22,7 +23,7 @@ const skillPath = join(repoRoot, 'skills/flue/SKILL.md');
 const catalogStart = '<!-- flue-docs-catalog:start -->';
 const catalogEnd = '<!-- flue-docs-catalog:end -->';
 
-const PUBLISH_ARTIFACT_PACKAGES = new Set(['@flue/cli', '@flue/runtime', '@flue/sdk']);
+const PUBLISH_ARTIFACT_PACKAGES = new Set(['@flue/cli', '@flue/runtime', '@flue/sdk', '@flue/react']);
 
 export function embedDocsCatalog(skillSource, catalog) {
 	const start = skillSource.indexOf(catalogStart);
@@ -62,7 +63,13 @@ export async function preparePublishArtifacts() {
 		}
 
 		await cp(docsSource, docsTarget, { recursive: true });
-		await copyFile(readmeSource, join(packageRoot, 'README.md'));
+
+		const packageReadme = join(packageRoot, 'README.md');
+		try {
+			await access(packageReadme, constants.F_OK);
+		} catch {
+			await copyFile(readmeSource, packageReadme);
+		}
 
 		console.error(`[flue] Prepared publish artifacts for ${manifest.name}`);
 	}
