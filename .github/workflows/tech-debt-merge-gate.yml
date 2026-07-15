@@ -13,7 +13,11 @@ name: Flue Cross-Repo Gate
 
 on:
   pull_request_target:
-    types: [opened, synchronize, ready_for_review, reopened, labeled]
+    # `edited` catches a base-branch retarget: a PR opened against a branch
+    # that already holds the package change reads as docs-only, and without
+    # a rerun the stale green check would still satisfy branch protection
+    # after the base is switched to main.
+    types: [opened, synchronize, ready_for_review, reopened, labeled, edited]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
