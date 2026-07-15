@@ -5,9 +5,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Queue publish runs instead of cancelling: a cancelled run can leave a commit
+# with only some of the four packages published, and it is never retried
+# because the next run publishes under a different sha-suffixed version.
 concurrency:
   group: publish-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   publish:
