@@ -1,0 +1,171 @@
+name: Flue Cross-Repo Gate
+
+# Block a Flue package-source PR until Runner Next records it in
+# docs/tech-debt.md. Docs-only and CI-only PRs pass. The
+# `tech-debt-recheck` label reruns the gate after the Runner Next entry
+# merges.
+#
+# Security: this workflow uses pull_request_target so it always runs the
+# version on Flue's default branch, not the version proposed by the PR it
+# is judging. It only reads the PR's changed-file list and, when package
+# files change, one markdown file from a private Runner Next repository.
+# It never checks out or executes the PR branch.
+
+on:
+  pull_request_target:
+    # `edited` catches a base-branch retarget: a PR opened against a branch
+    # that already holds the package change reads as docs-only, and without
+    # a rerun the stale green check would still satisfy branch protection
+    # after the base is switched to main.
+    types: [opened, synchronize, ready_for_review, reopened, labeled, edited]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    # The job name is the check-run name branch protection matches on;
+    # it must stay in sync with the required status check configured on
+    # Flue's default branch.
+    name: Flue Cross-Repo Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Detect package changes
+        id: changed
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const packagePrefixes = [
+              'packages/runtime/',
+              'packages/sdk/',
+              'packages/react/',
+              'packages/cli/',
+            ];
+
+            const files = [];
+            let page = 1;
+            while (true) {
+              const { data } = await github.rest.pulls.listFiles({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                per_page: 100,
+                page,
+              });
+              files.push(...data);
+              if (data.length < 100) break;
+              page++;
+            }
+
+            // The list-files API silently caps at 3000 files, so a gated
+            // package change past the cap would never appear here. Judge
+            // only a complete list; otherwise fail closed.
+            const expectedCount = context.payload.pull_request.changed_files;
+            if (files.length !== expectedCount) {
+              core.setFailed(
+                `Changed-file listing is incomplete (got ${files.length}, ` +
+                `PR reports ${expectedCount}); failing closed rather than ` +
+                'judging a partial list.'
+              );
+              return;
+            }
+
+            const changedPackages = new Set();
+            for (const file of files) {
+              // A rename out of a gated package mutates that package, and
+              // only previous_filename still records the gated path.
+              const paths = [file.filename, file.previous_filename].filter(Boolean);
+              for (const prefix of packagePrefixes) {
+                if (paths.some((path) => path.startsWith(prefix))) {
+                  changedPackages.add(prefix);
+                }
+              }
+            }
+
+            const hasChanges = changedPackages.size > 0;
+            core.setOutput('hasPackageChanges', hasChanges ? 'true' : 'false');
+            core.notice(
+              hasChanges
+                ? `Package changes detected: ${[...changedPackages].join(', ')}`
+                : 'No package changes detected; gate passes without reading Runner Next.'
+            );
+
+      - name: Create Runner Next token
+        if: steps.changed.outputs.hasPackageChanges == 'true'
+        id: runner-next-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.FLUE_FORK_MANAGER_APP_ID }}
+          private-key: ${{ secrets.FLUE_FORK_MANAGER_PRIVATE_KEY }}
+          owner: argonavis-labs
+          repositories: runner-next
+          # The App itself may hold wider grants; the minted token never
+          # needs more than reading one file.
+          permission-contents: read
+
+      - name: Verify Runner Next entry
+        if: steps.changed.outputs.hasPackageChanges == 'true'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          # Authenticate this step's client as the Runner Next App; the
+          # injected `github` object is an octokit instance and exposes no
+          # way to construct a second client from a raw token.
+          github-token: ${{ steps.runner-next-token.outputs.token }}
+          script: |
+            const prNumber = context.issue.number;
+            const marker = `<!-- flue-pr: argonavis-labs/flue#${prNumber} -->`;
+            const link = `https://github.com/argonavis-labs/flue/pull/${prNumber}`;
+            const deletePrefix = '**Delete this entry when**';
+
+            let content;
+            try {
+              const { data: file } = await github.rest.repos.getContent({
+                owner: 'argonavis-labs',
+                repo: 'runner-next',
+                path: 'docs/tech-debt.md',
+                ref: 'main',
+              });
+
+              if (!('content' in file) || typeof file.content !== 'string') {
+                throw new Error('Unexpected response shape for docs/tech-debt.md');
+              }
+
+              content = Buffer.from(file.content, 'base64').toString('utf8');
+            } catch (error) {
+              core.error('Could not read Runner Next docs/tech-debt.md.');
+              throw error;
+            }
+
+            // Split on the boundary between bullet entries. Each Tech Debt
+            // Tracker entry starts with a "- [ ]" checkbox at the beginning
+            // of a line; tolerate "- [x]" so a checked-off entry still
+            // counts until it is deleted.
+            const entries = content
+              .split(/\n(?=- \[[ xX]\] )/)
+              .filter((entry) => /^- \[[ xX]\] /.test(entry.trim()));
+
+            const matching = entries.filter(
+              (entry) =>
+                entry.includes(marker) &&
+                entry.includes(link) &&
+                entry.includes(deletePrefix)
+            );
+
+            if (matching.length === 0) {
+              core.setFailed(
+                `No matching Runner Next entry found for this PR. ` +
+                `An entry in argonavis-labs/runner-next:docs/tech-debt.md must contain all three of:\n` +
+                `  ${marker}\n` +
+                `  ${link}\n` +
+                `  ${deletePrefix} ...`
+              );
+              return;
+            }
+
+            core.notice('Runner Next entry verified; gate passes.');
