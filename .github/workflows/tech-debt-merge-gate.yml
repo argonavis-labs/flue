@@ -10,15 +10,6 @@ name: Flue Cross-Repo Gate
 # is judging. It only reads the PR's changed-file list and, when package
 # files change, one markdown file from a private Runner Next repository.
 # It never checks out or executes the PR branch.
-#
-# Required repository configuration (not in this file):
-#   - A GitHub App named Flue Fork Cross-Repo Validator installed on
-#     argonavis-labs/runner-next with Contents: Read permission.
-#   - These repository secrets on argonavis-labs/flue:
-#       RUNNER_NEXT_APP_ID
-#       RUNNER_NEXT_APP_PRIVATE_KEY
-#   - A branch protection rule on Flue's default branch requiring this
-#     status check and requiring pull requests.
 
 on:
   pull_request_target:
