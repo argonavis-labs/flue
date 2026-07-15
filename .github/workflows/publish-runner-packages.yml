@@ -1,0 +1,89 @@
+name: Publish Runner fork packages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-runner-packages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'argonavis-labs/flue'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: '@argonavis-labs'
+
+      - name: Stamp release identity
+        id: release
+        env:
+          VERSION: 1.0.0-beta.9-runner.${{ github.run_number }}
+        run: |
+          node scripts/prepare-runner-publish.mjs "$VERSION" "$GITHUB_SHA"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build and verify carried behavior
+        run: pnpm run check:runner-behaviors
+
+      - name: Prepare packaged documentation
+        run: node scripts/prepare-publish.mjs
+
+      - name: Finalize published dependency aliases
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: node scripts/prepare-runner-publish.mjs "$VERSION" "$GITHUB_SHA" --finalize
+
+      - name: Publish packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          for package in runtime sdk react cli; do
+            name=$(node -p "require('./packages/$package/package.json').name")
+            existing_sha=$(npm view "$name@$VERSION" flueForkSha --json 2>/dev/null | tr -d '"' || true)
+            if [ -n "$existing_sha" ]; then
+              test "$existing_sha" = "$GITHUB_SHA"
+              echo "$name@$VERSION already published from this commit"
+            else
+              npm publish "packages/$package" --access restricted
+            fi
+          done
+
+      - name: Verify clean alias install
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          root=$PWD
+          clean=$(mktemp -d)
+          cd "$clean"
+          npm init --yes >/dev/null
+          npm install --ignore-scripts \
+            "@flue/runtime@npm:@argonavis-labs/flue-runtime@$VERSION" \
+            "@flue/sdk@npm:@argonavis-labs/flue-sdk@$VERSION" \
+            "@flue/react@npm:@argonavis-labs/flue-react@$VERSION" \
+            "@flue/cli@npm:@argonavis-labs/flue-cli@$VERSION"
+          node --input-type=module -e \
+            "import('@flue/runtime').then(({ FLUE_FORK_SHA }) => { if (FLUE_FORK_SHA !== process.env.GITHUB_SHA) process.exit(1) })"
+          test -x node_modules/.bin/flue
+          cd "$root"

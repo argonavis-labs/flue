@@ -22,7 +22,11 @@ const skillPath = join(repoRoot, 'skills/flue/SKILL.md');
 const catalogStart = '<!-- flue-docs-catalog:start -->';
 const catalogEnd = '<!-- flue-docs-catalog:end -->';
 
-const PUBLISH_ARTIFACT_PACKAGES = new Set(['@flue/cli', '@flue/runtime', '@flue/sdk']);
+const PUBLISH_ARTIFACT_PACKAGES = new Set([
+	'@argonavis-labs/flue-cli',
+	'@argonavis-labs/flue-runtime',
+	'@argonavis-labs/flue-sdk',
+]);
 
 export function embedDocsCatalog(skillSource, catalog) {
 	const start = skillSource.indexOf(catalogStart);

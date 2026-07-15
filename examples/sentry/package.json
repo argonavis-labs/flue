@@ -3,11 +3,11 @@
 	"private": true,
 	"type": "module",
 	"dependencies": {
-		"@flue/runtime": "workspace:*",
+		"@flue/runtime": "workspace:@argonavis-labs/flue-runtime@*",
 		"@sentry/node": "*",
 		"hono": "^4.7.0"
 	},
 	"devDependencies": {
-		"@flue/cli": "workspace:*"
+		"@flue/cli": "workspace:@argonavis-labs/flue-cli@*"
 	}
 }

@@ -66,6 +66,23 @@ Build agents that can safely take action, maintain continuity, and connect to th
 
 ## Packages
 
+### Argonavis Labs fork releases
+
+Merges to this fork's `main` branch publish the runtime, SDK, React, and CLI
+packages to GitHub Packages as `@argonavis-labs/flue-*`. Runner consumes those
+artifacts through npm aliases, so application imports remain `@flue/*`.
+
+GitHub Actions authenticates with its repository token. For a local install,
+create a GitHub token with `read:packages` and add these lines to `~/.npmrc`:
+
+```ini
+@argonavis-labs:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_PACKAGES_TOKEN}
+```
+
+Export `GITHUB_PACKAGES_TOKEN` in the shell before installing. Never commit the
+token or the user-level npm configuration.
+
 | Package                                         | Description                                            |
 | ----------------------------------------------- | ------------------------------------------------------ |
 | [`@flue/runtime`](packages/runtime)             | Runtime: harness, sessions, tools, sandbox             |

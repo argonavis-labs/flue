@@ -1,13 +1,17 @@
 {
-	"name": "@flue/cli",
+	"name": "@argonavis-labs/flue-cli",
 	"version": "1.0.0-beta.9",
+	"flueForkSha": "development",
 	"type": "module",
 	"license": "Apache-2.0",
 	"homepage": "https://flueframework.com/",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/withastro/flue",
+		"url": "https://github.com/argonavis-labs/flue",
 		"directory": "packages/cli"
+	},
+	"publishConfig": {
+		"registry": "https://npm.pkg.github.com"
 	},
 	"bin": {
 		"flue": "bin/flue.mjs"
@@ -36,8 +40,8 @@
 	},
 	"dependencies": {
 		"@cloudflare/vite-plugin": "^1.39.2",
-		"@flue/runtime": "workspace:*",
-		"@flue/sdk": "workspace:*",
+		"@flue/runtime": "workspace:@argonavis-labs/flue-runtime@*",
+		"@flue/sdk": "workspace:@argonavis-labs/flue-sdk@*",
 		"@hono/node-server": "^2.0.3",
 		"@vercel/detect-agent": "^1.2.3",
 		"debug": "^4.4.3",

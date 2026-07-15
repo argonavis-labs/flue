@@ -11,12 +11,12 @@
 	},
 	"dependencies": {
 		"@flue/messenger": "workspace:*",
-		"@flue/runtime": "workspace:*",
+		"@flue/runtime": "workspace:@argonavis-labs/flue-runtime@*",
 		"valibot": "^1.0.0"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "0.16.15",
-		"@flue/cli": "workspace:*",
+		"@flue/cli": "workspace:@argonavis-labs/flue-cli@*",
 		"agents": "^0.14.2",
 		"typescript": "^6.0.3",
 		"vitest": "^4.1.6"

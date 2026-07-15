@@ -19,7 +19,7 @@ importers:
         specifier: ^2.2.0
         version: 2.4.15
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:packages/runtime
       '@types/node':
         specifier: ^22.10.10
@@ -108,10 +108,10 @@ importers:
   demo:
     dependencies:
       '@flue/react':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-react@*
         version: link:../packages/react
       '@flue/sdk':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-sdk@*
         version: link:../packages/sdk
       '@shadcn/react':
         specifier: ^0.1.0
@@ -187,20 +187,20 @@ importers:
         specifier: '*'
         version: 0.12.1
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       agents:
         specifier: ^0.14.2
         version: 0.14.5(@babel/core@7.29.0)(@babel/runtime@7.29.7)(@cloudflare/workers-types@4.20260602.1)(ai@6.0.191(zod@4.4.3))(chat@4.30.0(ai@6.0.191(zod@4.4.3))(zod@4.4.3))(react@19.2.7)(rolldown@1.1.3)(vite@8.1.0(@types/node@26.0.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0))(zod@4.4.3)
     devDependencies:
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
 
   examples/braintrust:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       braintrust:
         specifier: 3.17.0
@@ -213,7 +213,7 @@ importers:
         version: 1.4.0(typescript@6.0.3)
     devDependencies:
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
 
   examples/chat-sdk:
@@ -228,7 +228,7 @@ importers:
         specifier: ^0.80.2
         version: 0.80.2(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       agents:
         specifier: ^0.14.2
@@ -250,7 +250,7 @@ importers:
         specifier: ^4.20260602.1
         version: 4.20260602.1
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       wrangler:
         specifier: ^4.97.0
@@ -265,7 +265,7 @@ importers:
         specifier: '*'
         version: 0.4.0(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(ai@6.0.191(zod@4.4.3))(zod@4.4.3)
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       agents:
         specifier: ^0.14.2
@@ -281,7 +281,7 @@ importers:
         specifier: ^4.20260602.1
         version: 4.20260602.1
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       wrangler:
         specifier: ^4.97.0
@@ -296,7 +296,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/discord
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       valibot:
         specifier: ^1.0.0
@@ -306,7 +306,7 @@ importers:
         specifier: 0.16.15
         version: 0.16.15(@cloudflare/workers-types@4.20260602.1)(@vitest/runner@4.1.7)(@vitest/snapshot@4.1.7)(vitest@4.1.7(@opentelemetry/api@1.9.1)(@types/node@26.0.0)(happy-dom@18.0.1)(vite@8.1.0(@types/node@26.0.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0)))
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       agents:
         specifier: ^0.14.2
@@ -324,7 +324,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/github
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       '@octokit/rest':
         specifier: '*'
@@ -337,7 +337,7 @@ importers:
         specifier: 0.16.15
         version: 0.16.15(@cloudflare/workers-types@4.20260602.1)(@vitest/runner@4.1.7)(@vitest/snapshot@4.1.7)(vitest@4.1.7(@opentelemetry/api@1.9.1)(@types/node@26.0.0)(happy-dom@18.0.1)(vite@8.1.0(@types/node@26.0.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0)))
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       agents:
         specifier: ^0.14.2
@@ -355,7 +355,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/google-chat
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       jose:
         specifier: '*'
@@ -368,7 +368,7 @@ importers:
         specifier: 0.16.15
         version: 0.16.15(@cloudflare/workers-types@4.20260602.1)(@vitest/runner@4.1.7)(@vitest/snapshot@4.1.7)(vitest@4.1.7(@opentelemetry/api@1.9.1)(@types/node@26.0.0)(happy-dom@18.0.1)(vite@8.1.0(@types/node@26.0.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0)))
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       agents:
         specifier: ^0.14.2
@@ -386,7 +386,7 @@ importers:
         specifier: '*'
         version: 0.179.0(ws@8.21.0)
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       agents:
         specifier: ^0.14.2
@@ -402,13 +402,13 @@ importers:
         version: 1.4.0(typescript@6.0.3)
     devDependencies:
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
 
   examples/imported-skill:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       agents:
         specifier: ^0.14.2
@@ -418,7 +418,7 @@ importers:
         version: 3.0.1
     devDependencies:
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       wrangler:
         specifier: ^4.97.0
@@ -430,7 +430,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/intercom
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       intercom-client:
         specifier: '*'
@@ -440,7 +440,7 @@ importers:
         specifier: 0.16.15
         version: 0.16.15(@cloudflare/workers-types@4.20260602.1)(@vitest/runner@4.1.7)(@vitest/snapshot@4.1.7)(vitest@4.1.7(@opentelemetry/api@1.9.1)(@types/node@22.19.19)(happy-dom@18.0.1)(vite@8.1.0(@types/node@22.19.19)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0)))
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       '@types/node':
         specifier: ^22.10.10
@@ -461,7 +461,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/linear
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       '@linear/sdk':
         specifier: '*'
@@ -474,7 +474,7 @@ importers:
         specifier: 0.16.15
         version: 0.16.15(@cloudflare/workers-types@4.20260602.1)(@vitest/runner@4.1.7)(@vitest/snapshot@4.1.7)(vitest@4.1.7(@opentelemetry/api@1.9.1)(@types/node@26.0.0)(happy-dom@18.0.1)(vite@8.1.0(@types/node@26.0.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0)))
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       agents:
         specifier: ^0.14.2
@@ -492,7 +492,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/messenger
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       valibot:
         specifier: ^1.0.0
@@ -502,7 +502,7 @@ importers:
         specifier: 0.16.15
         version: 0.16.15(@cloudflare/workers-types@4.20260602.1)(@vitest/runner@4.1.7)(@vitest/snapshot@4.1.7)(vitest@4.1.7(@opentelemetry/api@1.9.1)(@types/node@26.0.0)(happy-dom@18.0.1)(vite@8.1.0(@types/node@26.0.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0)))
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       agents:
         specifier: ^0.14.2
@@ -517,7 +517,7 @@ importers:
   examples/node-schedules:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       croner:
         specifier: ^10.0.1
@@ -530,7 +530,7 @@ importers:
         version: 1.4.0(typescript@6.0.3)
     devDependencies:
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
 
   examples/notion-channel:
@@ -539,7 +539,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/notion
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       '@notionhq/client':
         specifier: '*'
@@ -549,7 +549,7 @@ importers:
         specifier: 0.16.15
         version: 0.16.15(@cloudflare/workers-types@4.20260602.1)(@vitest/runner@4.1.7)(@vitest/snapshot@4.1.7)(vitest@4.1.7(@opentelemetry/api@1.9.1)(@types/node@22.19.19)(happy-dom@18.0.1)(vite@8.1.0(@types/node@22.19.19)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0)))
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       '@types/node':
         specifier: ^22.10.10
@@ -570,13 +570,13 @@ importers:
         specifier: ^0.80.2
         version: 0.80.2(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)
       '@flue/react':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-react@*
         version: link:../../packages/react
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       '@flue/sdk':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-sdk@*
         version: link:../../packages/sdk
       '@hono/node-server':
         specifier: ^2.0.3
@@ -595,7 +595,7 @@ importers:
         version: 1.4.0(typescript@6.0.3)
     devDependencies:
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       '@types/node':
         specifier: ^22.10.10
@@ -619,7 +619,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/resend
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       resend:
         specifier: '*'
@@ -629,7 +629,7 @@ importers:
         specifier: 0.16.15
         version: 0.16.15(@cloudflare/workers-types@4.20260602.1)(@vitest/runner@4.1.7)(@vitest/snapshot@4.1.7)(vitest@4.1.7(@opentelemetry/api@1.9.1)(@types/node@22.19.19)(happy-dom@18.0.1)(vite@8.1.0(@types/node@22.19.19)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0)))
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       '@types/node':
         specifier: ^22.10.10
@@ -650,7 +650,7 @@ importers:
   examples/salesforce-marketing-cloud-channel:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       '@flue/salesforce':
         specifier: workspace:*
@@ -660,7 +660,7 @@ importers:
         specifier: 0.16.15
         version: 0.16.15(@cloudflare/workers-types@4.20260602.1)(@vitest/runner@4.1.7)(@vitest/snapshot@4.1.7)(vitest@4.1.7(@opentelemetry/api@1.9.1)(@types/node@22.19.19)(happy-dom@18.0.1)(vite@8.1.0(@types/node@22.19.19)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0)))
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       '@types/node':
         specifier: ^22.10.10
@@ -678,7 +678,7 @@ importers:
   examples/sentry:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       '@sentry/node':
         specifier: '*'
@@ -688,13 +688,13 @@ importers:
         version: 4.12.22
     devDependencies:
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
 
   examples/shopify-channel:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       '@flue/shopify':
         specifier: workspace:*
@@ -707,7 +707,7 @@ importers:
         specifier: 0.16.15
         version: 0.16.15(@cloudflare/workers-types@4.20260602.1)(@vitest/runner@4.1.7)(@vitest/snapshot@4.1.7)(vitest@4.1.7(@opentelemetry/api@1.9.1)(@types/node@22.19.19)(happy-dom@18.0.1)(vite@8.1.0(@types/node@22.19.19)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0)))
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       '@types/node':
         specifier: ^22.10.10
@@ -725,7 +725,7 @@ importers:
   examples/slack-channel:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       '@flue/slack':
         specifier: workspace:*
@@ -741,7 +741,7 @@ importers:
         specifier: 0.16.15
         version: 0.16.15(@cloudflare/workers-types@4.20260602.1)(@vitest/runner@4.1.7)(@vitest/snapshot@4.1.7)(vitest@4.1.7(@opentelemetry/api@1.9.1)(@types/node@26.0.0)(happy-dom@18.0.1)(vite@8.1.0(@types/node@26.0.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0)))
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       agents:
         specifier: ^0.14.2
@@ -756,7 +756,7 @@ importers:
   examples/stripe-channel:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       '@flue/stripe':
         specifier: workspace:*
@@ -769,7 +769,7 @@ importers:
         specifier: 0.16.15
         version: 0.16.15(@cloudflare/workers-types@4.20260602.1)(@vitest/runner@4.1.7)(@vitest/snapshot@4.1.7)(vitest@4.1.7(@opentelemetry/api@1.9.1)(@types/node@22.19.19)(happy-dom@18.0.1)(vite@8.1.0(@types/node@22.19.19)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0)))
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       '@types/node':
         specifier: ^22.10.10
@@ -787,7 +787,7 @@ importers:
   examples/teams-channel:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       '@flue/teams':
         specifier: workspace:*
@@ -800,7 +800,7 @@ importers:
         specifier: 0.16.15
         version: 0.16.15(@cloudflare/workers-types@4.20260602.1)(@vitest/runner@4.1.7)(@vitest/snapshot@4.1.7)(vitest@4.1.7(@opentelemetry/api@1.9.1)(@types/node@26.0.0)(happy-dom@18.0.1)(vite@8.1.0(@types/node@26.0.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0)))
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       agents:
         specifier: ^0.14.2
@@ -815,7 +815,7 @@ importers:
   examples/telegram-channel:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       '@flue/telegram':
         specifier: workspace:*
@@ -831,7 +831,7 @@ importers:
         specifier: 0.16.15
         version: 0.16.15(@cloudflare/workers-types@4.20260602.1)(@vitest/runner@4.1.7)(@vitest/snapshot@4.1.7)(vitest@4.1.7(@opentelemetry/api@1.9.1)(@types/node@26.0.0)(happy-dom@18.0.1)(vite@8.1.0(@types/node@26.0.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0)))
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       agents:
         specifier: ^0.14.2
@@ -846,7 +846,7 @@ importers:
   examples/twilio-channel:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       '@flue/twilio':
         specifier: workspace:*
@@ -859,7 +859,7 @@ importers:
         specifier: 0.16.15
         version: 0.16.15(@cloudflare/workers-types@4.20260602.1)(@vitest/runner@4.1.7)(@vitest/snapshot@4.1.7)(vitest@4.1.7(@opentelemetry/api@1.9.1)(@types/node@26.0.0)(happy-dom@18.0.1)(vite@8.1.0(@types/node@26.0.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0)))
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       agents:
         specifier: ^0.14.2
@@ -874,17 +874,17 @@ importers:
   examples/vitest-evals:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       valibot:
         specifier: ^1.0.0
         version: 1.4.0(typescript@6.0.3)
     devDependencies:
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       '@flue/sdk':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-sdk@*
         version: link:../../packages/sdk
       typescript:
         specifier: ^6.0.3
@@ -899,7 +899,7 @@ importers:
   examples/whatsapp-channel:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       '@flue/whatsapp':
         specifier: workspace:*
@@ -915,7 +915,7 @@ importers:
         specifier: 0.16.15
         version: 0.16.15(@cloudflare/workers-types@4.20260602.1)(@vitest/runner@4.1.7)(@vitest/snapshot@4.1.7)(vitest@4.1.7(@opentelemetry/api@1.9.1)(@types/node@26.0.0)(happy-dom@18.0.1)(vite@8.1.0(@types/node@26.0.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0)))
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       agents:
         specifier: ^0.14.2
@@ -930,7 +930,7 @@ importers:
   examples/zendesk-channel:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../../packages/runtime
       '@flue/zendesk':
         specifier: workspace:*
@@ -943,7 +943,7 @@ importers:
         specifier: 0.16.15
         version: 0.16.15(@cloudflare/workers-types@4.20260602.1)(@vitest/runner@4.1.7)(@vitest/snapshot@4.1.7)(vitest@4.1.7(@opentelemetry/api@1.9.1)(@types/node@22.19.19)(happy-dom@18.0.1)(vite@8.1.0(@types/node@22.19.19)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0)))
       '@flue/cli':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-cli@*
         version: link:../../packages/cli
       '@types/node':
         specifier: ^22.10.10
@@ -964,10 +964,10 @@ importers:
         specifier: ^1.39.2
         version: 1.39.2(vite@8.0.14(@types/node@26.0.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3)(yaml@2.9.0))(workerd@1.20260611.1)(wrangler@4.100.0)
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../runtime
       '@flue/sdk':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-sdk@*
         version: link:../sdk
       '@hono/node-server':
         specifier: ^2.0.3
@@ -1016,7 +1016,7 @@ importers:
   packages/dev-console:
     dependencies:
       '@flue/sdk':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-sdk@*
         version: link:../sdk
       ink:
         specifier: ^7.1.0
@@ -1129,7 +1129,7 @@ importers:
   packages/libsql:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../runtime
     devDependencies:
       '@libsql/client':
@@ -1189,7 +1189,7 @@ importers:
   packages/mongodb:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../runtime
     devDependencies:
       mongodb:
@@ -1208,7 +1208,7 @@ importers:
   packages/mysql:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../runtime
     devDependencies:
       mysql2:
@@ -1252,7 +1252,7 @@ importers:
   packages/opentelemetry:
     devDependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../runtime
       '@opentelemetry/api':
         specifier: ^1.9.0
@@ -1282,7 +1282,7 @@ importers:
   packages/postgres:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../runtime
     devDependencies:
       '@electric-sql/pglite':
@@ -1301,7 +1301,7 @@ importers:
   packages/react:
     devDependencies:
       '@flue/sdk':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-sdk@*
         version: link:../sdk
       '@testing-library/react':
         specifier: ^16.3.0
@@ -1331,7 +1331,7 @@ importers:
   packages/redis:
     dependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../runtime
     devDependencies:
       redis:
@@ -1471,7 +1471,7 @@ importers:
         version: 0.2.6
     devDependencies:
       '@flue/runtime':
-        specifier: workspace:*
+        specifier: workspace:@argonavis-labs/flue-runtime@*
         version: link:../runtime
       tsdown:
         specifier: ^0.22.0

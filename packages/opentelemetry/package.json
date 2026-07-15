@@ -29,11 +29,11 @@
 		"test": "vitest run"
 	},
 	"peerDependencies": {
-		"@flue/runtime": "workspace:^",
+		"@flue/runtime": "workspace:@argonavis-labs/flue-runtime@^",
 		"@opentelemetry/api": "^1.9.0"
 	},
 	"devDependencies": {
-		"@flue/runtime": "workspace:*",
+		"@flue/runtime": "workspace:@argonavis-labs/flue-runtime@*",
 		"@opentelemetry/api": "^1.9.0",
 		"@opentelemetry/context-async-hooks": "^2.7.1",
 		"@opentelemetry/core": "^2.7.1",

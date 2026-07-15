@@ -29,7 +29,7 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
-		"@flue/runtime": "workspace:*"
+		"@flue/runtime": "workspace:@argonavis-labs/flue-runtime@*"
 	},
 	"devDependencies": {
 		"redis": "^5.12.1",

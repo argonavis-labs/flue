@@ -30,7 +30,7 @@
 		"check:lint": "biome lint ."
 	},
 	"dependencies": {
-		"@flue/runtime": "workspace:*"
+		"@flue/runtime": "workspace:@argonavis-labs/flue-runtime@*"
 	},
 	"devDependencies": {
 		"mongodb": "^6.17.0",

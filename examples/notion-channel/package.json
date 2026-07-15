@@ -10,12 +10,12 @@
 	},
 	"dependencies": {
 		"@flue/notion": "workspace:*",
-		"@flue/runtime": "workspace:*",
+		"@flue/runtime": "workspace:@argonavis-labs/flue-runtime@*",
 		"@notionhq/client": "*"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "0.16.15",
-		"@flue/cli": "workspace:*",
+		"@flue/cli": "workspace:@argonavis-labs/flue-cli@*",
 		"@types/node": "^22.10.10",
 		"agents": "^0.14.2",
 		"typescript": "^6.0.3",

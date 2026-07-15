@@ -14,6 +14,7 @@
 		"test": "turbo test",
 		"test:integration": "pnpm --dir packages/cli run test:integration:cloudflare",
 		"check": "turbo run build check:lint check:types && turbo run test",
+		"check:runner-behaviors": "bash behaviors.sh",
 		"check:lint": "biome lint . && knip",
 		"check:knip": "knip",
 		"check:types": "turbo run check:types --filter=!apps-www",
@@ -23,7 +24,7 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.2.0",
-		"@flue/runtime": "workspace:*",
+		"@flue/runtime": "workspace:@argonavis-labs/flue-runtime@*",
 		"@types/node": "^22.10.10",
 		"bgproc": "^0.3.0",
 		"knip": "^6.14.2",

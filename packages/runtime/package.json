@@ -1,13 +1,17 @@
 {
-	"name": "@flue/runtime",
+	"name": "@argonavis-labs/flue-runtime",
 	"version": "1.0.0-beta.9",
+	"flueForkSha": "development",
 	"type": "module",
 	"license": "Apache-2.0",
 	"homepage": "https://flueframework.com/",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/withastro/flue",
+		"url": "https://github.com/argonavis-labs/flue",
 		"directory": "packages/runtime"
+	},
+	"publishConfig": {
+		"registry": "https://npm.pkg.github.com"
 	},
 	"exports": {
 		".": {

@@ -29,7 +29,7 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
-		"@flue/runtime": "workspace:*"
+		"@flue/runtime": "workspace:@argonavis-labs/flue-runtime@*"
 	},
 	"devDependencies": {
 		"mysql2": "^3.22.5",

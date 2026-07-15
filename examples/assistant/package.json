@@ -4,10 +4,10 @@
 	"type": "module",
 	"dependencies": {
 		"@cloudflare/sandbox": "*",
-		"@flue/runtime": "workspace:*",
+		"@flue/runtime": "workspace:@argonavis-labs/flue-runtime@*",
 		"agents": "^0.14.2"
 	},
 	"devDependencies": {
-		"@flue/cli": "workspace:*"
+		"@flue/cli": "workspace:@argonavis-labs/flue-cli@*"
 	}
 }

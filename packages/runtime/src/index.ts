@@ -11,13 +11,13 @@ export type {
 	JsonValue,
 } from './action.ts';
 export { defineAction } from './action.ts';
-export { createAgent, defineAgent, defineAgentProfile } from './agent-definition.ts';
 /**
  * Expose the framework's default sandbox tool surface (read/write/edit/bash/
  * grep/glob). A custom `tools` factory otherwise *replaces* that surface, so an
  * app that wants to add one tool has no way to compose the defaults back in.
  */
-export { createTools, type CreateToolsOptions } from './agent.ts';
+export { type CreateToolsOptions, createTools } from './agent.ts';
+export { createAgent, defineAgent, defineAgentProfile } from './agent-definition.ts';
 export {
 	ActionInputValidationError,
 	ActionOutputSerializationError,
@@ -60,6 +60,7 @@ export type {
 	FlueExecutionInterceptor,
 	FlueExecutionOperation,
 } from './execution-interceptor.ts';
+export { FLUE_FORK_SHA } from './fork.ts';
 export { type FlueInstrumentation, instrument } from './instrumentation.ts';
 export type { McpServerConnection, McpServerOptions, McpTransport } from './mcp.ts';
 export { connectMcpServer } from './mcp.ts';
