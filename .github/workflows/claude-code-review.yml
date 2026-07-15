@@ -1,0 +1,96 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  claude-review:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+
+      - name: Enforce workflow and playbook parity with default branch
+        run: |
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          git fetch --no-tags --depth=1 origin "$DEFAULT_BRANCH"
+
+          for GUARDED in .github/workflows/claude-code-review.yml .github/pr-review.md; do
+            if ! git cat-file -e "origin/$DEFAULT_BRANCH:$GUARDED" 2>/dev/null; then
+              echo "::warning::$GUARDED does not exist on $DEFAULT_BRANCH yet; skipping its parity check during rollout."
+              continue
+            fi
+            if ! git diff --quiet "origin/$DEFAULT_BRANCH" -- "$GUARDED"; then
+              echo "::error::This PR modifies $GUARDED. Claude review is fail-closed for edits to its own workflow or playbook; request maintainer bypass for this PR."
+              exit 1
+            fi
+          done
+
+      - name: Load review instructions
+        id: instructions
+        run: |
+          DELIM="INSTRUCTIONS_$(openssl rand -hex 16)"
+          {
+            echo "content<<$DELIM"
+            echo "REPO: ${{ github.repository }}"
+            echo "PR NUMBER: ${{ github.event.pull_request.number }}"
+            echo "PR EVENT: ${{ github.event.action }}"
+            echo "BASE REF: ${{ github.event.pull_request.base.ref }}"
+            echo "BASE SHA: ${{ github.event.pull_request.base.sha }}"
+            echo "HEAD SHA: ${{ github.event.pull_request.head.sha }}"
+            echo ""
+            cat .github/pr-review.md
+            echo "$DELIM"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@f87768c6d25f92ae6efa7175e223ef77d4cbf97f # v1.0.166
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: "claude"
+          show_full_output: true
+          track_progress: true
+          additional_permissions: |
+            actions: read
+          claude_args: |
+            --model opus
+            --effort high
+            --allowedTools "Read,Glob,Grep,Bash(gh pr *),Bash(git fetch:*),Bash(git diff:*),Bash(git show:*),Bash(git log:*),mcp__github_inline_comment__create_inline_comment"
+            --json-schema '{"type":"object","properties":{"approved":{"type":"boolean"},"reason":{"type":"string"}},"required":["approved"]}'
+          prompt: ${{ steps.instructions.outputs.content }}
+
+      - name: Enforce verdict
+        env:
+          VERDICT: ${{ steps.claude-review.outputs.structured_output }}
+        run: |
+          if [ -z "$VERDICT" ]; then
+            echo "::error::Claude review returned no structured verdict."
+            exit 1
+          fi
+
+          if ! APPROVED=$(printenv VERDICT | jq -r '.approved'); then
+            echo "::error::Claude review verdict is not valid JSON."
+            exit 1
+          fi
+          REASON=$(printenv VERDICT | jq -r '.reason // "blocking issues found"' | tr '\n' ' ')
+
+          if [ "$APPROVED" != "true" ]; then
+            echo "::error::Claude review blocked: $REASON"
+            exit 1
+          fi
