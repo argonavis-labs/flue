@@ -1,4 +1,4 @@
-name: Flue Tech-Debt Merge Gate
+name: Flue Cross-Repo Gate
 
 # Block a Flue package-source PR until Runner Next records it in
 # docs/tech-debt.md. Docs-only and CI-only PRs pass. The
@@ -12,10 +12,11 @@ name: Flue Tech-Debt Merge Gate
 # It never checks out or executes the PR branch.
 #
 # Required repository configuration (not in this file):
-#   - A GitHub App installed on argonavis-labs/runner-next with read
-#     access to repository contents, plus these repository secrets:
-#       RUNNER_NEXT_TECH_DEBT_APP_ID
-#       RUNNER_NEXT_TECH_DEBT_PRIVATE_KEY
+#   - A GitHub App named Flue Fork Cross-Repo Validator installed on
+#     argonavis-labs/runner-next with Contents: Read permission.
+#   - These repository secrets on argonavis-labs/flue:
+#       RUNNER_NEXT_APP_ID
+#       RUNNER_NEXT_APP_PRIVATE_KEY
 #   - A branch protection rule on Flue's default branch requiring this
 #     status check and requiring pull requests.
 
@@ -29,7 +30,7 @@ concurrency:
 
 jobs:
   gate:
-    name: Runner Next tech-debt entry
+    name: Runner Next entry check
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -81,17 +82,17 @@ jobs:
                 : 'No package changes detected; gate passes without reading Runner Next.'
             );
 
-      - name: Create Runner Next access token
+      - name: Create Runner Next token
         if: steps.changed.outputs.hasPackageChanges == 'true'
         id: runner-next-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.RUNNER_NEXT_TECH_DEBT_APP_ID }}
-          private-key: ${{ secrets.RUNNER_NEXT_TECH_DEBT_PRIVATE_KEY }}
+          app-id: ${{ secrets.RUNNER_NEXT_APP_ID }}
+          private-key: ${{ secrets.RUNNER_NEXT_APP_PRIVATE_KEY }}
           owner: argonavis-labs
           repositories: runner-next
 
-      - name: Verify Runner Next Tech Debt Tracker entry
+      - name: Verify Runner Next entry
         if: steps.changed.outputs.hasPackageChanges == 'true'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
         env:
@@ -139,7 +140,7 @@ jobs:
 
             if (matching.length === 0) {
               core.setFailed(
-                `No Tech Debt Tracker entry found for this PR. ` +
+                `No matching Runner Next entry found for this PR. ` +
                 `An entry in argonavis-labs/runner-next:docs/tech-debt.md must contain all three of:\n` +
                 `  ${marker}\n` +
                 `  ${link}\n` +
@@ -148,4 +149,4 @@ jobs:
               return;
             }
 
-            core.notice('Tech Debt Tracker entry verified; gate passes.');
+            core.notice('Runner Next entry verified; gate passes.');
