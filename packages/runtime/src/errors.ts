@@ -998,6 +998,20 @@ export class OperationFailedError extends FlueError {
 	}
 }
 
+/** Canonical submission input could not be made durably runnable after admission. */
+export class SubmissionCanonicalReadinessError extends FlueError {
+	constructor({ submissionId }: { submissionId: string }) {
+		super({
+			type: 'submission_canonical_readiness',
+			message: 'A durable submission could not be prepared for processing.',
+			details: 'The submission was not made runnable.',
+			dev: `Submission "${submissionId}" disappeared before canonical readiness was recorded.`,
+			meta: { submissionId },
+		});
+		this.name = 'SubmissionCanonicalReadinessError';
+	}
+}
+
 /**
  * A durable submission was interrupted (process crash, restart, or shutdown)
  * and recovery settled it as failed because resuming or replaying the work

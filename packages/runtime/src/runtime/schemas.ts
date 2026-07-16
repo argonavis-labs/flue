@@ -55,29 +55,16 @@ export const DeliveredMessageSchema = v.variant('kind', [
 	DeliveredSignalMessageSchema,
 ]);
 
+const DirectSubmissionIdSchema = v.optional(v.pipe(v.string(), v.nonEmpty()));
+
 const DirectAgentRequestSchema = v.variant('kind', [
 	v.object({
-		kind: v.literal('user'),
-		body: v.string(),
-		attachments: v.optional(v.array(DeliveredAttachmentSchema)),
-		submissionId: v.optional(v.pipe(v.string(), v.nonEmpty())),
+		...DeliveredUserMessageSchema.entries,
+		submissionId: DirectSubmissionIdSchema,
 	}),
 	v.object({
-		kind: v.literal('signal'),
-		type: v.pipe(v.string(), v.nonEmpty('Signal message "type" must not be empty.')),
-		body: v.string(),
-		attributes: v.optional(v.record(v.string(), v.string())),
-		tagName: v.optional(
-			v.pipe(
-				v.string(),
-				v.regex(
-					/^[A-Za-z_][A-Za-z0-9_.-]*$/,
-					'Signal message "tagName" must be a valid XML tag name ' +
-						'(letters, digits, "_", "-", "."; must not start with a digit, "-", or ".").',
-				),
-			),
-		),
-		submissionId: v.optional(v.pipe(v.string(), v.nonEmpty())),
+		...DeliveredSignalMessageSchema.entries,
+		submissionId: DirectSubmissionIdSchema,
 	}),
 ]);
 

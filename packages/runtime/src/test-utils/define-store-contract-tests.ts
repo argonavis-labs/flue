@@ -196,6 +196,29 @@ export function defineStoreContractTests(label: string, backend: StoreContractTe
 		// ── Direct admission ───────────────────────────────────────────────
 
 		describe('direct admission', () => {
+			it('replays a direct submission when request metadata changes', async () => {
+				const store = await create();
+				const first = directInput({
+					acceptedAt: '2026-06-03T00:00:00.000Z',
+					traceCarrier: {
+						traceparent: '00-11111111111111111111111111111111-1111111111111111-01',
+					},
+				});
+				const admitted = await admitDirectReady(store, first);
+
+				const replay = await admitDirectReady(
+					store,
+					directInput({
+						acceptedAt: '2026-06-03T00:00:01.000Z',
+						traceCarrier: {
+							traceparent: '00-22222222222222222222222222222222-2222222222222222-01',
+						},
+					}),
+				);
+
+				expect(replay.input).toEqual(admitted.input);
+			});
+
 			it('round-trips direct submission images', async () => {
 				const store = await create();
 				const input = directInput({

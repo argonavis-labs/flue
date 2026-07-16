@@ -25,6 +25,10 @@ import { agentStreamPath } from '../src/runtime/event-stream-store.ts';
 import { handleAgentConversationRead } from '../src/runtime/handle-conversation-routes.ts';
 import type { CreateAgentContextFn } from '../src/runtime/handle-agent.ts';
 import { generateSessionAffinityKey } from '../src/runtime/ids.ts';
+import {
+	createRuntimeActivityGate,
+	type RuntimeActivityGate,
+} from '../src/runtime/runtime-activity-gate.ts';
 import { defineTool } from '../src/tool.ts';
 import { createNoopSessionEnv } from './fixtures/session-env.ts';
 
@@ -177,6 +181,7 @@ async function createFauxCoordinator(
 	dbPath: string,
 	provider: FauxProviderRegistration,
 	durability?: { maxAttempts?: number; timeoutMs?: number },
+	activityGate?: RuntimeActivityGate,
 ): Promise<{ coordinator: NodeAgentCoordinator; executionStore: AgentExecutionStore }> {
 	const adapter = sqlite(dbPath);
 	await adapter.migrate?.();
@@ -191,6 +196,7 @@ async function createFauxCoordinator(
 		createContext: makeFauxCreateContext(provider),
 		conversationStreamStore,
 		attachmentStore,
+		activityGate,
 	});
 	return { coordinator, executionStore };
 }
@@ -1696,6 +1702,68 @@ describe('NodeAgentCoordinator', () => {
 			// Admission is fire-and-forget; wait for both to settle durably.
 			await coordinator.waitForIdle();
 			expect(await executionStore.submissions.hasUnsettledSubmissions()).toBe(false);
+		});
+
+		it('releases activity leases when concurrent retries use the same submission id', async () => {
+			const dbPath = createTempDbPath();
+			const provider = createFauxProvider();
+			provider.setResponses([fauxAssistantMessage('One reply.')]);
+			const activityGate = createRuntimeActivityGate();
+			const { coordinator } = await createFauxCoordinator(
+				dbPath,
+				provider,
+				undefined,
+				activityGate,
+			);
+			const admit = coordinator.createAdmission('assistant', 'instance-1');
+
+			const [first, retry] = await Promise.all([
+				admit({ kind: 'user', body: 'Hello' }, 'stable-submission'),
+				admit({ kind: 'user', body: 'Hello' }, 'stable-submission'),
+			]);
+			await coordinator.waitForIdle();
+			activityGate.pause();
+			let idle = false;
+			const waiting = activityGate.waitForIdle().then(() => {
+				idle = true;
+			});
+			await Promise.resolve();
+
+			expect(first.submissionId).toBe('stable-submission');
+			expect(retry.submissionId).toBe('stable-submission');
+			expect(idle).toBe(true);
+			await waiting;
+		});
+
+		it('releases the activity lease when a settled submission is replayed', async () => {
+			const dbPath = createTempDbPath();
+			const provider = createFauxProvider();
+			provider.setResponses([fauxAssistantMessage('One reply.')]);
+			const activityGate = createRuntimeActivityGate();
+			const { coordinator } = await createFauxCoordinator(
+				dbPath,
+				provider,
+				undefined,
+				activityGate,
+			);
+			const admit = coordinator.createAdmission('assistant', 'instance-1');
+
+			await admit({ kind: 'user', body: 'Hello' }, 'settled-submission');
+			await coordinator.waitForIdle();
+			const replay = await admit(
+				{ kind: 'user', body: 'Hello' },
+				'settled-submission',
+			);
+			activityGate.pause();
+			let idle = false;
+			const waiting = activityGate.waitForIdle().then(() => {
+				idle = true;
+			});
+			await Promise.resolve();
+
+			expect(replay.submissionId).toBe('settled-submission');
+			expect(idle).toBe(true);
+			await waiting;
 		});
 	});
 

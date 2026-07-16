@@ -124,10 +124,13 @@ describe('defineTool()', () => {
 			run,
 		});
 
-		await expect(validateAndRunTool(tool, {})).resolves.toBe(10);
+		await expect(
+			validateAndRunTool(tool, { input: {}, toolCallId: 'tool-call-defaults' }),
+		).resolves.toBe(10);
 		expect(run).toHaveBeenCalledWith({
 			input: { limit: 10 },
 			signal: undefined,
+			toolCallId: 'tool-call-defaults',
 		});
 	});
 
@@ -145,7 +148,12 @@ describe('defineTool()', () => {
 			run,
 		});
 
-		await expect(validateAndRunTool(tool, { orderId: 'invoice_7' })).rejects.toMatchObject({
+		await expect(
+			validateAndRunTool(tool, {
+				input: { orderId: 'invoice_7' },
+				toolCallId: 'tool-call-invalid-input',
+			}),
+		).rejects.toMatchObject({
 			type: 'tool_input_validation',
 			meta: {
 				tool: 'lookup',
@@ -163,7 +171,9 @@ describe('defineTool()', () => {
 			run: async () => 2,
 		});
 
-		await expect(validateAndRunTool(tool, {})).resolves.toEqual({ count: 2 });
+		await expect(
+			validateAndRunTool(tool, { input: {}, toolCallId: 'tool-call-output-transform' }),
+		).resolves.toEqual({ count: 2 });
 	});
 
 	it('throws structured issues when output validation fails', async () => {
@@ -174,7 +184,9 @@ describe('defineTool()', () => {
 			run: async () => 'two' as never,
 		});
 
-		await expect(validateAndRunTool(tool, {})).rejects.toMatchObject({
+		await expect(
+			validateAndRunTool(tool, { input: {}, toolCallId: 'tool-call-invalid-output' }),
+		).rejects.toMatchObject({
 			type: 'tool_output_validation',
 			meta: { tool: 'count', issues: [expect.objectContaining({ message: expect.any(String) })] },
 		});
@@ -188,7 +200,9 @@ describe('defineTool()', () => {
 			run: async () => undefined as never,
 		});
 
-		await expect(validateAndRunTool(tool)).rejects.toMatchObject({
+		await expect(
+			validateAndRunTool(tool, { toolCallId: 'tool-call-undefined-output' }),
+		).rejects.toMatchObject({
 			type: 'tool_output_serialization',
 			meta: { tool: 'undefined_output' },
 		});
@@ -201,7 +215,9 @@ describe('defineTool()', () => {
 			run: async () => ({ kept: true, discarded: undefined }) as never,
 		});
 
-		await expect(validateAndRunTool(tool, {})).resolves.toEqual({ kept: true });
+		await expect(
+			validateAndRunTool(tool, { input: {}, toolCallId: 'tool-call-optional-property' }),
+		).resolves.toEqual({ kept: true });
 	});
 
 	it('returns a detached JSON snapshot of output', async () => {
@@ -212,7 +228,10 @@ describe('defineTool()', () => {
 			run: async () => output,
 		});
 
-		const result = await validateAndRunTool(tool, {});
+		const result = await validateAndRunTool(tool, {
+			input: {},
+			toolCallId: 'tool-call-detached-output',
+		});
 		output.nested.count = 2;
 
 		expect(result).toEqual({ nested: { count: 1 } });
