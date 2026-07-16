@@ -314,7 +314,7 @@ export class CloudflareAgentCoordinator {
 	/** See {@link appendAgentConversationSignal}: out-of-turn canonical signal append. */
 	async appendConversationSignal(signal: AgentConversationSignalInput): Promise<void> {
 		const writer = await this.ensureConversationWriter();
-		let conversation = await writer.findConversation('default', 'default');
+		let conversation = await writer.findConversation(SUBMISSION_HARNESS_NAME, SUBMISSION_SESSION_NAME);
 		if (!conversation) {
 			// A signal may precede the very first submission, so the root conversation
 			// may not exist yet. Create it the same way the root session path does.
@@ -322,12 +322,12 @@ export class CloudflareAgentCoordinator {
 			await writer.ensureConversation({
 				kind: 'root',
 				conversationId: identity.conversationId,
-				harness: 'default',
-				session: 'default',
+				harness: SUBMISSION_HARNESS_NAME,
+				session: SUBMISSION_SESSION_NAME,
 				affinityKey: identity.affinityKey,
 				createdAt: identity.createdAt,
 			});
-			conversation = await writer.findConversation('default', 'default');
+			conversation = await writer.findConversation(SUBMISSION_HARNESS_NAME, SUBMISSION_SESSION_NAME);
 			if (!conversation) {
 				throw new Error('[flue] The agent instance has no root conversation to signal.');
 			}
