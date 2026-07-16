@@ -1,3 +1,4 @@
+import { SUBMISSION_HARNESS_NAME, SUBMISSION_SESSION_NAME } from '../adapter-helpers.ts';
 import type {
 	AgentExecutionStore,
 	AgentSubmission,
@@ -5,7 +6,9 @@ import type {
 } from '../agent-execution-store.ts';
 import type { FlueContextInternal } from '../client.ts';
 import { ConversationRecordWriter } from '../conversation-writer.ts';
+import { SubmissionAbortedError } from '../errors.ts';
 import type { FlueTraceCarrier } from '../execution-interceptor.ts';
+import { createConversationIdentity } from '../harness.ts';
 import {
 	agentSubmissionDispatchId,
 	type createAgentSubmissionSessionHandler,
@@ -16,9 +19,6 @@ import {
 	reconcileInterruptedSubmission,
 	submissionSyntheticRequest,
 } from '../runtime/agent-submissions.ts';
-import { SUBMISSION_HARNESS_NAME, SUBMISSION_SESSION_NAME } from '../adapter-helpers.ts';
-import { createSessionStorageKey } from '../session-identity.ts';
-import { SubmissionAbortedError } from '../errors.ts';
 import type { AttachmentStore } from '../runtime/attachment-store.ts';
 import type { ConversationStreamStore } from '../runtime/conversation-stream-store.ts';
 import type { AgentInteractionStart } from '../runtime/dev-lifecycle-logger.ts';
@@ -29,11 +29,13 @@ import {
 	handleAgentConversationHead,
 	handleAgentConversationRead,
 } from '../runtime/handle-conversation-routes.ts';
+import { createSessionStorageKey } from '../session-identity.ts';
 import type { DeliveredMessage } from '../types.ts';
 import {
 	createSqlAgentExecutionStore,
 	createSqlConversationStores,
 } from './agent-execution-store.ts';
+import { type AgentConversationSignalInput, cloudflareAgentCoordinators } from './app-signals.ts';
 
 export const CLOUDFLARE_AGENT_INTERNAL_DISPATCH_PATH = '/__flue/internal/dispatch';
 
@@ -147,15 +149,16 @@ export function createCloudflareAgentRuntime(
 			};
 		},
 		attach(instance, prepared) {
-			coordinators.set(
+			const coordinator = new CloudflareAgentCoordinator(
 				instance,
-				new CloudflareAgentCoordinator(
-					instance,
-					prepared,
-					options,
-					activeAttempts,
-				),
+				prepared,
+				options,
+				activeAttempts,
 			);
+			coordinators.set(instance, coordinator);
+			// Also reachable from the DO instance alone, so an application can append
+			// an out-of-turn conversation signal without owning a turn.
+			cloudflareAgentCoordinators.set(instance, coordinator);
 		},
 		onStart(instance, inherited) {
 			return getCoordinator(instance).onStart(inherited);
@@ -172,7 +175,7 @@ export function createCloudflareAgentRuntime(
 	};
 }
 
-class CloudflareAgentCoordinator {
+export class CloudflareAgentCoordinator {
 	constructor(
 		private readonly instance: CloudflareAgentInstance,
 		private readonly prepared: CloudflareAgentPreparedCoordinator,
@@ -306,6 +309,48 @@ class CloudflareAgentCoordinator {
 
 	private runWithInstanceContext<T>(callback: () => T): T {
 		return this.options.runWithInstanceContext(this.instance, this.agentName, callback);
+	}
+
+	/** See {@link appendAgentConversationSignal}: out-of-turn canonical signal append. */
+	async appendConversationSignal(signal: AgentConversationSignalInput): Promise<void> {
+		const writer = await this.ensureConversationWriter();
+		let conversation = await writer.findConversation(SUBMISSION_HARNESS_NAME, SUBMISSION_SESSION_NAME);
+		if (!conversation) {
+			// A signal may precede the very first submission, so the root conversation
+			// may not exist yet. Create it the same way the root session path does.
+			const identity = createConversationIdentity();
+			await writer.ensureConversation({
+				kind: 'root',
+				conversationId: identity.conversationId,
+				harness: SUBMISSION_HARNESS_NAME,
+				session: SUBMISSION_SESSION_NAME,
+				affinityKey: identity.affinityKey,
+				createdAt: identity.createdAt,
+			});
+			conversation = await writer.findConversation(SUBMISSION_HARNESS_NAME, SUBMISSION_SESSION_NAME);
+			if (!conversation) {
+				throw new Error('[flue] The agent instance has no root conversation to signal.');
+			}
+		}
+		const parentId = await writer.getConversationLeaf(conversation.conversationId);
+		const unique = crypto.randomUUID();
+		await writer.append([
+			{
+				v: 1,
+				id: `record_app_signal_${unique}`,
+				type: 'signal',
+				conversationId: conversation.conversationId,
+				harness: conversation.harness,
+				session: conversation.session,
+				timestamp: new Date().toISOString(),
+				messageId: `entry_app_signal_${unique}`,
+				parentId,
+				signalType: signal.type,
+				...(signal.tagName ? { tagName: signal.tagName } : {}),
+				content: signal.body,
+				...(signal.attributes ? { attributes: signal.attributes } : {}),
+			},
+		]);
 	}
 
 	private async ensureConversationWriter(): Promise<ConversationRecordWriter> {
