@@ -12,6 +12,12 @@ export type {
 } from './action.ts';
 export { defineAction } from './action.ts';
 export { createAgent, defineAgent, defineAgentProfile } from './agent-definition.ts';
+/**
+ * Expose the framework's default sandbox tool surface (read/write/edit/bash/
+ * grep/glob). A custom `tools` factory otherwise *replaces* that surface, so an
+ * app that wants to add one tool has no way to compose the defaults back in.
+ */
+export { createTools, type CreateToolsOptions } from './agent.ts';
 export {
 	ActionInputValidationError,
 	ActionOutputSerializationError,
