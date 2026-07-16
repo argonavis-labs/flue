@@ -1063,7 +1063,12 @@ describe('reduceConversationRecords()', () => {
 		).toMatchObject([{
 			role: 'user',
 			content: [
-				{ type: 'text', text: expect.stringContaining('Inspect this image.') },
+				// The manifest marks the image evicted too, so it never claims an
+				// image is present while the inline block says it was evicted.
+				{
+					type: 'text',
+					text: 'Inspect this image.\n\n<attachments>\n<image id="att_01" mimeType="image/png" evicted />\n</attachments>',
+				},
 				{ type: 'text', text: '<image id="att_01" mimeType="image/png" evicted />' },
 			],
 		}]);

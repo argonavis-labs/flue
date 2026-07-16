@@ -1008,17 +1008,27 @@ function resolveMessageAttachments(
 		return message;
 	}
 	const attachments = [...(entry.attachmentRefs?.values() ?? [])];
+	// Resolve each attachment once: the `<attachments>` manifest and the inline
+	// image blocks must agree on which images are evicted, so both read from the
+	// same resolution rather than the manifest claiming an image is present while
+	// its inline block says `evicted`.
+	const resolved = new Map<string, ProjectedAttachment>();
+	if (options.resolveAttachment) {
+		for (const attachment of attachments) {
+			resolved.set(attachment.id, options.resolveAttachment(attachment));
+		}
+	}
 	let manifestProjected = false;
 	const content = message.content.map((block) => {
 		if (block.type === 'text' && !manifestProjected && attachments.length > 0) {
 			manifestProjected = true;
-			return { ...block, text: attachmentManifest(block.text, attachments) };
+			return { ...block, text: attachmentManifest(block.text, attachments, resolved) };
 		}
 		if (block.type !== 'image') return block;
 		const ref = entry.attachmentRefs?.get(block.data);
 		if (!ref) return block;
-		if (!options.resolveAttachment) throw new AttachmentNotAvailableError({ attachmentId: ref.id });
-		const projected = options.resolveAttachment(ref);
+		const projected = resolved.get(ref.id);
+		if (!projected) throw new AttachmentNotAvailableError({ attachmentId: ref.id });
 		if ('evicted' in projected) {
 			return {
 				type: 'text' as const,
@@ -1028,15 +1038,23 @@ function resolveMessageAttachments(
 		return { type: 'image' as const, ...projected };
 	});
 	if (!manifestProjected && attachments.length > 0) {
-		content.unshift({ type: 'text', text: attachmentManifest('', attachments) });
+		content.unshift({ type: 'text', text: attachmentManifest('', attachments, resolved) });
 	}
 	return { ...message, content } as AgentMessage;
 }
 
-function attachmentManifest(text: string, attachments: readonly AttachmentRef[]): string {
+function attachmentManifest(
+	text: string,
+	attachments: readonly AttachmentRef[],
+	resolved: ReadonlyMap<string, ProjectedAttachment>,
+): string {
 	if (attachments.length === 0) return text;
 	const manifest = attachments
-		.map((attachment) => `<image id="${attachment.id}" mimeType="${attachment.mimeType}" />`)
+		.map((attachment) => {
+			const projected = resolved.get(attachment.id);
+			const evicted = projected !== undefined && 'evicted' in projected ? ' evicted' : '';
+			return `<image id="${attachment.id}" mimeType="${attachment.mimeType}"${evicted} />`;
+		})
 		.join('\n');
 	const projection = `\n\n<attachments>\n${manifest}\n</attachments>`;
 	return text.endsWith(projection) ? text : `${text}${projection}`;
