@@ -1,6 +1,12 @@
 export type { DeliveredAttachment, FlueEvent, PromptUsage } from '@flue/sdk';
 export type { AgentStatus, FailedSend } from './agent-reducer.ts';
-export type { SendMessageOptions } from './agent-session.ts';
+export {
+	createFlueAgentStore,
+	type CreateFlueAgentStoreOptions,
+	type FlueAgentStore,
+	type FlueAgentStoreSnapshot,
+	type SendMessageOptions,
+} from './agent-session.ts';
 export { FlueProvider, type FlueProviderProps, useFlueClient } from './provider.ts';
 export type {
 	FlueConversationMessage,
