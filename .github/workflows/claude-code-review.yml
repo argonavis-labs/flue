@@ -4,6 +4,8 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
 
+permissions: {}
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -24,10 +26,12 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Enforce workflow and playbook parity with default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
           git fetch --no-tags --depth=1 origin "$DEFAULT_BRANCH"
 
           for GUARDED in .github/workflows/claude-code-review.yml .github/pr-review.md; do
@@ -43,16 +47,23 @@ jobs:
 
       - name: Load review instructions
         id: instructions
+        env:
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_EVENT: ${{ github.event.action }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           DELIM="INSTRUCTIONS_$(openssl rand -hex 16)"
           {
             echo "content<<$DELIM"
-            echo "REPO: ${{ github.repository }}"
-            echo "PR NUMBER: ${{ github.event.pull_request.number }}"
-            echo "PR EVENT: ${{ github.event.action }}"
-            echo "BASE REF: ${{ github.event.pull_request.base.ref }}"
-            echo "BASE SHA: ${{ github.event.pull_request.base.sha }}"
-            echo "HEAD SHA: ${{ github.event.pull_request.head.sha }}"
+            echo "REPO: $REPOSITORY"
+            echo "PR NUMBER: $PR_NUMBER"
+            echo "PR EVENT: $PR_EVENT"
+            echo "BASE REF: $BASE_REF"
+            echo "BASE SHA: $BASE_SHA"
+            echo "HEAD SHA: $HEAD_SHA"
             echo ""
             cat .github/pr-review.md
             echo "$DELIM"
