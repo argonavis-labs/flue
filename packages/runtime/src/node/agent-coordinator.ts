@@ -10,7 +10,6 @@ import {
 	type AttachedAgentSubmissionAdmission,
 	agentSubmissionDispatchId,
 	createDirectAgentSubmissionInput,
-	createDispatchAgentSubmissionInput,
 	materializeAgentSubmissionSession,
 	processSubmission,
 	reconcileInterruptedSubmission,
@@ -18,7 +17,7 @@ import {
 } from '../runtime/agent-submissions.ts';
 import { SUBMISSION_HARNESS_NAME, SUBMISSION_SESSION_NAME } from '../adapter-helpers.ts';
 import { createSessionStorageKey } from '../session-identity.ts';
-import { SubmissionAbortedError } from '../errors.ts';
+import { SubmissionAbortedError, SubmissionCanonicalReadinessError } from '../errors.ts';
 import type { AttachmentStore } from '../runtime/attachment-store.ts';
 import type { ConversationStreamStore } from '../runtime/conversation-stream-store.ts';
 import type { AgentInteractionStart } from '../runtime/dev-lifecycle-logger.ts';
@@ -115,6 +114,7 @@ export function createNodeAgentCoordinator(options: {
 	const { submissions, agents, createContext, conversationStreamStore, attachmentStore, onInteractionStart, activityGate } = options;
 	const conversationWriters = new Map<string, Promise<ConversationRecordWriter>>();
 	const conversationMaterializations = new Map<string, Promise<void>>();
+	const canonicalPreparations = new Map<string, Promise<AgentSubmission>>();
 
 	// ── Lease ownership ──────────────────────────────────────────────────
 
@@ -133,7 +133,41 @@ export function createNodeAgentCoordinator(options: {
 
 	/** Submissions currently being processed, keyed by submissionId. */
 	const activeSubmissions = new Map<string, { task: Promise<void>; abort: AbortController }>();
-	const activityLeases = new Map<string, RuntimeActivityLease>();
+	/** Concurrent admissions may share an id; retain each lease until that submission settles. */
+	const activityLeases = new Map<string, Set<RuntimeActivityLease>>();
+
+	function retainSubmissionActivityLease(
+		submission: AgentSubmission,
+		activityLease?: RuntimeActivityLease,
+	): void {
+		if (!activityLease) return;
+		if (submission.status === 'settled') {
+			activityLease.release();
+			return;
+		}
+		const retained = activityLeases.get(submission.submissionId);
+		if (retained) retained.add(activityLease);
+		else activityLeases.set(submission.submissionId, new Set([activityLease]));
+	}
+
+	function releaseSubmissionActivityLease(
+		submissionId: string,
+		activityLease?: RuntimeActivityLease,
+	): void {
+		if (!activityLease) return;
+		activityLease.release();
+		const retained = activityLeases.get(submissionId);
+		if (!retained) return;
+		retained.delete(activityLease);
+		if (retained.size === 0) activityLeases.delete(submissionId);
+	}
+
+	function releaseSubmissionActivityLeases(submissionId: string): void {
+		const retained = activityLeases.get(submissionId);
+		if (!retained) return;
+		activityLeases.delete(submissionId);
+		for (const activityLease of retained) activityLease.release();
+	}
 
 	/**
 	 * Wake signal. The claim loop sleeps on `wakePromise` when there is
@@ -241,6 +275,33 @@ export function createNodeAgentCoordinator(options: {
 		return materialized;
 	}
 
+	async function ensureSubmissionCanonicalReady(
+		submission: AgentSubmission,
+		agent: AgentDefinition,
+	): Promise<AgentSubmission> {
+		if (submission.canonicalReadyAt !== null) return submission;
+		const existing = canonicalPreparations.get(submission.submissionId);
+		if (existing) return existing;
+		const preparing = (async () => {
+			await materializeSubmissionConversation(submission.input, agent);
+			const ready = await submissions.markSubmissionCanonicalReady(submission.submissionId);
+			if (ready) return ready;
+			const current = await submissions.getSubmission(submission.submissionId);
+			if (current?.canonicalReadyAt !== null && current?.canonicalReadyAt !== undefined) {
+				return current;
+			}
+			throw new SubmissionCanonicalReadinessError({ submissionId: submission.submissionId });
+		})();
+		canonicalPreparations.set(submission.submissionId, preparing);
+		try {
+			return await preparing;
+		} finally {
+			if (canonicalPreparations.get(submission.submissionId) === preparing) {
+				canonicalPreparations.delete(submission.submissionId);
+			}
+		}
+	}
+
 	function resolveAgent(name: string): AgentDefinition {
 		const agent = agents.find((record) => record.name === name)?.definition;
 		if (!agent) throw new Error(`[flue] submission target agent "${name}" has no agent definition.`);
@@ -284,8 +345,7 @@ export function createNodeAgentCoordinator(options: {
 			})
 			.finally(() => {
 				activeSubmissions.delete(claimed.submissionId);
-				activityLeases.get(claimed.submissionId)?.release();
-				activityLeases.delete(claimed.submissionId);
+				releaseSubmissionActivityLeases(claimed.submissionId);
 				wake();
 			});
 		activeSubmissions.set(claimed.submissionId, { task, abort: controller });
@@ -578,18 +638,14 @@ export function createNodeAgentCoordinator(options: {
 					return admission;
 				}
 				let submission = admission.submission;
-				if (submission.canonicalReadyAt === null) {
-					await materializeSubmissionConversation(createDispatchAgentSubmissionInput(input), agent);
-					submission =
-						(await submissions.markSubmissionCanonicalReady(submission.submissionId)) ?? submission;
-				}
+				retainSubmissionActivityLease(submission, activityLease);
+				submission = await ensureSubmissionCanonicalReady(submission, agent);
 
-				if (activityLease) activityLeases.set(submission.submissionId, activityLease);
 				ensureClaimLoop();
 				wake();
 				return { kind: 'submission', submission };
 			} catch (error) {
-				activityLease?.release();
+				releaseSubmissionActivityLease(input.dispatchId, activityLease);
 				throw error;
 			}
 		},
@@ -628,6 +684,7 @@ export function createNodeAgentCoordinator(options: {
 		createAdmission(agentName: string, instanceId: string): AttachedAgentSubmissionAdmission {
 			return async (
 				message: DeliveredMessage,
+				submissionId?: string,
 				traceCarrier?: import('../execution-interceptor.ts').FlueTraceCarrier,
 			) => {
 				if (stopping) throw new Error('[flue] Coordinator is shutting down.');
@@ -639,6 +696,7 @@ export function createNodeAgentCoordinator(options: {
 				}
 
 				const input = createDirectAgentSubmissionInput({
+					submissionId,
 					agent: agentName,
 					id: instanceId,
 					message,
@@ -646,20 +704,16 @@ export function createNodeAgentCoordinator(options: {
 				});
 
 				try {
-					const admitted = await submissions.admitDirect(input);
-					if (admitted.canonicalReadyAt === null) {
-						await materializeSubmissionConversation(input, agent);
-						const ready = await submissions.markSubmissionCanonicalReady(input.submissionId);
-						if (!ready) throw new Error('[flue] Direct admission disappeared before canonical readiness.');
-					}
-					const writer = await getConversationWriter(input);
+					let admitted = await submissions.admitDirect(input);
+					retainSubmissionActivityLease(admitted, activityLease);
+					admitted = await ensureSubmissionCanonicalReady(admitted, agent);
+					const writer = await getConversationWriter(admitted.input);
 					const offset = writer?.offset ?? '-1';
-					if (activityLease) activityLeases.set(input.submissionId, activityLease);
 					ensureClaimLoop();
 					wake();
-					return { submissionId: input.submissionId, offset };
+					return { submissionId: admitted.submissionId, offset };
 				} catch (error) {
-					activityLease?.release();
+					releaseSubmissionActivityLease(input.submissionId, activityLease);
 					throw error;
 				}
 			};

@@ -13,6 +13,17 @@ import type {
 	ToolOutputSchema,
 } from './tool-types.ts';
 
+type ParsedToolContext<TTool extends ToolDefinition> = Omit<
+	Parameters<TTool['run']>[0],
+	'toolCallId'
+>;
+
+interface ValidateAndRunToolOptions {
+	readonly input?: unknown;
+	readonly signal?: AbortSignal;
+	readonly toolCallId: string;
+}
+
 export function defineTool<
 	const TInput extends ToolInputSchema | undefined = undefined,
 	const TOutput extends ToolOutputSchema | undefined = undefined,
@@ -65,15 +76,22 @@ export function parseToolInput<TTool extends ToolDefinition>(
 	tool: TTool,
 	input?: unknown,
 	signal?: AbortSignal,
-): { context: Parameters<TTool['run']>[0]; input: unknown } {
-	if (!tool.input)
-		return { context: { signal } as Parameters<TTool['run']>[0], input: undefined };
+): { context: ParsedToolContext<TTool>; input: unknown } {
+	if (!tool.input) {
+		// SAFETY: A definition without an input schema has only the shared signal
+		// field before the caller attaches the required tool-call identity.
+		const context = { signal } as ParsedToolContext<TTool>;
+		return { context, input: undefined };
+	}
 	const parsedInput = parseValibot(tool.input, input === undefined ? {} : input);
 	if (!parsedInput.success) {
 		throw new ToolInputValidationError({ tool: tool.name, issues: parsedInput.issues });
 	}
+	// SAFETY: parseValibot established the definition's declared input schema;
+	// toolCallId is intentionally attached only at the execution boundary.
+	const context = { input: parsedInput.output, signal } as unknown as ParsedToolContext<TTool>;
 	return {
-		context: { input: parsedInput.output, signal } as Parameters<TTool['run']>[0],
+		context,
 		input: parsedInput.output,
 	};
 }
@@ -101,11 +119,13 @@ export function validateToolOutput<TTool extends ToolDefinition>(
 
 export async function validateAndRunTool<TTool extends ToolDefinition>(
 	tool: TTool,
-	input?: unknown,
-	signal?: AbortSignal,
+	options: ValidateAndRunToolOptions,
 ): Promise<ToolOutput<TTool>> {
-	const parsed = parseToolInput(tool, input, signal);
-	return validateToolOutput(tool, await tool.run(parsed.context));
+	const parsed = parseToolInput(tool, options.input, options.signal);
+	return validateToolOutput(
+		tool,
+		await tool.run({ ...parsed.context, toolCallId: options.toolCallId }),
+	);
 }
 
 function assertNonEmptyString(value: unknown, label: string): asserts value is string {

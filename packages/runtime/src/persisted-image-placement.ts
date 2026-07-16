@@ -59,12 +59,19 @@ export function matchesPersistedSubmissionAttachments(
 ): boolean {
 	try {
 		return (
-			JSON.stringify(hydratePersistedSubmissionAttachments(persistedInput, rows)) ===
-			JSON.stringify(input)
+			JSON.stringify(submissionCommand(hydratePersistedSubmissionAttachments(persistedInput, rows))) ===
+			JSON.stringify(submissionCommand(input))
 		);
 	} catch {
 		return false;
 	}
+}
+
+function submissionCommand(input: AgentSubmissionInput) {
+	// Admission time and trace context describe the request that first carried
+	// a command; retries may legitimately carry fresh values for both.
+	const { acceptedAt: _acceptedAt, traceCarrier: _traceCarrier, ...command } = input;
+	return command;
 }
 
 function reassemblePersistedChunks(

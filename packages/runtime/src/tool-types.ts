@@ -6,6 +6,11 @@ export type ToolOutputSchema = v.GenericSchema<any, NonNullable<unknown> | null>
 
 export type ToolContext<S extends ToolInputSchema | undefined> = {
 	readonly signal?: AbortSignal;
+	/**
+	 * Id of the model's tool call this run is servicing. A tool that emits its
+	 * own records needs it to attribute them back to the call that caused them.
+	 */
+	readonly toolCallId: string;
 } & (S extends ToolInputSchema
 	? { readonly input: v.InferOutput<S> }
 	: Record<never, never>);
