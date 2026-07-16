@@ -10,15 +10,11 @@
  * The application needs to append one without owning a turn, so this exposes the
  * coordinator attached to the agent's Durable Object instance.
  */
+import type { DeliveredMessage } from '../types.ts';
 import type { CloudflareAgentCoordinator } from './agent-coordinator.ts';
 
 /** An out-of-turn conversation signal appended by the embedding application. */
-export interface AgentConversationSignalInput {
-	signalType: string;
-	tagName?: string;
-	content: string;
-	attributes?: Record<string, string>;
-}
+export type AgentConversationSignalInput = Extract<DeliveredMessage, { kind: 'signal' }>;
 
 /**
  * Attached by `createCloudflareAgentRuntime` as each agent instance is bound, so

@@ -1,3 +1,4 @@
+import { SUBMISSION_HARNESS_NAME, SUBMISSION_SESSION_NAME } from '../adapter-helpers.ts';
 import type {
 	AgentExecutionStore,
 	AgentSubmission,
@@ -5,12 +6,9 @@ import type {
 } from '../agent-execution-store.ts';
 import type { FlueContextInternal } from '../client.ts';
 import { ConversationRecordWriter } from '../conversation-writer.ts';
-import { createConversationIdentity } from '../harness.ts';
-import {
-	type AgentConversationSignalInput,
-	cloudflareAgentCoordinators,
-} from './app-signals.ts';
+import { SubmissionAbortedError } from '../errors.ts';
 import type { FlueTraceCarrier } from '../execution-interceptor.ts';
+import { createConversationIdentity } from '../harness.ts';
 import {
 	agentSubmissionDispatchId,
 	type createAgentSubmissionSessionHandler,
@@ -21,9 +19,6 @@ import {
 	reconcileInterruptedSubmission,
 	submissionSyntheticRequest,
 } from '../runtime/agent-submissions.ts';
-import { SUBMISSION_HARNESS_NAME, SUBMISSION_SESSION_NAME } from '../adapter-helpers.ts';
-import { createSessionStorageKey } from '../session-identity.ts';
-import { SubmissionAbortedError } from '../errors.ts';
 import type { AttachmentStore } from '../runtime/attachment-store.ts';
 import type { ConversationStreamStore } from '../runtime/conversation-stream-store.ts';
 import type { AgentInteractionStart } from '../runtime/dev-lifecycle-logger.ts';
@@ -34,11 +29,13 @@ import {
 	handleAgentConversationHead,
 	handleAgentConversationRead,
 } from '../runtime/handle-conversation-routes.ts';
+import { createSessionStorageKey } from '../session-identity.ts';
 import type { DeliveredMessage } from '../types.ts';
 import {
 	createSqlAgentExecutionStore,
 	createSqlConversationStores,
 } from './agent-execution-store.ts';
+import { type AgentConversationSignalInput, cloudflareAgentCoordinators } from './app-signals.ts';
 
 export const CLOUDFLARE_AGENT_INTERNAL_DISPATCH_PATH = '/__flue/internal/dispatch';
 
@@ -348,9 +345,9 @@ export class CloudflareAgentCoordinator {
 				timestamp: new Date().toISOString(),
 				messageId: `entry_app_signal_${unique}`,
 				parentId,
-				signalType: signal.signalType,
+				signalType: signal.type,
 				...(signal.tagName ? { tagName: signal.tagName } : {}),
-				content: signal.content,
+				content: signal.body,
 				...(signal.attributes ? { attributes: signal.attributes } : {}),
 			},
 		]);

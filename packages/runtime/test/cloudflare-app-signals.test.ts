@@ -103,9 +103,10 @@ describe('appendAgentConversationSignal()', () => {
 		const { instance, conversationStreamStore } = attachInstance();
 
 		await appendAgentConversationSignal(instance, {
-			signalType: 'external_note',
+			kind: 'signal',
+			type: 'external_note',
 			tagName: 'external-note',
-			content: 'The nightly build finished.',
+			body: 'The nightly build finished.',
 			attributes: { source: 'ci' },
 		});
 
@@ -131,8 +132,16 @@ describe('appendAgentConversationSignal()', () => {
 	it('appends linearly to the existing root conversation', async () => {
 		const { instance, conversationStreamStore } = attachInstance();
 
-		await appendAgentConversationSignal(instance, { signalType: 'note', content: 'First.' });
-		await appendAgentConversationSignal(instance, { signalType: 'note', content: 'Second.' });
+		await appendAgentConversationSignal(instance, {
+			kind: 'signal',
+			type: 'note',
+			body: 'First.',
+		});
+		await appendAgentConversationSignal(instance, {
+			kind: 'signal',
+			type: 'note',
+			body: 'Second.',
+		});
 
 		const records = await readCanonicalRecords(conversationStreamStore);
 		// The first signal created the root conversation; the second reuses it.
@@ -194,7 +203,11 @@ describe('appendAgentConversationSignal()', () => {
 		]);
 
 		await expect(
-			appendAgentConversationSignal(instance, { signalType: 'note', content: 'Too late.' }),
+			appendAgentConversationSignal(instance, {
+				kind: 'signal',
+				type: 'note',
+				body: 'Too late.',
+			}),
 		).rejects.toMatchObject({
 			name: 'ConversationRecordInvariantError',
 			meta: {
@@ -205,7 +218,14 @@ describe('appendAgentConversationSignal()', () => {
 
 	it('rejects an instance without an attached coordinator', async () => {
 		await expect(
-			appendAgentConversationSignal({}, { signalType: 'note', content: 'Nope.' }),
+			appendAgentConversationSignal(
+				{},
+				{
+					kind: 'signal',
+					type: 'note',
+					body: 'Nope.',
+				},
+			),
 		).rejects.toThrow(/coordinator is not attached/);
 	});
 });
