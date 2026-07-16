@@ -28,7 +28,7 @@ jobs:
     # The job name is the check-run name branch protection matches on;
     # it must stay in sync with the required status check configured on
     # Flue's default branch.
-    name: Flue Cross-Repo Gate
+    name: Verify package changes are tracked in Runner Next tech-debt.md
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
