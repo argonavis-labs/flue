@@ -106,6 +106,7 @@ export type {
 	FileStat,
 	FlueEvent,
 	FlueEventContext,
+	ImageMemoryConfig,
 	FlueFs,
 	FlueHarness,
 	FlueLogger,

@@ -158,8 +158,16 @@ export interface ReducedInstanceState {
 	recordsById: Map<string, ConversationRecord>;
 }
 
+/**
+ * Result of resolving an attachment for model input: either the image bytes to
+ * inline, or an `evicted` marker when the image-memory cap dropped it. An
+ * evicted attachment is projected as a text placeholder instead of image bytes,
+ * so its base64 is never materialized.
+ */
+export type ProjectedAttachment = { data: string; mimeType: string } | { evicted: true };
+
 export interface ConversationProjectionOptions {
-	resolveAttachment?: (attachment: AttachmentRef) => { data: string; mimeType: string };
+	resolveAttachment?: (attachment: AttachmentRef) => ProjectedAttachment;
 }
 
 export interface ReducedContextEntry {
@@ -1010,7 +1018,14 @@ function resolveMessageAttachments(
 		const ref = entry.attachmentRefs?.get(block.data);
 		if (!ref) return block;
 		if (!options.resolveAttachment) throw new AttachmentNotAvailableError({ attachmentId: ref.id });
-		return { type: 'image' as const, ...options.resolveAttachment(ref) };
+		const projected = options.resolveAttachment(ref);
+		if ('evicted' in projected) {
+			return {
+				type: 'text' as const,
+				text: `<image id="${ref.id}" mimeType="${ref.mimeType}" evicted />`,
+			};
+		}
+		return { type: 'image' as const, ...projected };
 	});
 	if (!manifestProjected && attachments.length > 0) {
 		content.unshift({ type: 'text', text: attachmentManifest('', attachments) });

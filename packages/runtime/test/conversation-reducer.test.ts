@@ -1039,6 +1039,36 @@ describe('reduceConversationRecords()', () => {
 		}]);
 	});
 
+	it('projects an evicted attachment as a text placeholder instead of image bytes', () => {
+		const created = required(canonicalConversation()[0]);
+		const attachment = { id: 'att_01', mimeType: 'image/png', size: 42, digest: 'sha256:test' };
+		const state = reduceConversationRecords(createReducedInstanceState(), [created, {
+			...scope,
+			id: 'record_attachment_user',
+			type: 'user_message',
+			timestamp: '2026-06-25T00:00:01.000Z',
+			messageId: 'entry_attachment',
+			parentId: null,
+			content: [
+				{ type: 'text', text: 'Inspect this image.' },
+				{ type: 'attachment', attachment },
+			],
+		}], '2');
+		const conversation = required(state.conversations.get('conv_01'));
+
+		expect(
+			buildConversationContext(conversation, {
+				resolveAttachment: () => ({ evicted: true }),
+			}),
+		).toMatchObject([{
+			role: 'user',
+			content: [
+				{ type: 'text', text: expect.stringContaining('Inspect this image.') },
+				{ type: 'text', text: '<image id="att_01" mimeType="image/png" evicted />' },
+			],
+		}]);
+	});
+
 	it('rejects implicit branching when an entry parent is not the active leaf', () => {
 		const state = reduceConversationRecords(createReducedInstanceState(), canonicalConversation(), '8');
 
