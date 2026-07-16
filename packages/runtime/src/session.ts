@@ -67,6 +67,7 @@ import {
 import {
 	getActiveConversationPath,
 	type InProgressAssistantMessage,
+	type ProjectedAttachment,
 	type ReducedConversationState,
 	toolOutcomeKey,
 	toolResultEntryId,
@@ -2656,11 +2657,37 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		return conversation;
 	}
 
+	private resolveImageMemorySettings(): { maxImages: number } {
+		const DEFAULT_MAX_IMAGES = 3;
+		return { maxImages: this.config.imageMemory?.maxImages ?? DEFAULT_MAX_IMAGES };
+	}
+
 	private async resolveCanonicalContextAttachments(
 		conversation: ReducedConversationState,
-	): Promise<Map<string, PromptImage>> {
-		const resolved = new Map<string, PromptImage>();
-		for (const attachment of this.visibleCanonicalAttachments(conversation).values()) {
+	): Promise<Map<string, ProjectedAttachment>> {
+		// `visibleCanonicalAttachments` yields refs in conversation order
+		// (oldest → newest). Keep the newest `maxImages` resolved to bytes and
+		// evict the rest to a placeholder, so an older image's base64 is never
+		// loaded into the isolate — the image-memory OOM guard. Both the rebuild
+		// and compaction passes flow through here, so both are bounded.
+		//
+		// Two consequences of evicting oldest-first, both intended:
+		//  - Compaction summarizes the OLDEST turns, which are exactly the evicted
+		//    ones, so a summary sees placeholders, not image bytes. Loading every
+		//    image to summarize would defeat the guard; the summary is image-blind
+		//    for evicted images by design.
+		//  - Evicted refs skip the store read, so a genuinely-missing OLD
+		//    attachment renders as a placeholder rather than raising. Only a KEPT
+		//    image still surfaces `AttachmentNotAvailableError` on a missing byte.
+		const { maxImages } = this.resolveImageMemorySettings();
+		const visible = [...this.visibleCanonicalAttachments(conversation).values()];
+		const firstKeptIndex = Math.max(0, visible.length - maxImages);
+		const resolved = new Map<string, ProjectedAttachment>();
+		for (const [index, attachment] of visible.entries()) {
+			if (index < firstKeptIndex) {
+				resolved.set(attachment.id, { evicted: true });
+				continue;
+			}
 			const stored = await this.attachmentStore.get({
 				streamPath: this.conversationWriter.path,
 				conversationId: this.conversationId,
@@ -2668,7 +2695,6 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			});
 			if (!stored) throw new AttachmentNotAvailableError({ attachmentId: attachment.id });
 			resolved.set(attachment.id, {
-				type: 'image',
 				data: encodeBase64(stored.bytes),
 				mimeType: stored.attachment.mimeType,
 			});

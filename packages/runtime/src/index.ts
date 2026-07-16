@@ -112,6 +112,7 @@ export type {
 	FlueObservation,
 	FlueSession,
 	FlueSessions,
+	ImageMemoryConfig,
 	LlmAssistantMessage,
 	LlmImageContent,
 	LlmMessage,

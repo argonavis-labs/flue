@@ -36,6 +36,7 @@ const AgentProfileSchema = v.strictObject(
 		promptFrame: v.optional(v.picklist(['full', 'none'])),
 		compaction: v.optional(v.union([v.literal(false), v.looseObject({})])),
 		durability: v.optional(v.looseObject({})),
+		imageMemory: v.optional(v.looseObject({})),
 	},
 	(issue) =>
 		issue.expected === 'never'
@@ -123,6 +124,7 @@ export function resolveAgentProfile(options: AgentRuntimeConfig | undefined): Ag
 		promptFrame: hasOwn(options, 'promptFrame') ? options?.promptFrame : profile?.promptFrame,
 		compaction: hasOwn(options, 'compaction') ? options?.compaction : profile?.compaction,
 		durability: hasOwn(options, 'durability') ? options?.durability : profile?.durability,
+		imageMemory: hasOwn(options, 'imageMemory') ? options?.imageMemory : profile?.imageMemory,
 	};
 }
 
@@ -192,6 +194,7 @@ function assertAgentProfile(
 	assertThinkingLevel(definition.thinkingLevel, label);
 	assertCompaction(definition.compaction, label);
 	assertDurability(definition.durability, label);
+	assertImageMemory(definition.imageMemory, label);
 	assertTools(definition.tools, label);
 	assertActions(definition.actions, label);
 	assertSkills(definition.skills, label);
@@ -238,6 +241,16 @@ function assertDurability(definition: AgentProfile['durability'], label: string)
 	}
 	assertPositiveInteger(definition.maxAttempts, `${label} durability.maxAttempts`);
 	assertPositiveInteger(definition.timeoutMs, `${label} durability.timeoutMs`);
+}
+
+function assertImageMemory(definition: AgentProfile['imageMemory'], label: string): void {
+	if (definition === undefined) return;
+	for (const key of Object.keys(definition)) {
+		if (key !== 'maxImages') {
+			throw new Error(`[flue] ${label} imageMemory received unknown field "${key}".`);
+		}
+	}
+	assertPositiveInteger(definition.maxImages, `${label} imageMemory.maxImages`);
 }
 
 function assertPositiveInteger(value: number | undefined, label: string): void {
