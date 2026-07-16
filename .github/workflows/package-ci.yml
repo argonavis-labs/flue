@@ -1,0 +1,44 @@
+name: Flue Package CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Build and test fork packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build runtime, SDK, React, and CLI
+        run: pnpm turbo run build --filter=@flue/runtime --filter=@flue/sdk --filter=@flue/react --filter=@flue/cli
+
+      - name: Prepare publish artifacts
+        run: node scripts/prepare-publish.mjs
+
+      - name: Test runtime, SDK, React, and CLI
+        env:
+          NO_COLOR: 1
+        run: pnpm turbo run test --filter=@flue/runtime --filter=@flue/sdk --filter=@flue/react --filter=@flue/cli -- --testTimeout=30000
