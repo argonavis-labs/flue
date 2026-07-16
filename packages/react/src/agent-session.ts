@@ -16,6 +16,24 @@ export interface SendMessageOptions {
 	images?: DeliveredAttachment[];
 }
 
+export interface CreateFlueAgentStoreOptions {
+	client: FlueClient;
+	name: string;
+	id: string;
+	live?: ConversationLiveMode;
+}
+
+export type FlueAgentStoreSnapshot = AgentSnapshot;
+
+export interface FlueAgentStore {
+	getSnapshot(): FlueAgentStoreSnapshot;
+	refresh(): void;
+	sendMessage(message: string, options?: SendMessageOptions): Promise<void>;
+	start(): void;
+	stop(): void;
+	subscribe(listener: () => void): () => void;
+}
+
 export class AgentSession {
 	private state: AgentState = { ...emptyAgentState };
 	private snapshot: AgentSnapshot = publicSnapshot(this.state);
@@ -78,13 +96,17 @@ export class AgentSession {
 		}
 	}
 
-	dispose(): void {
+	stop(): void {
 		if (!this.active) return;
 		this.active = false;
 		this.unsubscribeObservation?.();
 		this.unsubscribeObservation = undefined;
 		this.observation?.close();
 		this.observation = undefined;
+	}
+
+	dispose(): void {
+		this.stop();
 	}
 
 	private applyObservation(): void {
@@ -109,6 +131,10 @@ export class AgentSession {
 		this.snapshot = publicSnapshot(this.state);
 		for (const listener of this.listeners) listener();
 	}
+}
+
+export function createFlueAgentStore(options: CreateFlueAgentStoreOptions): FlueAgentStore {
+	return new AgentSession(options.client, options.name, options.id, options.live ?? 'sse');
 }
 
 function publicSnapshot(state: AgentState): AgentSnapshot {
