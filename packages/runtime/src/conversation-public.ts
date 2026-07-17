@@ -8,7 +8,7 @@ import type {
 	ConversationRecord,
 	SubmissionSettledRecord,
 } from './conversation-records.ts';
-import type { ReducedInstanceState } from './conversation-reducer.ts';
+import { type ReducedInstanceState, toolResultEntryId } from './conversation-reducer.ts';
 import { toolResultOutput, toolResultText } from './message-rendering.ts';
 import type { PromptUsage } from './types.ts';
 
@@ -151,7 +151,7 @@ export function projectAgentConversationBatch(options: {
 	}
 
 	return withPositions(
-		relevant.flatMap((record) => encodeRecord(record, conversationId, options.state)),
+		relevant.flatMap((record) => encodeRecord(record, conversationId, options.state, relevant)),
 		options.batchOrdinal,
 	);
 }
@@ -177,6 +177,7 @@ function encodeRecord(
 	record: ConversationRecord,
 	conversationId: string,
 	state: ReducedInstanceState,
+	batchRecords: readonly ConversationRecord[],
 ): ConversationStreamChunkBody[] {
 	switch (record.type) {
 		case 'user_message':
@@ -265,8 +266,8 @@ function encodeRecord(
 				},
 			];
 		case 'tool_results_committed':
-			return record.outcomeIds.flatMap((outcomeId) =>
-				encodeToolOutcome(outcomeId, conversationId, record, state),
+			return record.outcomeIds.flatMap((outcomeId, index) =>
+				encodeToolOutcome(outcomeId, index, conversationId, record, state, batchRecords),
 			);
 		case 'submission_settled':
 			return record.submissionId
@@ -285,30 +286,80 @@ function encodeRecord(
 	}
 }
 
+/**
+ * Projects the tool-output chunks for one committed outcome. The outcome
+ * record body is no longer resident in the reduced state (RUN-5210), so it is
+ * resolved from the batch being projected — outcomes and their commit are
+ * written together — and, for a cross-batch commit, from the materialized
+ * tool-result entry. An entry whose content was evicted by compaction projects
+ * its placeholder text, matching what every other post-compaction projection
+ * of that history renders.
+ */
 function encodeToolOutcome(
 	outcomeId: string,
+	outcomeIndex: number,
 	conversationId: string,
 	commit: Extract<ConversationRecord, { type: 'tool_results_committed' }>,
 	state: ReducedInstanceState,
+	batchRecords: readonly ConversationRecord[],
 ): ConversationStreamChunkBody[] {
-	const outcome = state.recordsById.get(outcomeId);
-	if (
-		outcome?.type !== 'tool_outcome' ||
-		outcome.conversationId !== commit.conversationId ||
-		outcome.harness !== commit.harness ||
-		outcome.session !== commit.session
-	) {
-		return [];
+	const outcome = batchRecords.find(
+		(record): record is Extract<ConversationRecord, { type: 'tool_outcome' }> =>
+			record.id === outcomeId && record.type === 'tool_outcome',
+	);
+	if (outcome) {
+		if (
+			outcome.conversationId !== commit.conversationId ||
+			outcome.harness !== commit.harness ||
+			outcome.session !== commit.session
+		) {
+			return [];
+		}
+		return outcome.isError
+			? [{ type: 'tool-output-error', conversationId, toolCallId: outcome.toolCallId, errorText: toolResultText(outcome.content), ...(outcome.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}) }]
+			: [
+					{
+						type: 'tool-output',
+						conversationId,
+						toolCallId: outcome.toolCallId,
+						output: outcome.output !== undefined ? outcome.output : toolResultOutput(outcome.content),
+						...(outcome.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}),
+					},
+				];
 	}
-	return outcome.isError
-		? [{ type: 'tool-output-error', conversationId, toolCallId: outcome.toolCallId, errorText: toolResultText(outcome.content), ...(outcome.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}) }]
+	// Cross-batch commit: recover the projection from the materialized entry.
+	// `outcomeIds` are in assistant tool-call order (validated at reduction), so
+	// the call at the same index names the tool-result entry.
+	const conversation = state.conversations.get(commit.conversationId);
+	const assistant = conversation?.entries.get(commit.assistantMessageId);
+	if (assistant?.type !== 'message') return [];
+	const calls = (assistant.message.content as unknown[]).filter(
+		(block): block is { type: 'toolCall'; id: string } =>
+			typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'toolCall',
+	);
+	const call = calls[outcomeIndex];
+	if (!call) return [];
+	const entry = conversation?.entries.get(toolResultEntryId(commit.assistantMessageId, call.id));
+	if (entry?.type !== 'message') return [];
+	const result = entry.message as {
+		isError?: boolean;
+		content?: unknown;
+	};
+	const text = Array.isArray(result.content)
+		? result.content
+				.map((block) => (typeof (block as { text?: unknown }).text === 'string' ? (block as { text: string }).text : ''))
+				.filter((piece) => piece !== '')
+				.join('\n')
+		: '';
+	return result.isError
+		? [{ type: 'tool-output-error', conversationId, toolCallId: call.id, errorText: text, ...(entry.toolDurationMs !== undefined ? { durationMs: entry.toolDurationMs } : {}) }]
 		: [
 				{
 					type: 'tool-output',
 					conversationId,
-					toolCallId: outcome.toolCallId,
-					output: outcome.output !== undefined ? outcome.output : toolResultOutput(outcome.content),
-					...(outcome.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}),
+					toolCallId: call.id,
+					output: entry.toolOutput !== undefined ? entry.toolOutput.value : text,
+					...(entry.toolDurationMs !== undefined ? { durationMs: entry.toolDurationMs } : {}),
 				},
 			];
 }
@@ -317,12 +368,10 @@ function projectSettlements(
 	state: ReducedInstanceState,
 	conversationId: string,
 ): AgentConversationSettlement[] {
-	return [...state.recordsById.values()]
+	return [...state.settledSubmissions.values()]
 		.filter(
 			(record): record is SubmissionSettledRecord =>
-				record.conversationId === conversationId &&
-				record.type === 'submission_settled' &&
-				typeof record.submissionId === 'string',
+				record.conversationId === conversationId && typeof record.submissionId === 'string',
 		)
 		.map((record) => ({
 			submissionId: record.submissionId as string,

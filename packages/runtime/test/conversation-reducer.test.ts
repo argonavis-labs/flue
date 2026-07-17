@@ -12,6 +12,7 @@ import {
 	applyConversationRecord,
 	buildConversationContext,
 	createReducedInstanceState,
+	EVICTED_CONTENT_PLACEHOLDER,
 	getActiveConversationPath,
 	reduceConversationRecords,
 } from '../src/conversation-reducer.ts';
@@ -503,7 +504,7 @@ describe('reduceConversationRecords()', () => {
 		expect(() => reduceConversationRecords(state, [accepted, invalid], '6')).toThrow(
 			ConversationRecordInvariantError,
 		);
-		expect(state.recordsById.has(accepted.id)).toBe(false);
+		expect(state.recordIndex.has(accepted.id)).toBe(false);
 		expect(
 			state.conversations.get('conv_01')?.inProgressMessages.get('entry_assistant')?.blocks.get(
 				'block_text',
@@ -1091,4 +1092,209 @@ describe('reduceConversationRecords()', () => {
 		).toThrow(ConversationRecordInvariantError);
 	});
 
+});
+
+describe('bounded conversation view (RUN-5210)', () => {
+	function toolConversation() {
+		const records = canonicalConversation();
+		const state = reduceConversationRecords(createReducedInstanceState(), records.slice(0, 4), '4');
+		applyConversationRecord(state, {
+			...scope,
+			id: 'record_tool_call',
+			type: 'assistant_tool_call',
+			timestamp: '2026-06-25T00:00:02.150Z',
+			messageId: 'entry_assistant',
+			blockId: 'block_tool',
+			blockIndex: 1,
+			toolCallId: 'call_expected',
+			name: 'lookup',
+			arguments: { query: 'weather' },
+		});
+		applyConversationRecord(state, {
+			...scope,
+			id: 'record_empty_text_complete',
+			type: 'assistant_text_completed',
+			timestamp: '2026-06-25T00:00:02.200Z',
+			messageId: 'entry_assistant',
+			blockId: 'block_text',
+			deltaCount: 0,
+		});
+		applyConversationRecord(state, {
+			...scope,
+			id: 'record_tool_assistant_complete',
+			type: 'assistant_message_completed',
+			timestamp: '2026-06-25T00:00:02.300Z',
+			messageId: 'entry_assistant',
+			stopReason: 'toolUse',
+			usage,
+		});
+		applyConversationRecord(state, {
+			...scope,
+			id: 'record_tool_outcome',
+			type: 'tool_outcome',
+			timestamp: '2026-06-25T00:00:02.400Z',
+			assistantMessageId: 'entry_assistant',
+			toolCallId: 'call_expected',
+			toolName: 'lookup',
+			isError: false,
+			content: [{ type: 'text', text: 'durable result' }],
+			durationMs: 42,
+		});
+		return state;
+	}
+
+	it('keeps no record bodies resident: the index carries offset + fingerprint only', () => {
+		const state = reduceConversationRecords(createReducedInstanceState(), canonicalConversation(), '8');
+
+		expect(state.recordIndex.size).toBe(8);
+		for (const entry of state.recordIndex.values()) {
+			expect(entry).toEqual({ offset: '8', hash: expect.any(String) });
+		}
+	});
+
+	it('skips an identical redelivery and rejects an id reused with different content', () => {
+		const records = canonicalConversation();
+		const state = reduceConversationRecords(createReducedInstanceState(), records, '8');
+		const user = required(records[1]);
+
+		expect(() => applyConversationRecord(state, user)).not.toThrow();
+		expect(() =>
+			applyConversationRecord(state, {
+				...user,
+				content: [{ type: 'text', text: 'Tampered' }],
+			} as ConversationRecord),
+		).toThrowError(
+			expect.objectContaining({
+				meta: expect.objectContaining({
+					reason: 'Record id "record_user" was reused with different content.',
+				}),
+			}),
+		);
+	});
+
+	it('consumes pending tool outcomes when their commit materializes the entries', () => {
+		const state = toolConversation();
+		const conversation = required(state.conversations.get('conv_01'));
+		expect(conversation.toolOutcomes.size).toBe(1);
+
+		const commit = {
+			...scope,
+			id: 'record_tool_commit',
+			type: 'tool_results_committed' as const,
+			timestamp: '2026-06-25T00:00:02.500Z',
+			assistantMessageId: 'entry_assistant',
+			parentId: 'entry_assistant',
+			outcomeIds: ['record_tool_outcome'],
+		};
+		applyConversationRecord(state, commit);
+		// Redelivery of the consumed commit stays idempotent via the index.
+		applyConversationRecord(state, commit);
+
+		expect(conversation.toolOutcomes.size).toBe(0);
+		expect(buildConversationContext(conversation)).toMatchObject([
+			{ role: 'user' },
+			{ role: 'assistant', stopReason: 'toolUse' },
+			{ role: 'toolResult', toolCallId: 'call_expected', content: [{ type: 'text', text: 'durable result' }] },
+		]);
+	});
+
+	it('retains settlement records whole for settlement reads', () => {
+		const state = reduceConversationRecords(createReducedInstanceState(), canonicalConversation(), '8');
+		const settled = {
+			...scope,
+			id: 'record_settled',
+			type: 'submission_settled' as const,
+			timestamp: '2026-06-25T00:00:03.000Z',
+			submissionId: 'submission_01',
+			outcome: 'completed' as const,
+		};
+		applyConversationRecord(state, settled);
+
+		expect(state.settledSubmissions.get('record_settled')).toEqual(settled);
+		expect(state.recordIndex.has('record_settled')).toBe(true);
+	});
+
+	it('evicts content before the compaction boundary and spares kept entries', () => {
+		const state = reduceConversationRecords(createReducedInstanceState(), canonicalConversation(), '8');
+		applyConversationRecord(state, {
+			...scope,
+			id: 'record_compaction',
+			type: 'compaction',
+			timestamp: '2026-06-25T00:00:03.000Z',
+			entryId: 'entry_compaction',
+			parentId: 'entry_assistant',
+			sourceLeafId: 'entry_assistant',
+			firstKeptEntryId: 'entry_assistant',
+			summary: 'Earlier context',
+			tokensBefore: 12,
+			usage,
+		});
+		const conversation = required(state.conversations.get('conv_01'));
+
+		const user = required(conversation.entries.get('entry_user'));
+		expect(user).toMatchObject({
+			type: 'message',
+			contentEvicted: true,
+			message: { content: [{ type: 'text', text: EVICTED_CONTENT_PLACEHOLDER }] },
+		});
+		const assistant = required(conversation.entries.get('entry_assistant'));
+		expect(assistant.type === 'message' && assistant.contentEvicted).toBeFalsy();
+		expect(assistant).toMatchObject({
+			message: { content: [{ type: 'text', text: 'Hi there' }] },
+		});
+		// The model context never sees the evicted entry: summary + kept + after.
+		expect(
+			projectConversationModelContextEntries(conversation).map((entry) => entry.sourceEntry.id),
+		).toEqual(['entry_compaction', 'entry_assistant']);
+		// Structure survives: the DAG still walks to the root.
+		expect(getActiveConversationPath(conversation).map((entry) => entry.id)).toEqual([
+			'entry_user',
+			'entry_assistant',
+			'entry_compaction',
+		]);
+	});
+
+	it('evicts tool-call arguments and tool output while keeping call identity', () => {
+		const state = toolConversation();
+		applyConversationRecord(state, {
+			...scope,
+			id: 'record_tool_commit',
+			type: 'tool_results_committed',
+			timestamp: '2026-06-25T00:00:02.500Z',
+			assistantMessageId: 'entry_assistant',
+			parentId: 'entry_assistant',
+			outcomeIds: ['record_tool_outcome'],
+		});
+		const conversation = required(state.conversations.get('conv_01'));
+		const leaf = required(conversation.activeLeafId);
+		applyConversationRecord(state, {
+			...scope,
+			id: 'record_compaction',
+			type: 'compaction',
+			timestamp: '2026-06-25T00:00:03.000Z',
+			entryId: 'entry_compaction',
+			parentId: leaf,
+			sourceLeafId: leaf,
+			firstKeptEntryId: leaf,
+			summary: 'Earlier context',
+			tokensBefore: 12,
+			usage,
+		});
+
+		const assistant = required(conversation.entries.get('entry_assistant'));
+		expect(assistant).toMatchObject({
+			contentEvicted: true,
+			message: {
+				content: expect.arrayContaining([
+					{ type: 'toolCall', id: 'call_expected', name: 'lookup', arguments: {} },
+				]),
+			},
+		});
+		const toolResult = required(conversation.entries.get(leaf));
+		expect(toolResult).toMatchObject({
+			contentEvicted: true,
+			message: { content: [{ type: 'text', text: EVICTED_CONTENT_PLACEHOLDER }] },
+		});
+		expect(toolResult.type === 'message' ? toolResult.toolOutput : undefined).toBeUndefined();
+	});
 });
