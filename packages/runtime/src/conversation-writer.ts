@@ -8,6 +8,7 @@ import type {
 } from './conversation-records.ts';
 import type { ReducedInstanceState } from './conversation-reducer.ts';
 import { reduceConversationRecords } from './conversation-reducer.ts';
+import { encodeReducedState, SNAPSHOT_VERSION } from './conversation-snapshot.ts';
 import type {
 	ConversationProducerClaim,
 	ConversationStreamIdentity,
@@ -43,6 +44,26 @@ type WriterLifecycle =
  */
 const CANONICAL_FLUSH_DELAY_MS = 1000;
 
+/**
+ * Derived-state checkpoint cadence, in durable batches (RUN-5218). A turn
+ * writes a handful of batches, so this checkpoints every few turns; cold-start
+ * tail replay is bounded by this many batches. The checkpoint write is awaited
+ * inline (deterministic in Workers — a floating promise may be dropped at
+ * event end) and its failure is logged, never propagated: the checkpoint is a
+ * cache, and an append must not fail because a cache write did.
+ */
+const CHECKPOINT_EVERY_BATCHES = 16;
+
+/**
+ * Offset stamped on records during the optimistic pre-append reduce, before
+ * the durable offset exists. Restamped to the real offset after the append
+ * commits. Never a real offset (real ones are numeric strings), so restamping
+ * exactly the records this batch applied is unambiguous — an idempotent
+ * re-apply of an old record keeps its original offset (RUN-5218 offset
+ * fidelity: `recordIndex` offsets are tail-replay/fetch handles).
+ */
+const PENDING_APPEND_OFFSET = 'pending-append';
+
 export class ConversationRecordWriter {
 	private lifecycle: WriterLifecycle = { status: 'active' };
 	private tail: Promise<void> = Promise.resolve();
@@ -55,6 +76,7 @@ export class ConversationRecordWriter {
 	private flushing: Promise<{ offset: string }> | undefined;
 	private resolvePending: ((result: { offset: string }) => void) | undefined;
 	private rejectPending: ((error: unknown) => void) | undefined;
+	private batchesSinceCheckpoint = 0;
 
 	private constructor(
 		private readonly store: ConversationStreamStore,
@@ -93,6 +115,29 @@ export class ConversationRecordWriter {
 
 	async hasConversationEntry(conversationId: string, entryId: string): Promise<boolean> {
 		return (await this.loadReducedState()).conversations.get(conversationId)?.entries.has(entryId) ?? false;
+	}
+
+	/**
+	 * Persist the current reduced state as the stream's derived checkpoint
+	 * (RUN-5218). Best-effort by contract: the checkpoint is a cache, so a
+	 * failed write is logged and the counter still resets (no hot-looping a
+	 * failing cache write on every subsequent append); the append that
+	 * triggered it succeeds regardless. No-op when the store does not
+	 * implement the optional snapshot capability.
+	 */
+	private async saveDerivedCheckpoint(): Promise<void> {
+		this.batchesSinceCheckpoint = 0;
+		if (!this.reducedState || !this.store.saveDerivedSnapshot) return;
+		try {
+			await this.store.saveDerivedSnapshot(this.path, {
+				version: SNAPSHOT_VERSION,
+				incarnation: this.claim.incarnation,
+				offset: this.reducedState.recordsThroughOffset,
+				data: encodeReducedState(this.reducedState),
+			});
+		} catch (error) {
+			console.error('[flue:conversation-checkpoint]', { path: this.path }, error);
+		}
 	}
 
 	async hasRecord(recordId: string): Promise<boolean> {
@@ -225,7 +270,7 @@ export class ConversationRecordWriter {
 		const operation = this.tail.then(async () => {
 			this.assertActive();
 			const reduced = this.reducedState
-				? reduceConversationRecords(this.reducedState, records, this.reducedState.recordsThroughOffset)
+				? reduceConversationRecords(this.reducedState, records, PENDING_APPEND_OFFSET)
 				: undefined;
 			const producerSequence = this.nextProducerSequence;
 			const input = {
@@ -251,7 +296,17 @@ export class ConversationRecordWriter {
 				this.nextProducerSequence = producerSequence + 1;
 				if (reduced) {
 					reduced.recordsThroughOffset = result.offset;
+					for (const record of records) {
+						const indexed = reduced.recordIndex.get(record.id);
+						if (indexed?.offset === PENDING_APPEND_OFFSET) {
+							reduced.recordIndex.set(record.id, { offset: result.offset, hash: indexed.hash });
+						}
+					}
 					this.reducedState = reduced;
+					this.batchesSinceCheckpoint += 1;
+					if (this.batchesSinceCheckpoint >= CHECKPOINT_EVERY_BATCHES) {
+						await this.saveDerivedCheckpoint();
+					}
 				}
 				return result;
 			} catch (error) {
