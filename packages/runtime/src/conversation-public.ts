@@ -333,7 +333,8 @@ function encodeToolOutcome(
 	const conversation = state.conversations.get(commit.conversationId);
 	const assistant = conversation?.entries.get(commit.assistantMessageId);
 	if (assistant?.type !== 'message') return [];
-	const calls = (assistant.message.content as unknown[]).filter(
+	const assistantContent = (assistant.message as { content?: unknown }).content;
+	const calls = (Array.isArray(assistantContent) ? assistantContent : []).filter(
 		(block): block is { type: 'toolCall'; id: string } =>
 			typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'toolCall',
 	);

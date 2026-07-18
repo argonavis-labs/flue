@@ -289,24 +289,70 @@ function cloneReducedInstanceState(state: ReducedInstanceState): ReducedInstance
 }
 
 /**
- * Content fingerprint for the redelivery contract. Bounded work per record
- * regardless of body size: length plus two independent 32-bit FNV-1a passes
- * over a ≤512-char stride sample of the canonical JSON. This is a
- * defense-in-depth guard behind the store's producer-sequence dedup, not a
- * cryptographic identity; a differing redelivery is overwhelmingly likely to
- * differ in length or sampled positions.
+ * Content fingerprint for the redelivery contract: two independent 32-bit
+ * mixes over a full structural walk of the record. Allocation-free by design —
+ * unlike `JSON.stringify` it never materializes a copy of a multi-megabyte
+ * record on the reduce path, which is exactly where this module fights heap
+ * pressure (RUN-5210). Walk order and undefined-handling mirror JSON
+ * semantics (object keys in insertion order, undefined properties skipped,
+ * undefined array slots as null), so a record that round-trips through the
+ * store hashes identically. Defense-in-depth behind the store's
+ * producer-sequence dedup, not a cryptographic identity.
  */
 function recordContentHash(record: ConversationRecord): string {
-	const serialized = JSON.stringify(record);
-	const stride = Math.max(1, Math.floor(serialized.length / 512));
-	let h1 = 0x811c9dc5;
-	let h2 = 0x01000193;
-	for (let i = 0; i < serialized.length; i += stride) {
-		const code = serialized.charCodeAt(i);
-		h1 = Math.imul(h1 ^ code, 0x01000193) >>> 0;
-		h2 = (Math.imul(h2 ^ code, 0x85ebca6b) + i) >>> 0;
+	const h: { h1: number; h2: number } = { h1: 0x811c9dc5, h2: 0xc2b2ae35 };
+	hashUnknown(record, h);
+	return `${h.h1.toString(36)}.${h.h2.toString(36)}`;
+}
+
+function hashCode(h: { h1: number; h2: number }, code: number): void {
+	h.h1 = Math.imul(h.h1 ^ code, 0x01000193) >>> 0;
+	h.h2 = (Math.imul(h.h2 ^ code, 0x85ebca6b) + 0x9e3779b9) >>> 0;
+}
+
+function hashString(h: { h1: number; h2: number }, value: string): void {
+	hashCode(h, value.length);
+	for (let i = 0; i < value.length; i++) hashCode(h, value.charCodeAt(i));
+}
+
+function hashUnknown(value: unknown, h: { h1: number; h2: number }): void {
+	if (value === null || value === undefined) {
+		hashCode(h, 0);
+		return;
 	}
-	return `${serialized.length.toString(36)}.${h1.toString(36)}.${h2.toString(36)}`;
+	switch (typeof value) {
+		case 'string':
+			hashCode(h, 1);
+			hashString(h, value);
+			return;
+		case 'number':
+			hashCode(h, 2);
+			hashString(h, String(value));
+			return;
+		case 'boolean':
+			hashCode(h, value ? 3 : 4);
+			return;
+		case 'object': {
+			if (Array.isArray(value)) {
+				hashCode(h, 5);
+				hashCode(h, value.length);
+				for (const item of value) hashUnknown(item, h);
+				return;
+			}
+			hashCode(h, 6);
+			for (const key of Object.keys(value)) {
+				const property = (value as Record<string, unknown>)[key];
+				if (property === undefined) continue;
+				hashString(h, key);
+				hashUnknown(property, h);
+			}
+			return;
+		}
+		default:
+			// function/symbol/bigint never appear in canonical records; JSON
+			// drops the first two and rejects the third.
+			hashCode(h, 7);
+	}
 }
 
 export function applyConversationRecord(

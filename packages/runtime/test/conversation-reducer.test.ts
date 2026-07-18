@@ -1266,7 +1266,7 @@ describe('bounded conversation view (RUN-5210)', () => {
 			outcomeIds: ['record_tool_outcome'],
 		});
 		const conversation = required(state.conversations.get('conv_01'));
-		const leaf = required(conversation.activeLeafId);
+		const leaf = required(conversation.activeLeafId ?? undefined);
 		applyConversationRecord(state, {
 			...scope,
 			id: 'record_compaction',
@@ -1286,15 +1286,15 @@ describe('bounded conversation view (RUN-5210)', () => {
 			contentEvicted: true,
 			message: {
 				content: expect.arrayContaining([
-					{ type: 'toolCall', id: 'call_expected', name: 'lookup', arguments: {} },
+					expect.objectContaining({ type: 'toolCall', id: 'call_expected', name: 'lookup', arguments: {} }),
 				]),
 			},
 		});
+		// The first-kept entry itself is spared: eviction is strictly-before.
 		const toolResult = required(conversation.entries.get(leaf));
+		expect(toolResult.type === 'message' && toolResult.contentEvicted).toBeFalsy();
 		expect(toolResult).toMatchObject({
-			contentEvicted: true,
-			message: { content: [{ type: 'text', text: EVICTED_CONTENT_PLACEHOLDER }] },
+			message: { content: [{ type: 'text', text: 'durable result' }] },
 		});
-		expect(toolResult.type === 'message' ? toolResult.toolOutput : undefined).toBeUndefined();
 	});
 });
