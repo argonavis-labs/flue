@@ -92,4 +92,96 @@ describe('createFlueAgentStore()', () => {
 			submissionId: 'send-1',
 		});
 	});
+
+	it('keeps local echoes unstamped: a message-level submissionId means canonical', () => {
+		const observation = createFakeObservation();
+		const send = vi.fn(() => new Promise<never>(() => {}));
+		const store = createFlueAgentStore({
+			client: { agents: { observe: () => observation, send } } as unknown as FlueClient,
+			name: 'agent',
+			id: 'conversation',
+		});
+
+		store.start();
+		void store.sendMessage('hello', { submissionId: 'send-1' });
+
+		const echo = store.getSnapshot().messages.at(-1);
+		expect(echo?.role).toBe('user');
+		expect(echo?.submissionId).toBeUndefined();
+	});
+
+	it('retracts a failed optimistic echo and heals the error once its canonical message arrives', async () => {
+		const observation = createFakeObservation();
+		const send = vi.fn(async () => {
+			throw new Error('reply lost');
+		});
+		const store = createFlueAgentStore({
+			client: { agents: { observe: () => observation, send } } as unknown as FlueClient,
+			name: 'agent',
+			id: 'conversation',
+		});
+
+		store.start();
+		await expect(store.sendMessage('hello', { submissionId: 'send-1' })).rejects.toThrow(
+			'reply lost',
+		);
+		expect(store.getSnapshot().status).toBe('error');
+		expect(store.getSnapshot().messages.map((message) => message.submissionId)).toEqual([
+			undefined,
+		]);
+
+		observation.emit({
+			conversation: conversation([
+				{
+					id: 'entry-user',
+					role: 'user',
+					purpose: 'user',
+					display: 'visible',
+					submissionId: 'send-1',
+					parts: [{ type: 'text', text: 'hello', state: 'done' }],
+				},
+			]),
+			offset: 'offset-1',
+			phase: 'live',
+			error: undefined,
+		});
+
+		expect(store.getSnapshot().messages.map((message) => message.id)).toEqual(['entry-user']);
+		expect(store.getSnapshot().status).toBe('idle');
+		expect(store.getSnapshot().error).toBeUndefined();
+	});
+
+	it('renders an identical-body echo beside an earlier canonical turn', () => {
+		const observation = createFakeObservation({
+			conversation: conversation([
+				{
+					id: 'entry-yes',
+					role: 'user',
+					purpose: 'user',
+					display: 'visible',
+					submissionId: 'send-1',
+					parts: [{ type: 'text', text: 'yes', state: 'done' }],
+				},
+			]),
+			offset: 'offset-1',
+			phase: 'live',
+			error: undefined,
+		});
+		const send = vi.fn(() => new Promise<never>(() => {}));
+		const store = createFlueAgentStore({
+			client: { agents: { observe: () => observation, send } } as unknown as FlueClient,
+			name: 'agent',
+			id: 'conversation',
+		});
+
+		store.start();
+		void store.sendMessage('yes', { submissionId: 'send-2' });
+
+		expect(
+			store.getSnapshot().messages.map((message) => [message.id, message.submissionId]),
+		).toEqual([
+			['entry-yes', 'send-1'],
+			[expect.stringContaining('local:'), undefined],
+		]);
+	});
 });

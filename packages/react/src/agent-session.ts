@@ -80,7 +80,13 @@ export class AgentSession {
 
 	async sendMessage(message: string, options: SendMessageOptions = {}): Promise<void> {
 		const localId = `local:${this.name}:${this.id}:${++this.localId}`;
-		this.dispatch({ type: 'local_send_submitted', localId, message, images: options.images });
+		this.dispatch({
+			type: 'local_send_submitted',
+			localId,
+			message,
+			images: options.images,
+			...(options.submissionId === undefined ? {} : { submissionId: options.submissionId }),
+		});
 		try {
 			const receipt = await this.client.agents.send(this.name, this.id, {
 				message: {
