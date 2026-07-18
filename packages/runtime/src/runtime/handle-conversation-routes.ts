@@ -6,7 +6,7 @@ import {
 	loadReducedConversationPrefix,
 	loadReducedConversationState,
 } from '../conversation-reader.ts';
-import { reduceConversationRecords } from '../conversation-reducer.ts';
+import { applyConversationRecord } from '../conversation-reducer.ts';
 import {
 	AttachmentNotFoundError,
 	InvalidRequestError,
@@ -107,6 +107,15 @@ export async function handleAgentConversationHead(
 	});
 }
 
+/**
+ * Default and ceiling for one history window, in active-path entries
+ * (RUN-5220). Bounds the projection and response of an arbitrarily long
+ * session; older pages ride the `beforeEntry` cursor the response's
+ * `truncatedBefore` hands out.
+ */
+const DEFAULT_HISTORY_ENTRY_LIMIT = 1000;
+const MAX_HISTORY_ENTRY_LIMIT = 10_000;
+
 async function historyResponse(options: {
 	store: ConversationStreamStore;
 	path: string;
@@ -118,13 +127,30 @@ async function historyResponse(options: {
 			new InvalidRequestError({ reason: 'History reads do not accept offset, tail, or live parameters.' }),
 		);
 	}
+	const rawLimit = url.searchParams.get('entryLimit');
+	let entryLimit = DEFAULT_HISTORY_ENTRY_LIMIT;
+	if (rawLimit !== null) {
+		const parsed = Number(rawLimit);
+		if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > MAX_HISTORY_ENTRY_LIMIT) {
+			return errorResponse(
+				new InvalidRequestError({
+					reason: `entryLimit must be an integer between 1 and ${MAX_HISTORY_ENTRY_LIMIT}.`,
+				}),
+			);
+		}
+		entryLimit = parsed;
+	}
+	const beforeEntry = url.searchParams.get('beforeEntry') ?? undefined;
 	const meta = await options.store.getMeta(options.path);
 	if (!meta) return errorResponse(new StreamNotFoundError({ path: options.path }));
 	const state = await loadReducedConversationState({
 		store: options.store,
 		path: options.path,
 	});
-	const snapshot = projectAgentConversationSnapshot(state);
+	const snapshot = projectAgentConversationSnapshot(state, {
+		entryLimit,
+		...(beforeEntry !== undefined ? { beforeEntry } : {}),
+	});
 	if (!snapshot) return errorResponse(new StreamNotFoundError({ path: options.path }));
 	return Response.json(snapshot, {
 		headers: {
@@ -178,12 +204,18 @@ function projectRead(
 	const items: unknown[] = [];
 	let offset = initialState.recordsThroughOffset;
 	for (const batch of read.batches) {
-		const previousState = state;
-		state = reduceConversationRecords(state, batch.records, batch.offset);
+		// The prefix state is private to this request, so records apply in
+		// place — the previous defensive clone per batch was O(entries) map
+		// churn on every projected page (RUN-5220). The projection's
+		// previousState is only a root-selection fallback; the post-batch state
+		// serves both roles (a batch that lacks a root after application lacked
+		// one before it too).
+		for (const record of batch.records) applyConversationRecord(state, record, batch.offset);
+		state.recordsThroughOffset = batch.offset;
 		items.push(
 			...projectAgentConversationBatch({
 				state,
-				previousState,
+				previousState: state,
 				records: batch.records,
 				batchOrdinal: parseOffset(batch.offset),
 			}),

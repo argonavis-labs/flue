@@ -144,6 +144,57 @@ export interface ConversationUiSnapshot {
 	conversationId: string;
 	streamOffset: string;
 	messages: ConversationUiMessage[];
+	/**
+	 * Present when older history exists before this window (RUN-5220). Fetch
+	 * the next older page with `beforeEntry` set to this entry id; absent when
+	 * the window reaches the conversation's beginning.
+	 */
+	truncatedBefore?: string;
+}
+
+/** Window over the active conversation path for a UI projection (RUN-5220). */
+export interface ConversationUiWindow {
+	/** Maximum path entries projected; the newest `entryLimit` are kept. */
+	entryLimit?: number;
+	/** Project only entries strictly before this entry id (older-page cursor). */
+	beforeEntry?: string;
+}
+
+/**
+ * Cut the active path to the requested window. The start boundary is
+ * group-aware: a tool-result run is never split from the assistant message it
+ * folds into, so the window start walks back over leading tool-result entries
+ * (the older page then ends before that assistant — no duplication, because
+ * `truncatedBefore` is the post-extension first entry).
+ */
+function windowActivePath(
+	path: ReducedEntry[],
+	window: ConversationUiWindow,
+): { entries: ReducedEntry[]; truncatedBefore?: string; isHead: boolean } {
+	let end = path.length;
+	if (window.beforeEntry !== undefined) {
+		const boundary = path.findIndex((entry) => entry.id === window.beforeEntry);
+		if (boundary === -1) return { entries: [], isHead: false };
+		end = boundary;
+	}
+	const limit = window.entryLimit !== undefined && window.entryLimit > 0 ? window.entryLimit : end;
+	let start = Math.max(0, end - limit);
+	while (
+		start > 0 &&
+		start < end &&
+		(() => {
+			const entry = path[start];
+			return entry?.type === 'message' && entry.message.role === 'toolResult';
+		})()
+	) {
+		start--;
+	}
+	const entries = path.slice(start, end);
+	return {
+		entries,
+		...(start > 0 && entries.length > 0 ? { truncatedBefore: entries[0]?.id } : {}),
+		isHead: window.beforeEntry === undefined,
+	};
 }
 
 export type CanonicalSubmissionState =
@@ -174,10 +225,12 @@ export function classifyConversationSubmission(
 export function projectConversationUi(
 	conversation: ReducedConversationState,
 	streamOffset: string,
+	window: ConversationUiWindow = {},
 ): ConversationUiSnapshot {
 	const messages: ConversationUiMessage[] = [];
 	const byId = new Map<string, ConversationUiMessage>();
-	for (const entry of getActiveConversationPath(conversation)) {
+	const windowed = windowActivePath(getActiveConversationPath(conversation), window);
+	for (const entry of windowed.entries) {
 		if (entry.type !== 'message') continue;
 		const projected = projectCompletedMessage(entry);
 		if (projected) {
@@ -201,11 +254,20 @@ export function projectConversationUi(
 			break;
 		}
 	}
-	for (const inProgress of conversation.inProgressMessages.values()) {
-		const projected = projectInProgressMessage(inProgress);
-		if (projected && !byId.has(projected.id)) messages.push(projected);
+	// In-progress messages ride only the head window: an older page is settled
+	// history and must not grow a live tail.
+	if (windowed.isHead) {
+		for (const inProgress of conversation.inProgressMessages.values()) {
+			const projected = projectInProgressMessage(inProgress);
+			if (projected && !byId.has(projected.id)) messages.push(projected);
+		}
 	}
-	return { conversationId: conversation.conversationId, streamOffset, messages };
+	return {
+		conversationId: conversation.conversationId,
+		streamOffset,
+		messages,
+		...(windowed.truncatedBefore !== undefined ? { truncatedBefore: windowed.truncatedBefore } : {}),
+	};
 }
 
 export function getActiveConversationPathSince(
