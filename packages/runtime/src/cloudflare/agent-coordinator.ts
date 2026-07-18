@@ -8,12 +8,12 @@ import type { FlueContextInternal } from '../client.ts';
 import { ConversationRecordWriter } from '../conversation-writer.ts';
 import { SubmissionAbortedError } from '../errors.ts';
 import type { FlueTraceCarrier } from '../execution-interceptor.ts';
-import { createConversationIdentity } from '../harness.ts';
 import {
 	agentSubmissionDispatchId,
 	type createAgentSubmissionSessionHandler,
 	createDirectAgentSubmissionInput,
 	createDispatchAgentSubmissionInput,
+	ensureRootSubmissionConversation,
 	materializeAgentSubmissionSession,
 	processSubmission,
 	reconcileInterruptedSubmission,
@@ -314,24 +314,9 @@ export class CloudflareAgentCoordinator {
 	/** See {@link appendAgentConversationSignal}: out-of-turn canonical signal append. */
 	async appendConversationSignal(signal: AgentConversationSignalInput): Promise<void> {
 		const writer = await this.ensureConversationWriter();
-		let conversation = await writer.findConversation(SUBMISSION_HARNESS_NAME, SUBMISSION_SESSION_NAME);
-		if (!conversation) {
-			// A signal may precede the very first submission, so the root conversation
-			// may not exist yet. Create it the same way the root session path does.
-			const identity = createConversationIdentity();
-			await writer.ensureConversation({
-				kind: 'root',
-				conversationId: identity.conversationId,
-				harness: SUBMISSION_HARNESS_NAME,
-				session: SUBMISSION_SESSION_NAME,
-				affinityKey: identity.affinityKey,
-				createdAt: identity.createdAt,
-			});
-			conversation = await writer.findConversation(SUBMISSION_HARNESS_NAME, SUBMISSION_SESSION_NAME);
-			if (!conversation) {
-				throw new Error('[flue] The agent instance has no root conversation to signal.');
-			}
-		}
+		// A signal may precede the very first submission, so create the root
+		// conversation when absent — the same seam the submission commit path uses.
+		const conversation = await ensureRootSubmissionConversation(writer);
 		const parentId = await writer.getConversationLeaf(conversation.conversationId);
 		const unique = crypto.randomUUID();
 		await writer.append([
@@ -452,7 +437,7 @@ export class CloudflareAgentCoordinator {
 					continue;
 				}
 				try {
-					await this.materializeSubmissionConversation(submission.input, agent);
+					await this.materializeSubmissionConversation(submission.input);
 					await this.submissions.markSubmissionCanonicalReady(submission.submissionId);
 				} catch (error) {
 					this.logSubmissionReconciliationFailure(submission, 'materialize_submission', error);
@@ -691,17 +676,14 @@ export class CloudflareAgentCoordinator {
 		return keys;
 	}
 
-	private materializeSubmissionConversation(
-		input: AgentSubmission['input'],
-		agent: Parameters<typeof materializeAgentSubmissionSession>[1],
-	): Promise<void> {
+	private materializeSubmissionConversation(input: AgentSubmission['input']): Promise<void> {
 		const operation = this.conversationMaterialization.then(async () => {
-			await this.ensureConversationWriter();
+			const writer = await this.ensureConversationWriter();
 			const ctx = this.createDurableContext(
 				submissionSyntheticRequest(input),
 				agentSubmissionDispatchId(input),
 			);
-			await materializeAgentSubmissionSession(ctx, agent, input, this.prepared.attachmentStore);
+			await materializeAgentSubmissionSession(ctx, input, writer, this.prepared.attachmentStore);
 		});
 		this.conversationMaterialization = operation.catch(() => {});
 		return operation;
@@ -758,7 +740,7 @@ export class CloudflareAgentCoordinator {
 		if (!agent) throw new Error('[flue] Agent target unavailable during durable admission.');
 		const admitted = await this.submissions.admitDirect(input);
 		if (admitted.canonicalReadyAt === null) {
-			await this.materializeSubmissionConversation(input, agent);
+			await this.materializeSubmissionConversation(input);
 			await this.submissions.markSubmissionCanonicalReady(input.submissionId);
 		}
 		const offset = (await this.ensureConversationWriter()).offset;
@@ -786,7 +768,7 @@ export class CloudflareAgentCoordinator {
 			return new Response('Conflicting internal dispatch replay.', { status: 409 });
 		}
 		if (admission.submission.canonicalReadyAt === null) {
-			await this.materializeSubmissionConversation(createDispatchAgentSubmissionInput(input), agent);
+			await this.materializeSubmissionConversation(createDispatchAgentSubmissionInput(input));
 			const ready = await this.submissions.markSubmissionCanonicalReady(input.dispatchId);
 			if (!ready) throw new Error('[flue] Dispatch admission disappeared before canonical readiness.');
 		}

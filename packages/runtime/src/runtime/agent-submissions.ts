@@ -1,4 +1,4 @@
-import { SUBMISSION_SESSION_NAME } from '../adapter-helpers.ts';
+import { SUBMISSION_HARNESS_NAME, SUBMISSION_SESSION_NAME } from '../adapter-helpers.ts';
 import type {
 	AgentSubmission,
 	AgentSubmissionStore,
@@ -15,6 +15,7 @@ import {
 	SubmissionTimeoutError,
 } from '../errors.ts';
 import { type FlueTraceCarrier, interceptExecution } from '../execution-interceptor.ts';
+import { createConversationIdentity } from '../harness.ts';
 import { getInternalSession } from '../session.ts';
 import type { AgentDefinition, CallHandle, DeliveredMessage } from '../types.ts';
 import { type AttachmentStore, createAttachmentRef } from './attachment-store.ts';
@@ -142,18 +143,62 @@ export function createDirectAgentSubmissionInput(options: {
 }
 
 /**
- * Attachments are a property of the delivered message, not of the transport:
- * this materializes them for a `kind: 'user'` message regardless of whether
- * the submission arrived as a direct HTTP prompt or a `dispatch()` call.
+ * Get (or create) the agent instance's root submission conversation directly
+ * through the conversation writer, without initializing a harness.
+ *
+ * External submissions always target the default session of the default
+ * harness, so this creates it exactly as the root session path (`loadSession`)
+ * does — `retainSession` is never set for the root submission harness, so that
+ * path reduces to this `ensureConversation`. It is the seam that lets the
+ * durable commit path append to the log without paying for a turn
+ * configuration (see {@link materializeAgentSubmissionSession}), and the
+ * out-of-turn signal append reuses it.
+ */
+export async function ensureRootSubmissionConversation(
+	writer: ConversationRecordWriter,
+): Promise<NonNullable<Awaited<ReturnType<ConversationRecordWriter['findConversation']>>>> {
+	let conversation = await writer.findConversation(SUBMISSION_HARNESS_NAME, SUBMISSION_SESSION_NAME);
+	if (!conversation) {
+		const identity = createConversationIdentity();
+		await writer.ensureConversation({
+			kind: 'root',
+			conversationId: identity.conversationId,
+			harness: SUBMISSION_HARNESS_NAME,
+			session: SUBMISSION_SESSION_NAME,
+			affinityKey: identity.affinityKey,
+			createdAt: identity.createdAt,
+		});
+		conversation = await writer.findConversation(SUBMISSION_HARNESS_NAME, SUBMISSION_SESSION_NAME);
+		if (!conversation) {
+			throw new Error('[flue] Root submission conversation missing after ensureConversation.');
+		}
+	}
+	return conversation;
+}
+
+/**
+ * Commit a submission to the durable conversation stream.
+ *
+ * This runs on the materialize pass, whose only job is the exactly-once
+ * durable write — creating the root conversation and persisting attachment
+ * blobs. It deliberately takes the conversation `writer` directly and does
+ * **not** initialize a root harness: the `agent.initialize()` a harness would
+ * run (backend context load, sandbox open, system-prompt build) is turn
+ * configuration, needed only by the process pass that runs the model. Creating
+ * the root conversation through the writer keeps this path minimal and makes it
+ * structurally unable to trigger that work. Attachments are a property of the
+ * delivered message, not the transport, so a `kind: 'user'` message
+ * materializes them whether it arrived as a direct HTTP prompt or a
+ * `dispatch()` call.
  */
 export async function materializeAgentSubmissionSession(
 	ctx: FlueContextInternal,
-	agent: AgentDefinition,
 	input: AgentSubmissionInput,
+	writer: ConversationRecordWriter,
 	attachmentStore?: AttachmentStore,
 ): Promise<void> {
 	if (input.kind === 'direct') ctx.setSubmissionId?.(input.submissionId);
-	const session = await openAgentSubmissionSession(ctx, agent, input);
+	const conversation = await ensureRootSubmissionConversation(writer);
 	const message = input.message;
 	if (message.kind === 'user' && attachmentStore) {
 		for (const [index, attachment] of (message.attachments ?? []).entries()) {
@@ -169,7 +214,7 @@ export async function materializeAgentSubmissionSession(
 				streamPath,
 				attachment: ref,
 				bytes,
-				conversationId: session.conversationId,
+				conversationId: conversation.conversationId,
 			});
 		}
 	}

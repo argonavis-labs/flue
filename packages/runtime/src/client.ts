@@ -54,6 +54,15 @@ export interface FlueContextConfig {
 /** Extends FlueEventContext with server-only methods. */
 export interface FlueContextInternal extends FlueEventContext {
 	readonly runId: string | undefined;
+	/**
+	 * Resolve the durable conversation runtime without configuring a turn. The
+	 * submission commit path appends to the log through this; only execution
+	 * needs {@link initializeRootHarness}.
+	 */
+	ensureConversationRuntime(): Promise<{
+		writer: ConversationRecordWriter;
+		attachments: AttachmentStore;
+	}>;
 	initializeRootHarness(agent: AgentDefinition): Promise<Harness>;
 	createEvent(event: FlueEventInput): FlueEvent;
 	publishEvent(event: FlueEvent): void;
@@ -121,6 +130,24 @@ export function createFlueContext(config: FlueContextConfig): FlueContextInterna
 		return decorated;
 	};
 
+	// Resolve the durable conversation runtime (writer + attachment store),
+	// falling back to a process-local runtime when the embedder configured
+	// neither. Callers that only need to append to the log (the submission
+	// commit path) use this directly; `initializeRootHarness` layers the full
+	// turn configuration on top.
+	const ensureConversationRuntime = async (): Promise<{
+		writer: ConversationRecordWriter;
+		attachments: AttachmentStore;
+	}> => {
+		if (!conversationWriter || !attachmentStore) {
+			localConversationRuntime ??= createLocalConversationRuntime(config);
+			const local = await localConversationRuntime;
+			conversationWriter ??= local.writer;
+			attachmentStore ??= local.attachments;
+		}
+		return { writer: conversationWriter, attachments: attachmentStore };
+	};
+
 	const ctx: FlueContextInternal = {
 		get id() {
 			return config.id;
@@ -142,14 +169,15 @@ export function createFlueContext(config: FlueContextConfig): FlueContextInterna
 			return config.req;
 		},
 
+		ensureConversationRuntime,
+
 		async initializeRootHarness(agent: AgentDefinition): Promise<Harness> {
-			if (!conversationWriter || !attachmentStore) {
-				localConversationRuntime ??= createLocalConversationRuntime(config);
-				const local = await localConversationRuntime;
-				conversationWriter ??= local.writer;
-				attachmentStore ??= local.attachments;
-			}
-			return initializeRootHarness(agent, { ...config, conversationWriter, attachmentStore }, emitEvent);
+			const { writer, attachments } = await ensureConversationRuntime();
+			return initializeRootHarness(
+				agent,
+				{ ...config, conversationWriter: writer, attachmentStore: attachments },
+				emitEvent,
+			);
 		},
 
 		log: {
