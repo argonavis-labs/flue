@@ -285,6 +285,33 @@ describe('writer checkpointing (RUN-5218)', () => {
 		}
 	});
 
+	it('prefix loads at or past the checkpoint replay only the tail (RUN-5220)', async () => {
+		const store = new InMemoryConversationStreamStore();
+		const writer = await writerWith(store);
+		for (const record of chainedRecords(20)) await writer.append([record]);
+		const snapshot = await store.loadDerivedSnapshot(PATH);
+		expect(snapshot).not.toBeNull();
+		const meta = await store.getMeta(PATH);
+		const head = meta!.nextOffset;
+
+		const reads: string[] = [];
+		const originalRead = store.read.bind(store);
+		store.read = (path, options) => {
+			reads.push(options?.offset ?? '-1');
+			return originalRead(path, options);
+		};
+		const { loadReducedConversationPrefix } = await import('../src/conversation-reader.ts');
+		const accelerated = await loadReducedConversationPrefix({ store, path: PATH, offset: head });
+		expect(reads.every((offset) => offset !== '-1')).toBe(true);
+		expect(accelerated.recordsThroughOffset).toBe(head);
+
+		// An offset BEFORE the checkpoint cannot use it: clean full replay.
+		reads.length = 0;
+		const early = await loadReducedConversationPrefix({ store, path: PATH, offset: '0000000000000000_0000000000000002' });
+		expect(reads[0]).toBe('-1');
+		expect(early.recordsThroughOffset).toBe('0000000000000000_0000000000000002');
+	});
+
 	it('a failing snapshot write never fails the append', async () => {
 		const store = new InMemoryConversationStreamStore();
 		store.saveDerivedSnapshot = async () => {

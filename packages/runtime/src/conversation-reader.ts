@@ -68,9 +68,34 @@ export async function loadReducedConversationPrefix(options: {
 	path: string;
 	offset: string;
 }): Promise<ReducedInstanceState> {
-	const state = createReducedInstanceState();
-	if (options.offset === '-1') return state;
-	let offset = '-1';
+	if (options.offset === '-1') return createReducedInstanceState();
+	// Checkpoint acceleration (RUN-5220): usable whenever the snapshot sits at
+	// or before the requested boundary — offsets are fixed-width and sort
+	// lexically. Same cache-never-truth contract as the head load: any failure
+	// on the snapshot path falls back to the clean full replay.
+	const snapshot = await options.store.loadDerivedSnapshot?.(options.path)?.catch(() => null);
+	if (snapshot && snapshot.version === SNAPSHOT_VERSION && snapshot.offset <= options.offset) {
+		try {
+			const meta = await options.store.getMeta(options.path);
+			if (meta && meta.incarnation === snapshot.incarnation) {
+				const decoded = decodeReducedState(snapshot.data);
+				decoded.recordsThroughOffset = snapshot.offset;
+				if (snapshot.offset === options.offset) return decoded;
+				return await replayPrefixInto(decoded, snapshot.offset, options);
+			}
+		} catch {
+			// fall through to the full replay
+		}
+	}
+	return replayPrefixInto(createReducedInstanceState(), '-1', options);
+}
+
+async function replayPrefixInto(
+	state: ReducedInstanceState,
+	fromOffset: string,
+	options: { store: ConversationStreamStore; path: string; offset: string },
+): Promise<ReducedInstanceState> {
+	let offset = fromOffset;
 	while (true) {
 		const read = await options.store.read(options.path, { offset, limit: REPLAY_READ_LIMIT });
 		for (const batch of read.batches) {

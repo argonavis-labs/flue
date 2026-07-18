@@ -220,7 +220,11 @@ export function createFlueClient(options: CreateFlueClientOptions): FlueClient {
 				rewriteSnapshotAttachmentUrls(
 					await http.json<FlueConversationSnapshot>({
 						path: `/agents/${encodeURIComponent(name)}/${encodeURIComponent(id)}`,
-						query: { view: 'history' },
+						query: {
+							view: 'history',
+							...(opts.entryLimit !== undefined ? { entryLimit: String(opts.entryLimit) } : {}),
+							...(opts.beforeEntry !== undefined ? { beforeEntry: opts.beforeEntry } : {}),
+						},
 						signal: opts.signal,
 					}),
 					http,

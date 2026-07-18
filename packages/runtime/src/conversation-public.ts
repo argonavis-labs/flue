@@ -2,6 +2,7 @@ import {
 	classifySignal,
 	type ConversationUiMessage,
 	type ConversationUiSnapshot,
+	type ConversationUiWindow,
 	projectConversationUi,
 } from './conversation-projections.ts';
 import type {
@@ -28,6 +29,8 @@ export interface AgentConversationSnapshot {
 	offset: string;
 	messages: ConversationUiMessage[];
 	settlements: AgentConversationSettlement[];
+	/** Present when older history exists before this window (RUN-5220). */
+	truncatedBefore?: string;
 }
 
 /**
@@ -113,16 +116,22 @@ function selectRootConversation(state: ReducedInstanceState) {
 
 export function projectAgentConversationSnapshot(
 	state: ReducedInstanceState,
+	window: ConversationUiWindow = {},
 ): AgentConversationSnapshot | undefined {
 	const conversation = selectRootConversation(state);
 	if (!conversation) return undefined;
-	const ui: ConversationUiSnapshot = projectConversationUi(conversation, state.recordsThroughOffset);
+	const ui: ConversationUiSnapshot = projectConversationUi(
+		conversation,
+		state.recordsThroughOffset,
+		window,
+	);
 	return {
 		v: 1,
 		conversationId: conversation.conversationId,
 		offset: ui.streamOffset,
 		messages: ui.messages,
 		settlements: projectSettlements(state, conversation.conversationId),
+		...(ui.truncatedBefore !== undefined ? { truncatedBefore: ui.truncatedBefore } : {}),
 	};
 }
 
