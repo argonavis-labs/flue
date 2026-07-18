@@ -14,6 +14,8 @@ import {
 
 export interface SendMessageOptions {
 	images?: DeliveredAttachment[];
+	/** Client-minted idempotency key, threaded to `agents.send` (see `AgentPromptOptions`). */
+	submissionId?: string;
 }
 
 export interface CreateFlueAgentStoreOptions {
@@ -78,7 +80,13 @@ export class AgentSession {
 
 	async sendMessage(message: string, options: SendMessageOptions = {}): Promise<void> {
 		const localId = `local:${this.name}:${this.id}:${++this.localId}`;
-		this.dispatch({ type: 'local_send_submitted', localId, message, images: options.images });
+		this.dispatch({
+			type: 'local_send_submitted',
+			localId,
+			message,
+			images: options.images,
+			...(options.submissionId === undefined ? {} : { submissionId: options.submissionId }),
+		});
 		try {
 			const receipt = await this.client.agents.send(this.name, this.id, {
 				message: {
@@ -86,6 +94,7 @@ export class AgentSession {
 					body: message,
 					...(options.images?.length ? { attachments: options.images } : {}),
 				},
+				...(options.submissionId === undefined ? {} : { submissionId: options.submissionId }),
 			});
 			this.dispatch({ type: 'local_send_admitted', localId, submissionId: receipt.submissionId });
 			if (this.observation?.getSnapshot().phase === 'absent') this.observation.refresh();
