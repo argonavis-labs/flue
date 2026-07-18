@@ -55,11 +55,20 @@ export { InMemoryRunStore } from './node/run-store.ts';
 export type { AgentSubmissionInput } from './runtime/agent-submissions.ts';
 export type { AttachmentStore } from './runtime/attachment-store.ts';
 export { InMemoryAttachmentStore } from './runtime/attachment-store.ts';
-export type { ConversationStreamStore } from './runtime/conversation-stream-store.ts';
+export type {
+	ConversationStreamStore,
+	DerivedConversationSnapshot,
+} from './runtime/conversation-stream-store.ts';
 export {
 	InMemoryConversationStreamStore,
 	SqliteConversationStreamStore,
 } from './runtime/conversation-stream-store.ts';
+export { loadReducedConversationState } from './conversation-reader.ts';
+export {
+	decodeReducedState,
+	encodeReducedState,
+	SNAPSHOT_VERSION,
+} from './conversation-snapshot.ts';
 export type { AgentInteractionStart } from './runtime/dev-lifecycle-logger.ts';
 export { installDevLifecycleLogger } from './runtime/dev-lifecycle-logger.ts';
 export type { DispatchInput, DispatchQueue } from './runtime/dispatch-queue.ts';
