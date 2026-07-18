@@ -35,6 +35,15 @@ interface ReducedEntryBase {
 export interface ReducedMessageEntry extends ReducedEntryBase {
 	type: 'message';
 	message: AgentMessage;
+	/**
+	 * Set when compaction evicted this entry's heavy content (RUN-5210): text
+	 * bodies and tool-call arguments are replaced with placeholders while the
+	 * entry's structure (id, parent, timestamps, usage, attachment refs) stays.
+	 * Evicted entries are never projected into model context — they sit before
+	 * the latest compaction's `firstKeptEntryId` — and history projections
+	 * render the placeholder. The byte-faithful content remains in the log.
+	 */
+	contentEvicted?: true;
 	attachmentRefs?: Map<string, AttachmentRef>;
 	/**
 	 * Validated structured tool output for tool-result entries, distinct from the
@@ -104,6 +113,12 @@ export interface InProgressAssistantMessage {
 	blockIndexes: Set<number>;
 }
 
+/**
+ * A tool outcome awaiting its `tool_results_committed` record. Carries every
+ * field the commit application materializes into the tool-result entry, so the
+ * raw outcome record body does not need to stay resident (RUN-5210). Deleted
+ * when the commit consumes it.
+ */
 interface ReducedToolOutcome {
 	recordId: string;
 	assistantMessageId: string;
@@ -111,6 +126,9 @@ interface ReducedToolOutcome {
 	toolName: string;
 	isError: boolean;
 	content: CanonicalToolResultContent[];
+	timestamp: string;
+	output?: unknown;
+	durationMs?: number;
 }
 
 interface ReducedConversationStateBase {
@@ -151,11 +169,31 @@ export type ReducedConversationState = ReducedConversationStateBase &
 		  }
 	);
 
+/**
+ * Where and as-what one applied record entered the log. `offset` is the durable
+ * batch offset the record was applied at (an O(1) log fetch handle for any
+ * future by-id body read); `hash` is a content fingerprint preserving the
+ * redelivery contract without keeping the body resident: same id + same hash ⇒
+ * idempotent skip, same id + different hash ⇒ invariant failure (RUN-5210).
+ */
+export interface AppliedRecordIndex {
+	offset: string;
+	hash: string;
+}
+
 export interface ReducedInstanceState {
 	recordsThroughOffset: string;
 	conversations: Map<string, ReducedConversationState>;
 	conversationScopes: Map<string, string>;
-	recordsById: Map<string, ConversationRecord>;
+	/** Every applied record's offset + content fingerprint — never the body. */
+	recordIndex: Map<string, AppliedRecordIndex>;
+	/**
+	 * Settlement records stay resident whole: they are tiny (one per
+	 * submission), and they are the only historical record bodies consumers
+	 * read back after application (settlement projection and the coordinators'
+	 * pending-settlement canonical comparison).
+	 */
+	settledSubmissions: Map<string, Extract<ConversationRecord, { type: 'submission_settled' }>>;
 }
 
 /**
@@ -180,7 +218,8 @@ export function createReducedInstanceState(): ReducedInstanceState {
 		recordsThroughOffset: '-1',
 		conversations: new Map(),
 		conversationScopes: new Map(),
-		recordsById: new Map(),
+		recordIndex: new Map(),
+		settledSubmissions: new Map(),
 	};
 }
 
@@ -190,7 +229,7 @@ export function reduceConversationRecords(
 	offset = state.recordsThroughOffset,
 ): ReducedInstanceState {
 	const next = cloneReducedInstanceState(state);
-	for (const record of records) applyConversationRecord(next, record);
+	for (const record of records) applyConversationRecord(next, record, offset);
 	next.recordsThroughOffset = offset;
 	return next;
 }
@@ -199,7 +238,8 @@ function cloneReducedInstanceState(state: ReducedInstanceState): ReducedInstance
 	return {
 		recordsThroughOffset: state.recordsThroughOffset,
 		conversationScopes: new Map(state.conversationScopes),
-		recordsById: new Map(state.recordsById),
+		recordIndex: new Map(state.recordIndex),
+		settledSubmissions: new Map(state.settledSubmissions),
 		conversations: new Map(
 			[...state.conversations].map(([id, conversation]) => [
 				id,
@@ -248,13 +288,82 @@ function cloneReducedInstanceState(state: ReducedInstanceState): ReducedInstance
 	};
 }
 
+/**
+ * Content fingerprint for the redelivery contract: two independent 32-bit
+ * mixes over a full structural walk of the record. Allocation-free by design —
+ * unlike `JSON.stringify` it never materializes a copy of a multi-megabyte
+ * record on the reduce path, which is exactly where this module fights heap
+ * pressure (RUN-5210). Walk order and undefined-handling mirror JSON
+ * semantics (object keys in insertion order, undefined properties skipped,
+ * undefined array slots as null), so a record that round-trips through the
+ * store hashes identically. Defense-in-depth behind the store's
+ * producer-sequence dedup, not a cryptographic identity.
+ */
+function recordContentHash(record: ConversationRecord): string {
+	const h: { h1: number; h2: number } = { h1: 0x811c9dc5, h2: 0xc2b2ae35 };
+	hashUnknown(record, h);
+	return `${h.h1.toString(36)}.${h.h2.toString(36)}`;
+}
+
+function hashCode(h: { h1: number; h2: number }, code: number): void {
+	h.h1 = Math.imul(h.h1 ^ code, 0x01000193) >>> 0;
+	h.h2 = (Math.imul(h.h2 ^ code, 0x85ebca6b) + 0x9e3779b9) >>> 0;
+}
+
+function hashString(h: { h1: number; h2: number }, value: string): void {
+	hashCode(h, value.length);
+	for (let i = 0; i < value.length; i++) hashCode(h, value.charCodeAt(i));
+}
+
+function hashUnknown(value: unknown, h: { h1: number; h2: number }): void {
+	if (value === null || value === undefined) {
+		hashCode(h, 0);
+		return;
+	}
+	switch (typeof value) {
+		case 'string':
+			hashCode(h, 1);
+			hashString(h, value);
+			return;
+		case 'number':
+			hashCode(h, 2);
+			hashString(h, String(value));
+			return;
+		case 'boolean':
+			hashCode(h, value ? 3 : 4);
+			return;
+		case 'object': {
+			if (Array.isArray(value)) {
+				hashCode(h, 5);
+				hashCode(h, value.length);
+				for (const item of value) hashUnknown(item, h);
+				return;
+			}
+			hashCode(h, 6);
+			for (const key of Object.keys(value)) {
+				const property = (value as Record<string, unknown>)[key];
+				if (property === undefined) continue;
+				hashString(h, key);
+				hashUnknown(property, h);
+			}
+			return;
+		}
+		default:
+			// function/symbol/bigint never appear in canonical records; JSON
+			// drops the first two and rejects the third.
+			hashCode(h, 7);
+	}
+}
+
 export function applyConversationRecord(
 	state: ReducedInstanceState,
 	record: ConversationRecord,
+	offset = state.recordsThroughOffset,
 ): void {
-	const accepted = state.recordsById.get(record.id);
+	const hash = recordContentHash(record);
+	const accepted = state.recordIndex.get(record.id);
 	if (accepted) {
-		if (JSON.stringify(accepted) === JSON.stringify(record)) return;
+		if (accepted.hash === hash) return;
 		fail(record, `Record id "${record.id}" was reused with different content.`);
 	}
 	if (record.v !== 1) fail(record, `Record version "${String(record.v)}" is unsupported.`);
@@ -281,7 +390,7 @@ export function applyConversationRecord(
 			childConversations: new Map(),
 		});
 		state.conversationScopes.set(scopeKey, record.conversationId);
-		state.recordsById.set(record.id, record);
+		state.recordIndex.set(record.id, { offset, hash });
 		return;
 	}
 
@@ -447,6 +556,9 @@ export function applyConversationRecord(
 				toolName: record.toolName,
 				isError: record.isError,
 				content: record.content.map((block) => ({ ...block })),
+				timestamp: record.timestamp,
+				...(record.output !== undefined ? { output: record.output } : {}),
+				...(record.durationMs !== undefined ? { durationMs: record.durationMs } : {}),
 			});
 			break;
 		}
@@ -466,23 +578,27 @@ export function applyConversationRecord(
 			if (record.outcomeIds.length !== calls.length || new Set(record.outcomeIds).size !== calls.length) {
 				fail(record, `Committed tool results must reference every assistant tool call exactly once.`);
 			}
+			// The pending outcome is the retained source of truth for the commit:
+			// it was scope-validated into THIS conversation when its record
+			// applied, so conversation/harness/session equality is implied by
+			// residency; the recordId equality below still pins the commit to the
+			// exact outcome record it references (RUN-5210).
 			const outcomes = record.outcomeIds.map((outcomeId, index) => {
-				const outcomeRecord = state.recordsById.get(outcomeId);
 				const call = calls[index];
+				const pending = call
+					? conversation.toolOutcomes.get(toolOutcomeKey(record.assistantMessageId, call.id))
+					: undefined;
 				if (
-					outcomeRecord?.type !== 'tool_outcome' ||
 					!call ||
-					outcomeRecord.conversationId !== record.conversationId ||
-					outcomeRecord.harness !== record.harness ||
-					outcomeRecord.session !== record.session ||
-					outcomeRecord.assistantMessageId !== record.assistantMessageId ||
-					outcomeRecord.toolCallId !== call.id ||
-					outcomeRecord.toolName !== call.name ||
-					conversation.toolOutcomes.get(toolOutcomeKey(record.assistantMessageId, call.id))?.recordId !== outcomeId
+					!pending ||
+					pending.recordId !== outcomeId ||
+					pending.assistantMessageId !== record.assistantMessageId ||
+					pending.toolCallId !== call.id ||
+					pending.toolName !== call.name
 				) {
 					fail(record, `Committed tool outcome references do not match assistant tool-call order.`);
 				}
-				return outcomeRecord;
+				return pending;
 			});
 			let parentId = record.parentId;
 			for (const outcome of outcomes) {
@@ -500,6 +616,11 @@ export function applyConversationRecord(
 					...(outcome.durationMs !== undefined ? { toolDurationMs: outcome.durationMs } : {}),
 				});
 				parentId = entryId;
+			}
+			// The commit consumed its outcomes: the content now lives on the
+			// tool-result entries, so the pending copies are deleted (RUN-5210).
+			for (const outcome of outcomes) {
+				conversation.toolOutcomes.delete(toolOutcomeKey(record.assistantMessageId, outcome.toolCallId));
 			}
 			break;
 		}
@@ -529,6 +650,7 @@ export function applyConversationRecord(
 				details: record.details,
 				usage: record.usage,
 			});
+			evictCompactedContent(conversation, record.sourceLeafId, record.firstKeptEntryId);
 			break;
 		case 'child_session_retained': {
 			validateChildReference(record);
@@ -558,9 +680,10 @@ export function applyConversationRecord(
 			break;
 		}
 		case 'submission_settled':
+			state.settledSubmissions.set(record.id, record);
 			break;
 	}
-	state.recordsById.set(record.id, record);
+	state.recordIndex.set(record.id, { offset, hash });
 }
 
 function validateConversationCreation(
@@ -849,6 +972,56 @@ function pathToLeaf(
 	return path.reverse();
 }
 
+export const EVICTED_CONTENT_PLACEHOLDER = '[content evicted after compaction]';
+
+/**
+ * Evict heavy content from the entries a compaction just summarized: every
+ * message entry on the compacted path strictly before `firstKeptEntryId`
+ * (RUN-5210). The model context is built from the compaction summary plus
+ * entries from `firstKeptEntryId` onward, so evicted content is never
+ * projected into a prompt; new tool outcomes can only reference the active
+ * leaf's assistant, which is always after the latest compaction. Structure —
+ * ids, parents, timestamps, usage, attachment refs — is retained so leaf
+ * resolution and linear-append validation are untouched. The byte-faithful
+ * content remains in the durable log.
+ */
+function evictCompactedContent(
+	conversation: ReducedConversationState,
+	sourceLeafId: string,
+	firstKeptEntryId: string,
+): void {
+	const path = pathToLeaf(conversation, sourceLeafId);
+	const firstKeptIndex = path.findIndex((entry) => entry.id === firstKeptEntryId);
+	if (firstKeptIndex === -1) return;
+	for (const entry of path.slice(0, firstKeptIndex)) {
+		if (entry.type !== 'message' || entry.contentEvicted) continue;
+		entry.contentEvicted = true;
+		delete entry.toolOutput;
+		entry.message = evictMessageContent(entry.message);
+	}
+}
+
+function evictMessageContent(message: AgentMessage): AgentMessage {
+	const value = message as AgentMessage & { content?: unknown };
+	// Signal messages carry their content as a plain string.
+	if (typeof value.content === 'string') {
+		return { ...message, content: EVICTED_CONTENT_PLACEHOLDER } as AgentMessage;
+	}
+	if (!Array.isArray(value.content)) return message;
+	const content = value.content.map((block: unknown) => {
+		if (block === null || typeof block !== 'object') return block;
+		const candidate = block as Record<string, unknown>;
+		if (typeof candidate.text === 'string') return { ...candidate, text: EVICTED_CONTENT_PLACEHOLDER };
+		if (typeof candidate.thinking === 'string') {
+			return { ...candidate, thinking: EVICTED_CONTENT_PLACEHOLDER };
+		}
+		if (candidate.type === 'toolCall') return { ...candidate, arguments: {} };
+		// Image/attachment blocks carry attachment ids, not bytes — retained.
+		return block;
+	});
+	return { ...message, content } as AgentMessage;
+}
+
 function getInProgress(
 	conversation: ReducedConversationState,
 	record: ConversationRecord,
@@ -979,7 +1152,10 @@ function userMessage(content: CanonicalUserContent[], timestamp: string): AgentM
 }
 
 function toolResultMessage(
-	record: Extract<ConversationRecord, { type: 'tool_outcome' }>,
+	record: Pick<
+		Extract<ConversationRecord, { type: 'tool_outcome' }>,
+		'toolCallId' | 'toolName' | 'isError' | 'content' | 'timestamp'
+	>,
 ): AgentMessage {
 	return {
 		role: 'toolResult',

@@ -96,11 +96,19 @@ export class ConversationRecordWriter {
 	}
 
 	async hasRecord(recordId: string): Promise<boolean> {
-		return (await this.loadReducedState()).recordsById.has(recordId);
+		return (await this.loadReducedState()).recordIndex.has(recordId);
 	}
 
+	/**
+	 * Only settlement records stay resident whole (RUN-5210); they are the only
+	 * historical bodies read back after application (settlement projection and
+	 * the coordinators' pending-settlement canonical comparison). Any other
+	 * record id resolves to `undefined` here — its body lives in the durable
+	 * log, fetchable by the offset in `recordIndex` when a future caller needs
+	 * it. Use {@link hasRecord} for existence.
+	 */
 	async getRecord(recordId: string): Promise<import('./conversation-records.ts').ConversationRecord | undefined> {
-		return (await this.loadReducedState()).recordsById.get(recordId);
+		return (await this.loadReducedState()).settledSubmissions.get(recordId);
 	}
 
 	async getConversation(conversationId: string) {
