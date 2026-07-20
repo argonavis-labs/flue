@@ -26,6 +26,15 @@ export const cloudflareAgentCoordinators = new WeakMap<
 	CloudflareAgentCoordinator
 >();
 
+/** Resolves the coordinator the generated agent runtime attached to the instance. */
+export function resolveAttachedCoordinator(instance: object): CloudflareAgentCoordinator {
+	const coordinator = cloudflareAgentCoordinators.get(instance);
+	if (!coordinator) {
+		throw new Error('[flue] Cloudflare agent coordinator is not attached to this instance.');
+	}
+	return coordinator;
+}
+
 /**
  * Append a canonical `signal` record to the agent instance's root conversation,
  * outside any turn. Pass the Durable Object instance the generated agent runtime
@@ -40,9 +49,5 @@ export async function appendAgentConversationSignal(
 	instance: object,
 	signal: AgentConversationSignalInput,
 ): Promise<void> {
-	const coordinator = cloudflareAgentCoordinators.get(instance);
-	if (!coordinator) {
-		throw new Error('[flue] Cloudflare agent coordinator is not attached to this instance.');
-	}
-	return coordinator.appendConversationSignal(signal);
+	return resolveAttachedCoordinator(instance).appendConversationSignal(signal);
 }

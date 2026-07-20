@@ -196,3 +196,4 @@ export {
 	type AgentConversationSignalInput,
 	appendAgentConversationSignal,
 } from './cloudflare/app-signals.ts';
+export { ensureAgentConversation } from './cloudflare/app-conversation.ts';
