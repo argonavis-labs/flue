@@ -338,6 +338,12 @@ export class CloudflareAgentCoordinator {
 		]);
 	}
 
+	/** See {@link ensureAgentConversation}: out-of-turn root-conversation ensure. */
+	async ensureConversation(): Promise<void> {
+		const writer = await this.ensureConversationWriter();
+		await ensureRootSubmissionConversation(writer);
+	}
+
 	private async ensureConversationWriter(): Promise<ConversationRecordWriter> {
 		if (this.conversationWriter && !this.conversationWriter.failed) return this.conversationWriter;
 		if (!this.conversationWriterCreation) {
