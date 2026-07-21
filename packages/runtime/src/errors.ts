@@ -1267,9 +1267,76 @@ const GENERIC_INTERNAL: WireEnvelope = {
 };
 
 /**
+ * Header carrying the detail of a defect this module is about to swallow into a
+ * generic 500. Service-internal: the embedding server is expected to consume
+ * and strip it at its edge, and it must never reach a client.
+ */
+export const ERROR_DETAIL_HEADER = 'X-Flue-Error-Detail' as const
+
+const DETAIL_MESSAGE_CAP = 1000
+const DETAIL_FRAME_CAP = 20
+/** Bounds a pathological `cause` chain (and any cycle) rather than trusting it. */
+const DETAIL_CAUSE_DEPTH = 4
+
+type ErrorDetailLink = {
+	readonly type: string
+	readonly message: string
+	readonly stack?: string
+}
+
+const detailLink = (value: unknown): ErrorDetailLink => ({
+	type: value instanceof Error ? value.name : typeof value,
+	message: (value instanceof Error ? value.message : String(typeof value)).slice(
+		0,
+		DETAIL_MESSAGE_CAP,
+	),
+	...(value instanceof Error && value.stack
+		? { stack: value.stack.split('\n').slice(0, DETAIL_FRAME_CAP).join('\n') }
+		: {}),
+})
+
+/**
+ * Encode a swallowed defect for {@link ERROR_DETAIL_HEADER}: base64 of UTF-8
+ * JSON, carrying the error and its `cause` chain.
+ *
+ * The chain matters because it is often the only thing that distinguishes two
+ * failures. A wrapper built at one site — say a store that cannot initialize —
+ * has one message template and one stack no matter what actually broke
+ * underneath, so a consumer that sees only the outer error cannot tell a schema
+ * mismatch from a disk failure. Both are then indistinguishable in whatever the
+ * consumer does downstream: logging, alerting, or grouping them into issues.
+ *
+ * Returns `undefined` rather than throwing — a diagnostic must never be the
+ * reason an error response fails to render.
+ */
+export function encodeErrorDetail(err: unknown): string | undefined {
+	try {
+		const causes: ErrorDetailLink[] = []
+		const seen = new Set<unknown>([err])
+		let current: unknown = err instanceof Error ? err.cause : undefined
+		while (current !== undefined && causes.length < DETAIL_CAUSE_DEPTH && !seen.has(current)) {
+			seen.add(current)
+			causes.push(detailLink(current))
+			current = current instanceof Error ? current.cause : undefined
+		}
+		const detail = {
+			...detailLink(err),
+			...(causes.length > 0 ? { causes } : {}),
+		}
+		return btoa(unescape(encodeURIComponent(JSON.stringify(detail))))
+	} catch {
+		return undefined
+	}
+}
+
+/**
  * Render any thrown value into a `Response` with the canonical Flue error
  * envelope. Unknown / non-Flue errors are logged in full and rendered as a
  * generic 500 with no message leaked.
+ *
+ * A swallowed defect also carries {@link ERROR_DETAIL_HEADER} so the embedding
+ * server can report the real error at its edge; the generic envelope itself
+ * still leaks nothing.
  */
 export function toHttpResponse(err: unknown): Response {
 	// Browser security headers (DS protocol §12.7) — set on every error
@@ -1292,14 +1359,20 @@ export function toHttpResponse(err: unknown): Response {
 		// surfacing them in logs even though we render their message.
 		if (!isHttp) {
 			flueLog.error(err);
+			const detail = encodeErrorDetail(err);
+			if (detail) {
+				headers[ERROR_DETAIL_HEADER] = detail;
+			}
 		}
 		return new Response(JSON.stringify(envelope(err)), { status, headers });
 	}
-	// Non-FlueError: log everything, leak nothing.
+	// Non-FlueError: log everything, leak nothing — except the internal detail
+	// header, which exists so the embedding server can report what was lost.
 	flueLog.error(err);
+	const detail = encodeErrorDetail(err);
 	return new Response(JSON.stringify(GENERIC_INTERNAL), {
 		status: 500,
-		headers: baseHeaders,
+		headers: detail ? { ...baseHeaders, [ERROR_DETAIL_HEADER]: detail } : baseHeaders,
 	});
 }
 

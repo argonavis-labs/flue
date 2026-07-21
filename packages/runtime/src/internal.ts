@@ -44,7 +44,12 @@ export type {
 	AgentConversationSnapshot,
 	ConversationStreamChunk,
 } from './conversation-public.ts';
-export { RuntimeUnavailableError, toHttpResponse } from './errors.ts';
+export {
+	encodeErrorDetail,
+	ERROR_DETAIL_HEADER,
+	RuntimeUnavailableError,
+	toHttpResponse,
+} from './errors.ts';
 export type { InstrumentationOwner } from './instrumentation.ts';
 export {
 	createInstrumentationOwner,
