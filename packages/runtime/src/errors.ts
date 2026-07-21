@@ -474,15 +474,7 @@ export class ConversationRecordInvariantError extends FlueError {
 }
 
 export class ConversationStreamStoreError extends FlueError {
-	constructor({
-		operation,
-		path,
-		reason,
-	}: {
-		operation: string;
-		path: string;
-		reason: string;
-	}) {
+	constructor({ operation, path, reason }: { operation: string; path: string; reason: string }) {
 		super({
 			type: 'conversation_stream_store_failure',
 			message: 'The canonical conversation stream operation could not be completed.',
@@ -508,7 +500,13 @@ export class AttachmentConflictError extends FlueError {
 }
 
 export class AttachmentIntegrityError extends FlueError {
-	constructor({ attachmentId, reason }: { attachmentId: string; reason: 'size' | 'digest' | 'chunks' }) {
+	constructor({
+		attachmentId,
+		reason,
+	}: {
+		attachmentId: string;
+		reason: 'size' | 'digest' | 'chunks';
+	}) {
 		super({
 			type: 'attachment_integrity',
 			message: 'The attachment bytes failed integrity verification.',
@@ -692,10 +690,13 @@ export class CloudflareAIBindingError extends FlueError {
 		statusText?: string;
 		body?: string;
 	}) {
-		const statusLabel = status === undefined ? undefined : `${status}${statusText ? ` ${statusText}` : ''}`;
+		const statusLabel =
+			status === undefined ? undefined : `${status}${statusText ? ` ${statusText}` : ''}`;
 		super({
 			type: 'cloudflare_ai_binding_error',
-			message: message ?? `Cloudflare AI binding request failed${statusLabel ? ` with ${statusLabel}` : ''}.`,
+			message:
+				message ??
+				`Cloudflare AI binding request failed${statusLabel ? ` with ${statusLabel}` : ''}.`,
 			details: body ? `Provider response: ${body}` : '',
 			dev: '',
 			meta: {
@@ -924,8 +925,7 @@ export class ToolLegacyDefinitionError extends FlueError {
 			type: 'tool_legacy_definition',
 			message: 'This tool uses the unsupported legacy definition format.',
 			details: 'The tool definition contains legacy fields.',
-			dev:
-				'defineTool() no longer supports { parameters, execute }. Rename parameters to input, rename execute to run, and return structured data directly. Flue validates output and JSON-serializes it for the model.',
+			dev: 'defineTool() no longer supports { parameters, execute }. Rename parameters to input, rename execute to run, and return structured data directly. Flue validates output and JSON-serializes it for the model.',
 			meta: { fields: [...fields] },
 		});
 		this.name = 'ToolLegacyDefinitionError';
@@ -1234,9 +1234,24 @@ interface WireEnvelope {
 }
 
 let devMode = false;
+let errorDetailHeader = false;
 
-export function configureErrorRendering(options: { devMode: boolean }): void {
+export function configureErrorRendering(options: {
+	devMode: boolean;
+	/**
+	 * Emit {@link ERROR_DETAIL_HEADER} on swallowed defects. Default `false`.
+	 *
+	 * Opt-in because the header carries exactly what the generic 500 body exists
+	 * to withhold — types, messages, and stacks — and a response header is the
+	 * one surface that reaches untrusted clients. Enable it ONLY where an edge
+	 * you control strips the header before the response leaves your service.
+	 * With no such edge (flue's default app is itself the edge), leaving this off
+	 * is what keeps the leak-nothing contract true.
+	 */
+	errorDetailHeader?: boolean;
+}): void {
 	devMode = options.devMode;
+	errorDetailHeader = options.errorDetailHeader === true;
 }
 
 function envelope(err: FlueError): WireEnvelope {
@@ -1271,29 +1286,65 @@ const GENERIC_INTERNAL: WireEnvelope = {
  * generic 500. Service-internal: the embedding server is expected to consume
  * and strip it at its edge, and it must never reach a client.
  */
-export const ERROR_DETAIL_HEADER = 'X-Flue-Error-Detail' as const
+export const ERROR_DETAIL_HEADER = 'X-Flue-Error-Detail' as const;
 
-const DETAIL_MESSAGE_CAP = 1000
-const DETAIL_FRAME_CAP = 20
+const DETAIL_MESSAGE_CAP = 1000;
+const DETAIL_FRAME_CAP = 20;
 /** Bounds a pathological `cause` chain (and any cycle) rather than trusting it. */
-const DETAIL_CAUSE_DEPTH = 4
+const DETAIL_CAUSE_DEPTH = 4;
+/**
+ * Hard ceiling on the ENCODED header, in bytes.
+ *
+ * Per-field character caps do not bound this: characters are not bytes (a CJK
+ * message hits 3 bytes each), base64 inflates by 4/3, and per-link caps multiply
+ * by the chain depth. Left unbounded, the documented caps alone permit a ~23 KB
+ * header — past Node's 16 KB `maxHeaderSize`, so the client gets a transport
+ * error instead of the 500, and the diagnostic destroys the very report it
+ * exists to improve. 4 KB also clears the common 4–8 KB proxy buffer, so a
+ * default nginx in front does not turn the response into a 502.
+ */
+const DETAIL_HEADER_BUDGET = 4096;
 
 type ErrorDetailLink = {
-	readonly type: string
-	readonly message: string
-	readonly stack?: string
-}
+	readonly type: string;
+	readonly message: string;
+	readonly stack?: string;
+};
 
-const detailLink = (value: unknown): ErrorDetailLink => ({
+/**
+ * A non-Error carries no message worth reporting: `String(value)` on an object
+ * yields `[object Object]`, and stringifying it properly would put arbitrary
+ * payload contents on the wire. Primitives are the exception — a thrown string
+ * usually IS the message.
+ */
+const nonErrorMessage = (value: unknown): string => {
+	const kind = typeof value;
+	return kind === 'string' || kind === 'number' || kind === 'boolean' || kind === 'bigint'
+		? String(value)
+		: `<non-Error ${value === null ? 'null' : kind} thrown>`;
+};
+
+const detailLink = (value: unknown, frameCap = DETAIL_FRAME_CAP): ErrorDetailLink => ({
 	type: value instanceof Error ? value.name : typeof value,
-	message: (value instanceof Error ? value.message : String(typeof value)).slice(
+	message: (value instanceof Error ? value.message : nonErrorMessage(value)).slice(
 		0,
 		DETAIL_MESSAGE_CAP,
 	),
-	...(value instanceof Error && value.stack
-		? { stack: value.stack.split('\n').slice(0, DETAIL_FRAME_CAP).join('\n') }
+	...(value instanceof Error && value.stack && frameCap > 0
+		? { stack: value.stack.split('\n').slice(0, frameCap).join('\n') }
 		: {}),
-})
+});
+
+/** base64 of UTF-8 bytes. Byte-oriented so the budget below can be enforced on bytes. */
+const encodeBase64 = (json: string): string => {
+	const bytes = new TextEncoder().encode(json);
+	let binary = '';
+	// Chunked: spreading a large array into String.fromCharCode blows the stack.
+	for (let i = 0; i < bytes.length; i += 0x8000) {
+		binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+	}
+	return btoa(binary);
+};
 
 /**
  * Encode a swallowed defect for {@link ERROR_DETAIL_HEADER}: base64 of UTF-8
@@ -1311,22 +1362,51 @@ const detailLink = (value: unknown): ErrorDetailLink => ({
  */
 export function encodeErrorDetail(err: unknown): string | undefined {
 	try {
-		const causes: ErrorDetailLink[] = []
-		const seen = new Set<unknown>([err])
-		let current: unknown = err instanceof Error ? err.cause : undefined
-		while (current !== undefined && causes.length < DETAIL_CAUSE_DEPTH && !seen.has(current)) {
-			seen.add(current)
-			causes.push(detailLink(current))
-			current = current instanceof Error ? current.cause : undefined
+		const chain: unknown[] = [err];
+		const seen = new Set<unknown>([err]);
+		let current: unknown = err instanceof Error ? err.cause : undefined;
+		while (current !== undefined && chain.length <= DETAIL_CAUSE_DEPTH && !seen.has(current)) {
+			seen.add(current);
+			chain.push(current);
+			current = current instanceof Error ? current.cause : undefined;
 		}
-		const detail = {
-			...detailLink(err),
-			...(causes.length > 0 ? { causes } : {}),
+
+		// Degrade in the order that costs the least diagnostic value: trim the
+		// cause stacks first (the outer stack locates the failure), then drop
+		// causes from the innermost out, and only then shorten the outer stack.
+		// Emitting nothing is the last resort — but it beats emitting a header
+		// that makes the whole response unsendable.
+		const attempts: Array<() => Record<string, unknown>> = [];
+		for (let causeFrames = DETAIL_FRAME_CAP; causeFrames >= 0; causeFrames -= 10) {
+			attempts.push(() => build(chain, DETAIL_FRAME_CAP, causeFrames));
 		}
-		return btoa(unescape(encodeURIComponent(JSON.stringify(detail))))
+		for (let depth = chain.length - 1; depth >= 1; depth--) {
+			attempts.push(() => build(chain.slice(0, depth), DETAIL_FRAME_CAP, 0));
+		}
+		for (const frames of [10, 3, 0]) {
+			attempts.push(() => build(chain.slice(0, 1), frames, 0));
+		}
+
+		for (const attempt of attempts) {
+			const encoded = encodeBase64(JSON.stringify(attempt()));
+			if (encoded.length <= DETAIL_HEADER_BUDGET) return encoded;
+		}
+		return undefined;
 	} catch {
-		return undefined
+		return undefined;
 	}
+}
+
+function build(
+	chain: readonly unknown[],
+	headFrames: number,
+	causeFrames: number,
+): Record<string, unknown> {
+	const causes = chain.slice(1).map((value) => detailLink(value, causeFrames));
+	return {
+		...detailLink(chain[0], headFrames),
+		...(causes.length > 0 ? { causes } : {}),
+	};
 }
 
 /**
@@ -1359,7 +1439,7 @@ export function toHttpResponse(err: unknown): Response {
 		// surfacing them in logs even though we render their message.
 		if (!isHttp) {
 			flueLog.error(err);
-			const detail = encodeErrorDetail(err);
+			const detail = errorDetailHeader ? encodeErrorDetail(err) : undefined;
 			if (detail) {
 				headers[ERROR_DETAIL_HEADER] = detail;
 			}
@@ -1369,7 +1449,7 @@ export function toHttpResponse(err: unknown): Response {
 	// Non-FlueError: log everything, leak nothing — except the internal detail
 	// header, which exists so the embedding server can report what was lost.
 	flueLog.error(err);
-	const detail = encodeErrorDetail(err);
+	const detail = errorDetailHeader ? encodeErrorDetail(err) : undefined;
 	return new Response(JSON.stringify(GENERIC_INTERNAL), {
 		status: 500,
 		headers: detail ? { ...baseHeaders, [ERROR_DETAIL_HEADER]: detail } : baseHeaders,
