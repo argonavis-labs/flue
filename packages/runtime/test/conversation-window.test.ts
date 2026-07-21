@@ -26,7 +26,7 @@ function conversationWith(turns: number, toolTurn?: number): ReturnType<typeof c
 				{ ...scope, id: `r-a-${turn}-text-start`, type: 'assistant_text_started', messageId: `entry_a_${turn}`, blockId: 'b0', blockIndex: 0 },
 				{ ...scope, id: `r-a-${turn}-text-done`, type: 'assistant_text_completed', messageId: `entry_a_${turn}`, blockId: 'b0', deltaCount: 0 },
 				{ ...scope, id: `r-a-${turn}-call`, type: 'assistant_tool_call', messageId: `entry_a_${turn}`, blockId: 'b1', blockIndex: 1, toolCallId: `call-${turn}`, name: 'lookup', arguments: {} },
-				{ ...scope, id: `r-a-${turn}-done`, type: 'assistant_message_completed', messageId: `entry_a_${turn}`, stopReason: 'toolUse', usage: { input: 1, output: 1 } },
+				{ ...scope, id: `r-a-${turn}-done`, type: 'assistant_message_completed', messageId: `entry_a_${turn}`, stopReason: 'toolUse', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } },
 				{ ...scope, id: `r-o-${turn}`, type: 'tool_outcome', assistantMessageId: `entry_a_${turn}`, toolCallId: `call-${turn}`, toolName: 'lookup', isError: false, content: [{ type: 'text', text: 'ok' }] },
 				{ ...scope, id: `r-c-${turn}`, type: 'tool_results_committed', assistantMessageId: `entry_a_${turn}`, parentId: `entry_a_${turn}`, outcomeIds: [`r-o-${turn}`] },
 			);
