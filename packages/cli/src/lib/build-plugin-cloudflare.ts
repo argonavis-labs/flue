@@ -26,6 +26,7 @@ export class CloudflarePlugin implements BuildPlugin {
 	async generateEntryPoint(ctx: BuildContext): Promise<string> {
 		const { agents, appEntry, channels, cloudflareEntry, workflows } = ctx;
 		const temporaryLocalExposure = JSON.stringify(ctx.temporaryLocalExposure);
+		const errorDetailHeader = JSON.stringify(ctx.errorDetailHeader === true);
 		validateCloudflareAgentNames(ctx);
 		validateCloudflareExportNames(ctx);
 		if (ctx.dbEntry) {
@@ -532,6 +533,7 @@ configureFlueRuntime({
   target: 'cloudflare',
   devMode: import.meta.env.DEV,
   temporaryLocalExposure: ${temporaryLocalExposure},
+  errorDetailHeader: ${errorDetailHeader},
   agents,
   workflows,
   dispatchQueue,

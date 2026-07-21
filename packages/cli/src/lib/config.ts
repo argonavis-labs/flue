@@ -46,6 +46,17 @@ export interface UserFlueConfig {
 	 * do not resolve from {@link UserFlueConfig.root}. Defaults to `<root>/dist`.
 	 */
 	output?: string;
+	/**
+	 * Attach flue's internal error-detail header to defects it would otherwise
+	 * swallow into a bare generic 500, so an embedding server can report the real
+	 * error at its own edge. Defaults to `false`.
+	 *
+	 * Enable this ONLY when an edge you control strips the header before the
+	 * response leaves your service. It carries exactly what the generic 500 body
+	 * withholds — types, messages, stacks, and the `cause` chain — and a response
+	 * header is the one surface that reaches untrusted clients.
+	 */
+	errorDetailHeader?: boolean;
 }
 
 /** Fully resolved configuration consumed by the rest of the CLI. */
@@ -58,6 +69,8 @@ export interface FlueConfig {
 	sourceRoot: string;
 	/** Absolute build-output path. */
 	output: string;
+	/** See {@link UserFlueConfig.errorDetailHeader}. */
+	errorDetailHeader: boolean;
 }
 
 /**
@@ -86,6 +99,7 @@ const UserFlueConfigSchema = v.strictObject({
 	target: v.optional(TargetSchema),
 	root: v.optional(NonEmptyPathSchema),
 	output: v.optional(NonEmptyPathSchema),
+	errorDetailHeader: v.optional(v.boolean()),
 });
 
 // ─── Discovery ──────────────────────────────────────────────────────────────
@@ -316,6 +330,7 @@ export async function resolveConfig(opts: ResolveConfigOptions): Promise<Resolve
 			root,
 			sourceRoot,
 			output,
+			errorDetailHeader: merged.errorDetailHeader === true,
 		},
 	};
 }
