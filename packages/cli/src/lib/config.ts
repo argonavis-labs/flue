@@ -286,6 +286,7 @@ export async function resolveConfig(opts: ResolveConfigOptions): Promise<Resolve
 		target: inline.target ?? fileConfig.target,
 		root: inline.root ?? fileConfig.root,
 		output: inline.output ?? fileConfig.output,
+		errorDetailHeader: inline.errorDetailHeader ?? fileConfig.errorDetailHeader,
 	};
 
 	// Resolve target. The one field with no sensible default — surface a clear
