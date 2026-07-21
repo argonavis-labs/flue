@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { defineAgentProfile, resolveAgentProfile } from '../src/agent-definition.ts';
 import { discoverSessionContext } from '../src/context.ts';
+import { defineAgent } from '../src/index.ts';
+import { createFlueContext, resolveModel } from '../src/internal.ts';
 import type { SessionEnv } from '../src/types.ts';
 
 function createEnv({
@@ -116,7 +118,12 @@ describe('discoverSessionContext() promptFrame', () => {
 		const env = createEnv({ files: workspaceFiles });
 		const definitionSkill = { name: 'triage', description: 'Triage incoming reports.' };
 
-		const context = await discoverSessionContext(env, 'You are the app.', [definitionSkill], 'none');
+		const context = await discoverSessionContext(
+			env,
+			'You are the app.',
+			[definitionSkill],
+			'none',
+		);
 
 		// Nothing framework-owned may leak in: no preamble, AGENTS.md, skills
 		// catalog, date, cwd, or directory listing.
@@ -156,5 +163,46 @@ describe('discoverSessionContext() promptFrame', () => {
 		const context = await discoverSessionContext(env, undefined, [], 'none');
 
 		expect(context.systemPrompt).toBe('');
+	});
+});
+
+describe('initializeRootHarness() promptFrame', () => {
+	it("initializes the harness and session without touching the session env when promptFrame is 'none'", async () => {
+		const untouchable = () => {
+			throw new Error('promptFrame none must not touch the session env');
+		};
+		const env: SessionEnv = {
+			cwd: '/repo',
+			resolvePath: untouchable,
+			exec: untouchable,
+			readFile: untouchable,
+			readFileBuffer: untouchable,
+			writeFile: untouchable,
+			stat: untouchable,
+			readdir: untouchable,
+			exists: untouchable,
+			mkdir: untouchable,
+			rm: untouchable,
+		};
+		const context = createFlueContext({
+			id: 'agent-instance',
+			env: {},
+			agentConfig: {
+				resolveModel: () => resolveModel('anthropic/claude-haiku-4-5'),
+			},
+			createDefaultEnv: async () => env,
+		});
+
+		const harness = await context.initializeRootHarness(
+			defineAgent(() => ({
+				model: 'anthropic/claude-haiku-4-5',
+				instructions: 'You are the app.',
+				promptFrame: 'none',
+			})),
+		);
+		const session = await harness.session('workspace');
+
+		expect(harness.name).toBe('default');
+		expect(session).toBeDefined();
 	});
 });
