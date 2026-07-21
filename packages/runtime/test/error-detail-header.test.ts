@@ -192,3 +192,27 @@ describe('error detail header: size', () => {
 		expect(detail.message.length).toBeGreaterThan(0);
 	});
 });
+
+describe('error detail header: runtime wiring', () => {
+	// A consumer cannot enable this by calling configureErrorRendering itself —
+	// configureFlueRuntime owns error-rendering config and would overwrite it on
+	// the next configuration. The flag has to ride the runtime config.
+	it('is driven by the runtime config, not by a direct call a consumer could lose', async () => {
+		const { configureFlueRuntime, resetFlueRuntimeForTests } =
+			await import('../src/runtime/flue-app.ts');
+		const base = {
+			agents: [],
+			workflows: [],
+			dispatchQueue: {} as never,
+			admitWorkflow: (async () => ({ runId: 'r' })) as never,
+		};
+
+		configureFlueRuntime({ ...base, errorDetailHeader: true } as never);
+		expect(headerOf(toHttpResponse(new TypeError('boom')))).not.toBeNull();
+
+		configureFlueRuntime({ ...base } as never);
+		expect(headerOf(toHttpResponse(new TypeError('boom')))).toBeNull();
+
+		resetFlueRuntimeForTests();
+	});
+});
