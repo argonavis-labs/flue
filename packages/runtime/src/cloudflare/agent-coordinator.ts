@@ -4,6 +4,7 @@ import type {
 	AgentSubmission,
 	AgentSubmissionStore,
 } from '../agent-execution-store.ts';
+import { healIncompatibleAgentStore } from '../agent-store-self-heal.ts';
 import type { FlueContextInternal } from '../client.ts';
 import { ConversationRecordWriter } from '../conversation-writer.ts';
 import { SubmissionAbortedError } from '../errors.ts';
@@ -140,6 +141,10 @@ export function createCloudflareAgentRuntime(
 
 	return {
 		prepare({ storage, className, agentName }) {
+			healIncompatibleAgentStore(
+				storage.sql,
+				storage.transactionSync ? storage.transactionSync.bind(storage) : undefined,
+			);
 			const executionStore = createSqlAgentExecutionStore(storage, className);
 			const conversationStores = createSqlConversationStores(storage);
 			return {
