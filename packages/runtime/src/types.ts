@@ -352,8 +352,10 @@ export interface ImageMemoryConfig {
  *
  * `'full'` (default) prepends the discovered workspace frame — headless
  * preamble, AGENTS.md, skills catalog, date, cwd, directory listing — ahead of
- * the agent's instructions. `'none'` contributes nothing: the instructions are
- * the entire system prompt and the application owns every byte of it.
+ * the agent's instructions. `'none'` contributes nothing and reads nothing
+ * from the session env: the instructions are the entire system prompt, the
+ * application owns every byte of it, and only definition-supplied skills
+ * register (workspace `.agents/skills/` are not discovered).
  */
 export type PromptFrame = 'full' | 'none';
 
