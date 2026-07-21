@@ -69,6 +69,8 @@ export interface BuildContext {
 	dbEntry?: string;
 	log?: 'normal' | 'silent';
 	temporaryLocalExposure?: boolean;
+	/** See `UserFlueConfig.errorDetailHeader`. Seeds the generated runtime. */
+	errorDetailHeader?: boolean;
 }
 
 /**
@@ -148,4 +150,6 @@ export interface BuildOptions {
 	configFile?: string;
 	envFile?: string;
 	temporaryLocalExposure?: boolean;
+	/** See `UserFlueConfig.errorDetailHeader`. Seeds the generated runtime. */
+	errorDetailHeader?: boolean;
 }

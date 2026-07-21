@@ -270,6 +270,7 @@ export function createBuildContext(options: BuildOptions & { output: string }): 
 		cloudflareEntry: discoverOptionalEntry(sourceRoot, 'cloudflare'),
 		dbEntry: discoverOptionalEntry(sourceRoot, 'db'),
 		temporaryLocalExposure: options.temporaryLocalExposure === true,
+		errorDetailHeader: options.errorDetailHeader === true,
 	};
 }
 

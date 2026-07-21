@@ -640,6 +640,7 @@ async function buildCommand(args: BuildArgs) {
 			sourceRoot: cfg.sourceRoot,
 			output: cfg.output,
 			target: cfg.target,
+			errorDetailHeader: cfg.errorDetailHeader,
 			configFile: configPath,
 			envFile: fs.existsSync(envLoader.file) ? envLoader.file : undefined,
 		});
@@ -679,6 +680,7 @@ async function devCommand(args: DevArgs) {
 			version: readCliVersion(),
 			output: cfg.output,
 			target: cfg.target,
+			errorDetailHeader: cfg.errorDetailHeader,
 			port: args.port || undefined,
 			strictPort: args.port !== 0,
 			envFile: envLoader.file,
@@ -872,7 +874,11 @@ async function run(args: RunArgs) {
 		);
 		presenter.flush();
 		if (completed.kind === 'workflow' && !runIdShown) row('run', completed.runId);
-		if (completed.kind === 'workflow' && completed.result !== undefined && completed.result !== null) {
+		if (
+			completed.kind === 'workflow' &&
+			completed.result !== undefined &&
+			completed.result !== null
+		) {
 			console.error('');
 			console.log(JSON.stringify(completed.result));
 		}
