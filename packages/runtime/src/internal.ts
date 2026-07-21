@@ -40,16 +40,15 @@ export { createSqlConversationStores } from './cloudflare/agent-execution-store.
 // Conversation wire types projected onto the HTTP `history`/`updates` views.
 // Exposed here only so the SDK can pin its public projection types to the
 // runtime's emitted shapes via a compile-time assignability test.
-export type {
-	AgentConversationSnapshot,
-	ConversationStreamChunk,
-} from './conversation-public.ts';
-export { RuntimeUnavailableError, toHttpResponse } from './errors.ts';
-export type { InstrumentationOwner } from './instrumentation.ts';
+export type { AgentConversationSnapshot, ConversationStreamChunk } from './conversation-public.ts';
 export {
-	createInstrumentationOwner,
-	runWithInstrumentationOwner,
-} from './instrumentation.ts';
+	encodeErrorDetail,
+	ERROR_DETAIL_HEADER,
+	RuntimeUnavailableError,
+	toHttpResponse,
+} from './errors.ts';
+export type { InstrumentationOwner } from './instrumentation.ts';
+export { createInstrumentationOwner, runWithInstrumentationOwner } from './instrumentation.ts';
 export { createNodeAgentCoordinator, createNodeDispatchQueue } from './node/agent-coordinator.ts';
 export { InMemoryRunStore } from './node/run-store.ts';
 export type { AgentSubmissionInput } from './runtime/agent-submissions.ts';
@@ -137,10 +136,7 @@ export type {
 	RunStore,
 	WorkflowRunPointer,
 } from './runtime/run-store.ts';
-export type {
-	RuntimeActivityGate,
-	RuntimeActivityLease,
-} from './runtime/runtime-activity-gate.ts';
+export type { RuntimeActivityGate, RuntimeActivityLease } from './runtime/runtime-activity-gate.ts';
 export { createRuntimeActivityGate } from './runtime/runtime-activity-gate.ts';
 
 export { bashFactoryToSessionEnv } from './sandbox.ts';
