@@ -112,16 +112,42 @@ describe('discoverSessionContext() promptFrame', () => {
 		expect(context.systemPrompt).not.toBe('You are the app.');
 	});
 
-	it("makes the instructions the entire system prompt under 'none' while still discovering skills", async () => {
+	it("makes the instructions the entire system prompt under 'none' and skips workspace discovery", async () => {
 		const env = createEnv({ files: workspaceFiles });
+		const definitionSkill = { name: 'triage', description: 'Triage incoming reports.' };
 
-		const context = await discoverSessionContext(env, 'You are the app.', [], 'none');
+		const context = await discoverSessionContext(env, 'You are the app.', [definitionSkill], 'none');
 
 		// Nothing framework-owned may leak in: no preamble, AGENTS.md, skills
 		// catalog, date, cwd, or directory listing.
 		expect(context.systemPrompt).toBe('You are the app.');
-		// Skills stay discovered and registered so activate_skill keeps working.
-		expect(Object.keys(context.skills)).toEqual(['review']);
+		// Definition skills still register (no I/O); workspace skills are not
+		// discovered — the application owns the whole skill surface.
+		expect(Object.keys(context.skills)).toEqual(['triage']);
+	});
+
+	it("never touches the session env when promptFrame is 'none'", async () => {
+		const untouchable = () => {
+			throw new Error('promptFrame none must not touch the session env');
+		};
+		const env: SessionEnv = {
+			cwd: '/repo',
+			resolvePath: untouchable,
+			exec: untouchable,
+			readFile: untouchable,
+			readFileBuffer: untouchable,
+			writeFile: untouchable,
+			stat: untouchable,
+			readdir: untouchable,
+			exists: untouchable,
+			mkdir: untouchable,
+			rm: untouchable,
+		};
+
+		const context = await discoverSessionContext(env, 'You are the app.', [], 'none');
+
+		expect(context.systemPrompt).toBe('You are the app.');
+		expect(Object.keys(context.skills)).toEqual([]);
 	});
 
 	it("returns an empty system prompt under 'none' when the profile has no instructions", async () => {
