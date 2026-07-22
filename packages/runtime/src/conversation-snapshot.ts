@@ -24,7 +24,7 @@ import type {
  *   snapshot then reads as a miss and the log rebuilds the new shape.
  * - `decodeReducedState` throws on anything unexpected rather than guessing.
  */
-export const SNAPSHOT_VERSION = 1;
+export const SNAPSHOT_VERSION = 2;
 
 interface WireEntry {
 	entry: ReducedEntry;

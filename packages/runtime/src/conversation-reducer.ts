@@ -111,6 +111,8 @@ export interface InProgressAssistantMessage {
 	modelInfo: AssistantMessageStartedRecord['modelInfo'];
 	blocks: Map<string, ReducedAssistantBlock>;
 	blockIndexes: Set<number>;
+	/** Ids of this message's streaming records, pruned from `recordIndex` on completion (RUN-5441). */
+	streamRecordIds: string[];
 }
 
 /**
@@ -185,7 +187,8 @@ export interface ReducedInstanceState {
 	recordsThroughOffset: string;
 	conversations: Map<string, ReducedConversationState>;
 	conversationScopes: Map<string, string>;
-	/** Every applied record's offset + content fingerprint — never the body. */
+	/** Applied records' offsets + content fingerprints — never bodies. Streaming
+	 * lifecycle ids are pruned once their assistant settles (RUN-5441). */
 	recordIndex: Map<string, AppliedRecordIndex>;
 	/**
 	 * Settlement records stay resident whole: they are tiny (one per
@@ -272,6 +275,7 @@ function cloneReducedInstanceState(state: ReducedInstanceState): ReducedInstance
 									]),
 								),
 								blockIndexes: new Set(message.blockIndexes),
+								streamRecordIds: [...message.streamRecordIds],
 							},
 						]),
 					),
@@ -447,6 +451,7 @@ export function applyConversationRecord(
 				modelInfo: record.modelInfo,
 				blocks: new Map(),
 				blockIndexes: new Set(),
+				streamRecordIds: [record.id],
 			});
 			break;
 		case 'assistant_text_started': {
@@ -522,6 +527,9 @@ export function applyConversationRecord(
 			} as AssistantMessage;
 			assertAssistantCompletionAppend(conversation, record, inProgress);
 			conversation.inProgressMessages.delete(record.messageId);
+			// Streaming ids absorb redelivery only while in flight; pruning them here
+			// bounds recordIndex, the checkpoint's dominant growth term (RUN-5441).
+			for (const id of inProgress.streamRecordIds) state.recordIndex.delete(id);
 			commitEntry(conversation, {
 				type: 'message',
 				id: record.messageId,
@@ -1046,6 +1054,7 @@ function startBlock(
 	}
 	message.blocks.set(block.blockId, block);
 	message.blockIndexes.add(block.blockIndex);
+	message.streamRecordIds.push(record.id);
 }
 
 function appendDelta(
@@ -1064,6 +1073,7 @@ function appendDelta(
 		fail(record, `Expected delta sequence ${block.deltas.length}, received ${record.sequence}.`);
 	}
 	block.deltas.push(record.delta);
+	message.streamRecordIds.push(record.id);
 }
 
 function completeBlock(
@@ -1098,6 +1108,7 @@ function completeBlock(
 		fail(record, `Completion expected ${record.deltaCount} deltas but replay has ${block.deltas.length}.`);
 	}
 	block.completed = true;
+	message.streamRecordIds.push(record.id);
 	return block;
 }
 
