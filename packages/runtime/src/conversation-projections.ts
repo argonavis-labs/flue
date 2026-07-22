@@ -201,6 +201,15 @@ export type CanonicalSubmissionState =
 	| SubmissionState
 	| { kind: 'interrupted_partial'; assistant: AssistantMessage; messageId: string };
 
+/** The interrupted-partial selector shared by classification and stream recovery. */
+export function findLeafInProgressPartial(
+	conversation: ReducedConversationState,
+): InProgressAssistantMessage | undefined {
+	return [...conversation.inProgressMessages.values()].find(
+		(message) => message.parentId === conversation.activeLeafId && message.blocks.size > 0,
+	);
+}
+
 export function classifyConversationSubmission(
 	conversation: ReducedConversationState,
 	inputEntryId: string,
@@ -209,9 +218,7 @@ export function classifyConversationSubmission(
 	const path = getActiveConversationPath(conversation);
 	const inputIndex = path.findIndex((entry) => entry.id === inputEntryId);
 	if (inputIndex === -1) return classifySubmissionState(undefined, options);
-	const inProgress = [...conversation.inProgressMessages.values()].find(
-		(message) => message.parentId === conversation.activeLeafId && message.blocks.size > 0,
-	);
+	const inProgress = findLeafInProgressPartial(conversation);
 	if (inProgress) {
 		return {
 			kind: 'interrupted_partial',

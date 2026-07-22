@@ -149,7 +149,7 @@ function makeContextFactory(
 const AGENT = defineAgent(() => ({ model: 'unused/reviewer' }));
 
 describe('reconcileInterruptedSubmission()', () => {
-	it('guards the replacement attempt before recovery appends', async () => {
+	it('guards the replacement attempt when recovery appends its records', async () => {
 		const provider = createProvider();
 		const store = await openExecutionStore();
 		const writer = await ConversationRecordWriter.create({
@@ -246,6 +246,110 @@ describe('reconcileInterruptedSubmission()', () => {
 				},
 			),
 		).rejects.toThrow('injected recovery append failure');
+
+		const replaced = await store.submissions.getSubmission('direct-1');
+		expect(released).toEqual([
+			{ submissionId: 'direct-1', attemptId: replaced?.attemptId },
+		]);
+		expect(await store.submissions.listAttemptMarkers()).toEqual([]);
+	});
+
+	it('releases the attempt guard when the input-marker repair throws', async () => {
+		const provider = createProvider();
+		const store = await openExecutionStore();
+		const writer = await ConversationRecordWriter.create({
+			store: new InMemoryConversationStreamStore(),
+			path: 'agents/assistant/agent-1',
+			identity: { agentName: 'assistant', instanceId: 'agent-1' },
+			producerId: 'producer-1',
+		});
+		await seedContinuableConversation(writer, provider);
+		await store.submissions.admitDirect(INPUT);
+		await store.submissions.markSubmissionCanonicalReady('direct-1');
+		await store.submissions.claimSubmission({
+			submissionId: 'direct-1',
+			attemptId: 'attempt-1',
+			ownerId: 'test-owner',
+			leaseExpiresAt: 0,
+		});
+		const submission = await store.submissions.getSubmission('direct-1');
+		if (!submission) throw new Error('Expected a running submission.');
+		const failingSubmissions = new Proxy(store.submissions, {
+			get(target, property) {
+				if (property === 'markSubmissionInputApplied') {
+					return () => Promise.reject(new Error('injected input-marker failure'));
+				}
+				const value = Reflect.get(target, property, target);
+				return typeof value === 'function' ? value.bind(target) : value;
+			},
+		});
+		const released: SubmissionAttemptRef[] = [];
+
+		await expect(
+			reconcileInterruptedSubmission(
+				failingSubmissions,
+				submission,
+				AGENT,
+				makeContextFactory(provider, writer),
+				{ ownerId: 'test-owner', leaseExpiresAt: 0 },
+				writer,
+				{
+					acquire: (attempt) => store.submissions.insertAttemptMarker(attempt),
+					release: async (attempt) => {
+						released.push(attempt);
+						await store.submissions.deleteAttemptMarker(attempt);
+					},
+				},
+			),
+		).rejects.toThrow('injected input-marker failure');
+
+		const replaced = await store.submissions.getSubmission('direct-1');
+		expect(replaced?.attemptId).not.toBe('attempt-1');
+		expect(released).toEqual([
+			{ submissionId: 'direct-1', attemptId: replaced?.attemptId },
+		]);
+		expect(await store.submissions.listAttemptMarkers()).toEqual([]);
+	});
+
+	it('releases the attempt guard when creating the recovery context throws', async () => {
+		const provider = createProvider();
+		const store = await openExecutionStore();
+		const writer = await ConversationRecordWriter.create({
+			store: new InMemoryConversationStreamStore(),
+			path: 'agents/assistant/agent-1',
+			identity: { agentName: 'assistant', instanceId: 'agent-1' },
+			producerId: 'producer-1',
+		});
+		await seedContinuableConversation(writer, provider);
+		await seedRunningSubmission(store);
+		const submission = await store.submissions.getSubmission('direct-1');
+		if (!submission) throw new Error('Expected a running submission.');
+		const contextFactory = makeContextFactory(provider, writer);
+		let contextCalls = 0;
+		const released: SubmissionAttemptRef[] = [];
+
+		await expect(
+			reconcileInterruptedSubmission(
+				store.submissions,
+				submission,
+				AGENT,
+				(dispatchId) => {
+					contextCalls += 1;
+					// The first context serves the inspection pass; the second is the recovery context.
+					if (contextCalls > 1) throw new Error('injected context failure');
+					return contextFactory(dispatchId);
+				},
+				{ ownerId: 'test-owner', leaseExpiresAt: 0 },
+				writer,
+				{
+					acquire: (attempt) => store.submissions.insertAttemptMarker(attempt),
+					release: async (attempt) => {
+						released.push(attempt);
+						await store.submissions.deleteAttemptMarker(attempt);
+					},
+				},
+			),
+		).rejects.toThrow('injected context failure');
 
 		const replaced = await store.submissions.getSubmission('direct-1');
 		expect(released).toEqual([

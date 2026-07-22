@@ -381,10 +381,17 @@ export async function reconcileInterruptedSubmission(
 				attemptId: replacement.attemptId,
 			};
 			await guard?.acquire(replacementAttempt);
-			if (!(await submissions.markSubmissionInputApplied(replacementAttempt, {
-				maxRetry: replacement.maxRetry,
-				timeoutAt: replacement.timeoutAt,
-			}))) {
+			let applied: boolean;
+			try {
+				applied = await submissions.markSubmissionInputApplied(replacementAttempt, {
+					maxRetry: replacement.maxRetry,
+					timeoutAt: replacement.timeoutAt,
+				});
+			} catch (error) {
+				await guard?.release(replacementAttempt);
+				throw error;
+			}
+			if (!applied) {
 				await guard?.release(replacementAttempt);
 				return undefined;
 			}
@@ -431,9 +438,9 @@ export async function reconcileInterruptedSubmission(
 		};
 		await guard?.acquire(replacementAttempt);
 		if (state === 'continuable') {
-			const recoveryCtx = createContext(dispatchId);
-			if (submission.kind === 'direct') recoveryCtx.setSubmissionId?.(submission.submissionId);
 			try {
+				const recoveryCtx = createContext(dispatchId);
+				if (submission.kind === 'direct') recoveryCtx.setSubmissionId?.(submission.submissionId);
 				await createAgentSubmissionSessionHandler(agent, input, (s) =>
 					s.recoverInterruptedStream(replacementAttempt),
 				)(recoveryCtx);

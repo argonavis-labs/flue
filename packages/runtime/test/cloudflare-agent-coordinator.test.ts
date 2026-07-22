@@ -347,7 +347,7 @@ describe('createCloudflareAgentRuntime()', () => {
 		});
 	});
 
-	it('registers the replacement attempt marker before recovery runs', async () => {
+	it('registers the replacement attempt marker when recovery runs', async () => {
 		const { storage } = makeFakeSql();
 		let executionStore: AgentExecutionStore | undefined;
 		let markersDuringRecovery: Array<{ submissionId: string; attemptId: string }> = [];

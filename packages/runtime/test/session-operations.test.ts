@@ -744,7 +744,7 @@ describe('session.task()', () => {
 		expect(writer.offset).toBe(offset);
 	});
 
-	it('recovers a leaf partial whose submission stamp differs from the recovering attempt', async () => {
+	it('recovers a leaf partial when its submission stamp differs from the recovering attempt', async () => {
 		const provider = createProvider([{ id: 'reviewer' }]);
 		const store = new InMemoryConversationStreamStore();
 		const writer = await ConversationRecordWriter.create({
@@ -855,7 +855,7 @@ describe('session.task()', () => {
 		expect(writer.offset).not.toBe(offset);
 	});
 
-	it('materializes a surviving leaf partial at resume instead of completing without a dispatch', async () => {
+	it('materializes a surviving leaf partial when resume would otherwise complete without a dispatch', async () => {
 		const provider = createProvider([{ id: 'reviewer' }]);
 		let modelCalls = 0;
 		provider.setResponses([() => {

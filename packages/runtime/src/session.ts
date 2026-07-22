@@ -53,6 +53,7 @@ import { isWorkspaceSkill, skillsDirIn } from './context.ts';
 import {
 	aggregateConversationUsageSince,
 	classifyConversationSubmission,
+	findLeafInProgressPartial,
 	getActiveConversationPathSince,
 	getLatestConversationCompaction,
 	projectConversationModelContext,
@@ -1301,17 +1302,13 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		turnId?: string,
 	): Promise<boolean> {
 		{
-			// Submission-agnostic: a top-level submission resume passes its attempt
-			// (records are stamped and the partial is discovered by submissionId);
-			// an in-process subagent reattach passes none — the child's records have
-			// no submissionId, so discovery matches on the conversation's single
+			// Discovery is stamp-first with a leaf-parented fallback when stamps
+			// diverge; a subagent reattach passes no attempt and matches the single
 			// undefined-submission in-progress/aborted message.
 			this.activeSubmissionId = attempt?.submissionId;
 			this.activeSubmissionAttemptId = attempt?.attemptId;
-			// `turnId` only cosmetically stamps the appended recovery records;
-			// discovery of the partial to recover is by submissionId. Canonical-
-			// only recovery passes no turnId (the journal that once carried it is
-			// gone), which is harmless.
+			// `turnId` only cosmetically stamps the recovery records; canonical-only
+			// recovery passes none, which is harmless.
 			this.activeTurnId = turnId;
 			let inProgress = await this.conversationWriter.findInProgressAssistant(
 				this.conversationId,
@@ -1321,12 +1318,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				// Submissions serialize per conversation, so a leaf-parented live
 				// stream belongs to this lane even under another lineage's stamp.
 				const conversation = await this.conversationWriter.getConversation(this.conversationId);
-				inProgress = conversation
-					? [...conversation.inProgressMessages.values()].find(
-						(message) =>
-							message.parentId === conversation.activeLeafId && message.blocks.size > 0,
-					)
-					: undefined;
+				inProgress = conversation ? findLeafInProgressPartial(conversation) : undefined;
 			}
 			if (!inProgress) {
 				const conversation = await this.conversationWriter.getConversation(this.conversationId);
@@ -3260,10 +3252,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	 * trailing tool batch if needed, then drive the model turn(s). Conversation-
 	 * level and submission-agnostic — used both by the top-level submission resume
 	 * (`runPersistedContextInput`) and by an in-process subagent reattach
-	 * (`resumeReattachedChild`). Assumes any interrupted partial stream has
-	 * already been materialized (the coordinator does this for submissions via
-	 * `recoverInterruptedStream`; the child reattach calls it directly), so the
-	 * classified state is never `interrupted_partial` here.
+	 * (`resumeReattachedChild`). An interrupted partial stream is normally
+	 * materialized before this runs (the coordinator via
+	 * `recoverInterruptedStream`; the child reattach calls it directly); one
+	 * that survives to classification is materialized here before dispatch.
 	 */
 	private async resumeConversationToCompletion(options: {
 		inputEntryId: string;
