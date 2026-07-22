@@ -1313,10 +1313,21 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			// only recovery passes no turnId (the journal that once carried it is
 			// gone), which is harmless.
 			this.activeTurnId = turnId;
-			const inProgress = await this.conversationWriter.findInProgressAssistant(
+			let inProgress = await this.conversationWriter.findInProgressAssistant(
 				this.conversationId,
 				attempt?.submissionId,
 			);
+			if (!inProgress && attempt) {
+				// Submissions serialize per conversation, so a leaf-parented live
+				// stream belongs to this lane even under another lineage's stamp.
+				const conversation = await this.conversationWriter.getConversation(this.conversationId);
+				inProgress = conversation
+					? [...conversation.inProgressMessages.values()].find(
+						(message) =>
+							message.parentId === conversation.activeLeafId && message.blocks.size > 0,
+					)
+					: undefined;
+			}
 			if (!inProgress) {
 				const conversation = await this.conversationWriter.getConversation(this.conversationId);
 				const partial = conversation
@@ -3259,11 +3270,33 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		errorLabel: string;
 		signal: AbortSignal;
 	}): Promise<void> {
-		const state = classifyConversationSubmission(
+		let state = classifyConversationSubmission(
 			await this.requireConversation(),
 			options.inputEntryId,
 			{ contextWindow: this.agentLoop.state.model.contextWindow ?? 0 },
 		);
+		if (state.kind === 'interrupted_partial') {
+			// Completing without a dispatch would silently drop the turn's work.
+			await this.recoverInterruptedStream(
+				this.activeSubmissionId && this.activeSubmissionAttemptId
+					? {
+							submissionId: this.activeSubmissionId,
+							attemptId: this.activeSubmissionAttemptId,
+						}
+					: undefined,
+			);
+			state = classifyConversationSubmission(
+				await this.requireConversation(),
+				options.inputEntryId,
+				{ contextWindow: this.agentLoop.state.model.contextWindow ?? 0 },
+			);
+			if (state.kind === 'interrupted_partial') {
+				throw new OperationFailedError({
+					operation: options.errorLabel,
+					reason: 'an interrupted partial stream survived materialization',
+				});
+			}
+		}
 		switch (state.kind) {
 			case 'absent':
 				// Unreachable: `following` is only classified for a found input

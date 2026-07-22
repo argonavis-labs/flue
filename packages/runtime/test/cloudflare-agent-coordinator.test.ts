@@ -106,6 +106,7 @@ function makeInstance(storage: ReturnType<typeof makeFakeSql>['storage'], events
 function makeRecoveryContext(options: {
 	inspection?: AgentSubmissionInspection;
 	events?: string[];
+	recoverInterruptedStream?: () => Promise<boolean>;
 }) {
 	const terminalRecords: AgentSubmissionInterruption[] = [];
 	const session = {
@@ -120,6 +121,9 @@ function makeRecoveryContext(options: {
 			terminalRecords.push(input);
 			return [];
 		},
+		...(options.recoverInterruptedStream
+			? { recoverInterruptedStream: options.recoverInterruptedStream }
+			: {}),
 	};
 	const ctx = {
 		async initializeRootHarness() {
@@ -341,6 +345,48 @@ describe('createCloudflareAgentRuntime()', () => {
 			status: 'running',
 			attemptId: 'attempt-1',
 		});
+	});
+
+	it('registers the replacement attempt marker before recovery runs', async () => {
+		const { storage } = makeFakeSql();
+		let executionStore: AgentExecutionStore | undefined;
+		let markersDuringRecovery: Array<{ submissionId: string; attemptId: string }> = [];
+		const recovery = makeRecoveryContext({
+			inspection: 'continuable',
+			recoverInterruptedStream: async () => {
+				if (!executionStore) throw new Error('Execution store not prepared.');
+				markersDuringRecovery = (await executionStore.submissions.listAttemptMarkers()).map(
+					({ submissionId, attemptId }) => ({ submissionId, attemptId }),
+				);
+				return true;
+			},
+		});
+		const runtime = makeRuntime({
+			createdAgent: {} as never,
+			createContext: () => recovery.ctx,
+		});
+		const instance = makeInstance(storage);
+		executionStore = prepare(runtime, instance);
+		await executionStore.submissions.admitDirect(directInput());
+		await executionStore.submissions.markSubmissionCanonicalReady('direct-1');
+		await executionStore.submissions.claimSubmission({
+			submissionId: 'direct-1',
+			attemptId: 'attempt-1',
+			ownerId: 'test-owner',
+			leaseExpiresAt: 0,
+		});
+		await executionStore.submissions.markSubmissionInputApplied(
+			{ submissionId: 'direct-1', attemptId: 'attempt-1' },
+			{ maxRetry: 5, timeoutAt: Date.now() + 60_000 },
+		);
+
+		await runtime.onStart(instance, () => {});
+
+		const replaced = await executionStore.submissions.getSubmission('direct-1');
+		expect(replaced?.attemptId).not.toBe('attempt-1');
+		expect(markersDuringRecovery).toEqual([
+			{ submissionId: 'direct-1', attemptId: replaced?.attemptId },
+		]);
 	});
 
 	it('reconciles running attempts when the attempt marker is stale', async () => {
