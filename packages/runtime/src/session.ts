@@ -1322,6 +1322,8 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			}
 			if (!inProgress) {
 				const conversation = await this.conversationWriter.getConversation(this.conversationId);
+				// Stamp-strict on purpose: this findLast scans the whole path, so a
+				// lenient match could resurrect another submission's user-aborted turn.
 				const partial = conversation
 					? getActiveConversationPath(conversation).findLast(
 						(entry) => entry.type === 'message' &&
