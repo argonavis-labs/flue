@@ -1331,12 +1331,17 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				if (!partial) return false;
 				const continuedEntryId = `entry_recovery_${partial.id}_stream_continued`;
 				if (
-					conversation?.activeLeafId === continuedEntryId &&
-					conversation.entries.has(`entry_recovery_${partial.id}_stream_interrupted`) &&
+					conversation?.entries.has(`entry_recovery_${partial.id}_stream_interrupted`) &&
 					conversation.entries.has(continuedEntryId)
 				) {
-					await this.rebuildCanonicalContext();
-					return true;
+					// Re-appending would reuse the recovery record ids with fresh
+					// envelopes, which the reducer rejects as contract violations.
+					if (conversation.activeLeafId === continuedEntryId) {
+						await this.rebuildCanonicalContext();
+						return true;
+					}
+					// Recovered and advanced past: nothing left to recover.
+					return false;
 				}
 				let parentId = partial.id;
 				const records: ConversationRecord[] = [];

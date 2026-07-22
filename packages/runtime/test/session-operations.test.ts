@@ -585,6 +585,165 @@ describe('session.task()', () => {
 		expect(writer.offset).toBe(offset);
 	});
 
+	it('converges recovery as a no-op when the recovered ghost is no longer the conversation leaf', async () => {
+		const provider = createProvider([{ id: 'reviewer' }]);
+		const store = new InMemoryConversationStreamStore();
+		const writer = await ConversationRecordWriter.create({
+			store,
+			path: 'agents/assistant/reinterrupted-instance',
+			identity: { agentName: 'assistant', instanceId: 'reinterrupted-instance' },
+			producerId: 'producer-1',
+		});
+		const timestamp = new Date().toISOString();
+		const envelope = {
+			v: 1 as const,
+			conversationId: 'conversation-reinterrupted',
+			harness: 'default',
+			session: 'default',
+			timestamp,
+			submissionId: 'submission-reinterrupted',
+		};
+		await writer.append([
+			{
+				v: 1,
+				id: 'record-created',
+				type: 'conversation_created',
+				kind: 'root',
+				conversationId: 'conversation-reinterrupted',
+				harness: 'default',
+				session: 'default',
+				timestamp,
+				affinityKey: 'affinity-reinterrupted',
+				createdAt: timestamp,
+			},
+			{
+				...envelope,
+				id: 'record-user',
+				type: 'user_message',
+				attemptId: 'attempt-1',
+				messageId: 'entry_user',
+				parentId: null,
+				content: [{ type: 'text', text: 'Continue' }],
+			},
+			{
+				...envelope,
+				id: 'record-assistant-started',
+				type: 'assistant_message_started',
+				attemptId: 'attempt-1',
+				turnId: 'turn-1',
+				messageId: 'entry_partial',
+				parentId: 'entry_user',
+				modelInfo: { api: 'faux', provider: provider.getModel().provider, model: 'reviewer' },
+			},
+			{
+				...envelope,
+				id: 'record-text-started',
+				type: 'assistant_text_started',
+				attemptId: 'attempt-1',
+				messageId: 'entry_partial',
+				blockId: 'block_partial',
+				blockIndex: 0,
+			},
+			{
+				...envelope,
+				id: 'record-text-delta',
+				type: 'assistant_text_delta',
+				attemptId: 'attempt-1',
+				messageId: 'entry_partial',
+				blockId: 'block_partial',
+				sequence: 0,
+				delta: 'Partial',
+			},
+		], { submission: { submissionId: 'submission-reinterrupted', attemptId: 'attempt-1' } });
+		const ctx = createFlueContext({
+			id: 'reinterrupted-instance',
+			env: {},
+			agentConfig: { resolveModel: () => provider.getModel('reviewer') },
+			createDefaultEnv: async () => createNoopSessionEnv(),
+			conversationWriter: writer,
+			attachmentStore: new InMemoryAttachmentStore(),
+		});
+		const harness = await ctx.initializeRootHarness(
+			defineAgent(() => ({ model: `${provider.getModel().provider}/reviewer` })),
+		);
+		const internal = getInternalSession(await harness.session());
+		if (!internal) throw new Error('Expected internal session.');
+
+		expect(await internal.recoverInterruptedStream({
+			submissionId: 'submission-reinterrupted',
+			attemptId: 'attempt-2',
+		}, 'turn-1')).toBe(true);
+
+		// The turn resumes past the recovered ghost and completes, so the
+		// conversation leaf moves beyond the recovery's stream_continued signal.
+		await writer.append([
+			{
+				...envelope,
+				id: 'record-resumed-started',
+				type: 'assistant_message_started',
+				attemptId: 'attempt-2',
+				turnId: 'turn-2',
+				messageId: 'entry_resumed',
+				parentId: 'entry_recovery_entry_partial_stream_continued',
+				modelInfo: { api: 'faux', provider: provider.getModel().provider, model: 'reviewer' },
+			},
+			{
+				...envelope,
+				id: 'record-resumed-text-started',
+				type: 'assistant_text_started',
+				attemptId: 'attempt-2',
+				messageId: 'entry_resumed',
+				blockId: 'block_resumed',
+				blockIndex: 0,
+			},
+			{
+				...envelope,
+				id: 'record-resumed-text-delta',
+				type: 'assistant_text_delta',
+				attemptId: 'attempt-2',
+				messageId: 'entry_resumed',
+				blockId: 'block_resumed',
+				sequence: 0,
+				delta: 'Resumed answer.',
+			},
+			{
+				...envelope,
+				id: 'record-resumed-text-completed',
+				type: 'assistant_text_completed',
+				attemptId: 'attempt-2',
+				messageId: 'entry_resumed',
+				blockId: 'block_resumed',
+				deltaCount: 1,
+			},
+			{
+				...envelope,
+				id: 'record-resumed-completed',
+				type: 'assistant_message_completed',
+				attemptId: 'attempt-2',
+				messageId: 'entry_resumed',
+				stopReason: 'stop',
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+			},
+		], { submission: { submissionId: 'submission-reinterrupted', attemptId: 'attempt-2' } });
+
+		// A second interruption that left no durable partial has nothing to
+		// recover: the ghost behind the leaf was already recovered, so this
+		// must no-op instead of re-appending its recovery records.
+		const offset = writer.offset;
+		expect(await internal.recoverInterruptedStream({
+			submissionId: 'submission-reinterrupted',
+			attemptId: 'attempt-3',
+		})).toBe(false);
+		expect(writer.offset).toBe(offset);
+	});
+
 	it('correlates a model task tool call with its task start observation', async () => {
 		const provider = createProvider([{ id: 'reviewer' }]);
 		const toolCallId = `tool:${crypto.randomUUID()}`;
