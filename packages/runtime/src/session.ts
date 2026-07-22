@@ -53,6 +53,7 @@ import { isWorkspaceSkill, skillsDirIn } from './context.ts';
 import {
 	aggregateConversationUsageSince,
 	classifyConversationSubmission,
+	findLeafInProgressPartial,
 	getActiveConversationPathSince,
 	getLatestConversationCompaction,
 	projectConversationModelContext,
@@ -1301,24 +1302,28 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		turnId?: string,
 	): Promise<boolean> {
 		{
-			// Submission-agnostic: a top-level submission resume passes its attempt
-			// (records are stamped and the partial is discovered by submissionId);
-			// an in-process subagent reattach passes none — the child's records have
-			// no submissionId, so discovery matches on the conversation's single
+			// Discovery is stamp-first with a leaf-parented fallback when stamps
+			// diverge; a subagent reattach passes no attempt and matches the single
 			// undefined-submission in-progress/aborted message.
 			this.activeSubmissionId = attempt?.submissionId;
 			this.activeSubmissionAttemptId = attempt?.attemptId;
-			// `turnId` only cosmetically stamps the appended recovery records;
-			// discovery of the partial to recover is by submissionId. Canonical-
-			// only recovery passes no turnId (the journal that once carried it is
-			// gone), which is harmless.
+			// `turnId` only cosmetically stamps the recovery records; canonical-only
+			// recovery passes none, which is harmless.
 			this.activeTurnId = turnId;
-			const inProgress = await this.conversationWriter.findInProgressAssistant(
+			let inProgress = await this.conversationWriter.findInProgressAssistant(
 				this.conversationId,
 				attempt?.submissionId,
 			);
+			if (!inProgress && attempt) {
+				// Submissions serialize per conversation, so a leaf-parented live
+				// stream belongs to this lane even under another lineage's stamp.
+				const conversation = await this.conversationWriter.getConversation(this.conversationId);
+				inProgress = conversation ? findLeafInProgressPartial(conversation) : undefined;
+			}
 			if (!inProgress) {
 				const conversation = await this.conversationWriter.getConversation(this.conversationId);
+				// Stamp-strict on purpose: this findLast scans the whole path, so a
+				// lenient match could resurrect another submission's user-aborted turn.
 				const partial = conversation
 					? getActiveConversationPath(conversation).findLast(
 						(entry) => entry.type === 'message' &&
@@ -1331,12 +1336,17 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				if (!partial) return false;
 				const continuedEntryId = `entry_recovery_${partial.id}_stream_continued`;
 				if (
-					conversation?.activeLeafId === continuedEntryId &&
-					conversation.entries.has(`entry_recovery_${partial.id}_stream_interrupted`) &&
+					conversation?.entries.has(`entry_recovery_${partial.id}_stream_interrupted`) &&
 					conversation.entries.has(continuedEntryId)
 				) {
-					await this.rebuildCanonicalContext();
-					return true;
+					// Re-appending would reuse the recovery record ids with fresh
+					// envelopes, which the reducer rejects as contract violations.
+					if (conversation.activeLeafId === continuedEntryId) {
+						await this.rebuildCanonicalContext();
+						return true;
+					}
+					// Recovered and advanced past: nothing left to recover.
+					return false;
 				}
 				let parentId = partial.id;
 				const records: ConversationRecord[] = [];
@@ -3244,21 +3254,43 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	 * trailing tool batch if needed, then drive the model turn(s). Conversation-
 	 * level and submission-agnostic — used both by the top-level submission resume
 	 * (`runPersistedContextInput`) and by an in-process subagent reattach
-	 * (`resumeReattachedChild`). Assumes any interrupted partial stream has
-	 * already been materialized (the coordinator does this for submissions via
-	 * `recoverInterruptedStream`; the child reattach calls it directly), so the
-	 * classified state is never `interrupted_partial` here.
+	 * (`resumeReattachedChild`). An interrupted partial stream is normally
+	 * materialized before this runs (the coordinator via
+	 * `recoverInterruptedStream`; the child reattach calls it directly); one
+	 * that survives to classification is materialized here before dispatch.
 	 */
 	private async resumeConversationToCompletion(options: {
 		inputEntryId: string;
 		errorLabel: string;
 		signal: AbortSignal;
 	}): Promise<void> {
-		const state = classifyConversationSubmission(
+		let state = classifyConversationSubmission(
 			await this.requireConversation(),
 			options.inputEntryId,
 			{ contextWindow: this.agentLoop.state.model.contextWindow ?? 0 },
 		);
+		if (state.kind === 'interrupted_partial') {
+			// Completing without a dispatch would silently drop the turn's work.
+			await this.recoverInterruptedStream(
+				this.activeSubmissionId && this.activeSubmissionAttemptId
+					? {
+							submissionId: this.activeSubmissionId,
+							attemptId: this.activeSubmissionAttemptId,
+						}
+					: undefined,
+			);
+			state = classifyConversationSubmission(
+				await this.requireConversation(),
+				options.inputEntryId,
+				{ contextWindow: this.agentLoop.state.model.contextWindow ?? 0 },
+			);
+			if (state.kind === 'interrupted_partial') {
+				throw new OperationFailedError({
+					operation: options.errorLabel,
+					reason: 'an interrupted partial stream survived materialization',
+				});
+			}
+		}
 		switch (state.kind) {
 			case 'absent':
 				// Unreachable: `following` is only classified for a found input

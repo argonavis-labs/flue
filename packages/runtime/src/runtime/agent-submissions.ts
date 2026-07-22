@@ -249,6 +249,12 @@ export function agentSubmissionDispatchId(input: AgentSubmissionInput): string |
  * The `createContext` callback builds a `FlueContextInternal` for handler
  * execution. Submission input is delivered through the session handler rather
  * than context construction.
+ *
+ * The optional `guard` registers a freshly charged replacement attempt with
+ * the coordinator's concurrency guard (the Cloudflare attempt marker) before
+ * any recovery work runs, so an overlapping reconcile pass cannot charge the
+ * same submission again during recovery. `release` runs when the replacement
+ * will not be started (recovery threw, or ownership was lost).
  */
 export async function reconcileInterruptedSubmission(
 	submissions: AgentSubmissionStore,
@@ -257,6 +263,10 @@ export async function reconcileInterruptedSubmission(
 	createContext: (dispatchId: string | undefined) => FlueContextInternal,
 	lease?: { ownerId: string; leaseExpiresAt: number },
 	conversationWriter?: ConversationRecordWriter,
+	guard?: {
+		acquire(attempt: SubmissionAttemptRef): Promise<void>;
+		release(attempt: SubmissionAttemptRef): Promise<void>;
+	},
 ): Promise<AgentSubmission | undefined> {
 	const { input } = submission;
 	const attempt = submissionAttemptRef(submission);
@@ -370,10 +380,19 @@ export async function reconcileInterruptedSubmission(
 				submissionId: replacement.submissionId,
 				attemptId: replacement.attemptId,
 			};
-			if (!(await submissions.markSubmissionInputApplied(replacementAttempt, {
-				maxRetry: replacement.maxRetry,
-				timeoutAt: replacement.timeoutAt,
-			}))) {
+			await guard?.acquire(replacementAttempt);
+			let applied: boolean;
+			try {
+				applied = await submissions.markSubmissionInputApplied(replacementAttempt, {
+					maxRetry: replacement.maxRetry,
+					timeoutAt: replacement.timeoutAt,
+				});
+			} catch (error) {
+				await guard?.release(replacementAttempt);
+				throw error;
+			}
+			if (!applied) {
+				await guard?.release(replacementAttempt);
 				return undefined;
 			}
 			return replacement;
@@ -413,15 +432,22 @@ export async function reconcileInterruptedSubmission(
 			lease,
 		);
 		if (!replacement?.attemptId) return undefined;
+		const replacementAttempt = {
+			submissionId: replacement.submissionId,
+			attemptId: replacement.attemptId,
+		};
+		await guard?.acquire(replacementAttempt);
 		if (state === 'continuable') {
-			const recoveryCtx = createContext(dispatchId);
-			if (submission.kind === 'direct') recoveryCtx.setSubmissionId?.(submission.submissionId);
-			await createAgentSubmissionSessionHandler(agent, input, (s) =>
-				s.recoverInterruptedStream({
-					submissionId: replacement.submissionId,
-					attemptId: replacement.attemptId as string,
-				}),
-			)(recoveryCtx);
+			try {
+				const recoveryCtx = createContext(dispatchId);
+				if (submission.kind === 'direct') recoveryCtx.setSubmissionId?.(submission.submissionId);
+				await createAgentSubmissionSessionHandler(agent, input, (s) =>
+					s.recoverInterruptedStream(replacementAttempt),
+				)(recoveryCtx);
+			} catch (error) {
+				await guard?.release(replacementAttempt);
+				throw error;
+			}
 		}
 		return replacement;
 	}

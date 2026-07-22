@@ -567,6 +567,10 @@ export class CloudflareAgentCoordinator {
 				this.createDurableContext(submissionSyntheticRequest(submission.input), dispatchId),
 			{ ownerId: this.instance.ctx.id.toString(), leaseExpiresAt: 0 },
 			conversationWriter,
+			{
+				acquire: (attempt) => this.submissions.insertAttemptMarker(attempt),
+				release: (attempt) => this.deleteAttemptMarkerSafely(attempt),
+			},
 		);
 		if (replacement) {
 			await this.startSubmissionAttempt(replacement);
