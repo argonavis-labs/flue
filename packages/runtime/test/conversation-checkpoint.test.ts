@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { loadReducedConversationState } from '../src/conversation-reader.ts';
 import type { ConversationRecord } from '../src/conversation-records.ts';
 import { applyConversationRecord, createReducedInstanceState } from '../src/conversation-reducer.ts';
@@ -8,6 +8,7 @@ import {
 	SNAPSHOT_VERSION,
 } from '../src/conversation-snapshot.ts';
 import { ConversationRecordWriter } from '../src/conversation-writer.ts';
+import { ConversationRecordInvariantError } from '../src/errors.ts';
 import { InMemoryConversationStreamStore } from '../src/runtime/conversation-stream-store.ts';
 
 const PATH = 'agents/assistant/instance-1';
@@ -72,6 +73,75 @@ async function writerWith(store: InMemoryConversationStreamStore) {
 	return writer;
 }
 
+// Every Map/Set-bearing codec path in one stream; a symmetric codec bug
+// round-trips byte-identically, so the decisive check is continued-reduction equivalence.
+function complexRecords(): ConversationRecord[] {
+	const scope = {
+		v: 1 as const,
+		conversationId: 'conversation-1',
+		harness: 'default',
+		session: 'default',
+		timestamp: '2026-01-01T00:00:00.000Z',
+	};
+	const attachment = { id: 'att-1', mimeType: 'image/png', size: 1234, filename: 'shot.png' };
+	return [
+		creationRecord(),
+		{
+			...scope,
+			id: 'r-user',
+			type: 'user_message',
+			messageId: 'entry_user',
+			parentId: null,
+			content: [
+				{ type: 'text', text: 'look at this' },
+				{ type: 'attachment', attachment },
+			],
+		},
+		{ ...scope, id: 'r-a1-start', type: 'assistant_message_started', messageId: 'entry_a1', parentId: 'entry_user', turnId: 'turn-1', modelInfo: { api: 'test', provider: 'test', model: 'm' } },
+		{ ...scope, id: 'r-a1-text-start', type: 'assistant_text_started', messageId: 'entry_a1', blockId: 'b-text', blockIndex: 0 },
+		{ ...scope, id: 'r-a1-delta', type: 'assistant_text_delta', messageId: 'entry_a1', blockId: 'b-text', sequence: 0, delta: 'thinking done' },
+		{ ...scope, id: 'r-a1-text-done', type: 'assistant_text_completed', messageId: 'entry_a1', blockId: 'b-text', deltaCount: 1 },
+		{ ...scope, id: 'r-a1-tool', type: 'assistant_tool_call', messageId: 'entry_a1', blockId: 'b-tool', blockIndex: 1, toolCallId: 'call-1', name: 'lookup', arguments: { q: 1 } },
+		{ ...scope, id: 'r-a1-done', type: 'assistant_message_completed', messageId: 'entry_a1', stopReason: 'toolUse', usage: { input: 1, output: 1 } },
+		{
+			...scope,
+			id: 'r-outcome',
+			type: 'tool_outcome',
+			assistantMessageId: 'entry_a1',
+			toolCallId: 'call-1',
+			toolName: 'lookup',
+			isError: false,
+			content: [
+				{ type: 'text', text: 'result' },
+				{ type: 'attachment', attachment },
+			],
+			output: { answer: 42 },
+			durationMs: 7,
+		},
+		{ ...scope, id: 'r-commit', type: 'tool_results_committed', assistantMessageId: 'entry_a1', parentId: 'entry_a1', outcomeIds: ['r-outcome'] },
+		{ ...scope, id: 'r-settled', type: 'submission_settled', submissionId: 'submission-1', outcome: 'completed' },
+		{
+			...scope,
+			id: 'r-compaction',
+			type: 'compaction',
+			entryId: 'entry_compaction',
+			parentId: 'entry_tool_result_ZW50cnlfYTE_Y2FsbC0x',
+			sourceLeafId: 'entry_tool_result_ZW50cnlfYTE_Y2FsbC0x',
+			firstKeptEntryId: 'entry_a1',
+			summary: 'earlier context',
+			tokensBefore: 10,
+			usage: { input: 1, output: 1 },
+		},
+		// A second assistant left MID-STREAM: in-progress blocks Map, delta
+		// arrays, and blockIndexes Set survive the checkpoint boundary.
+		{ ...scope, id: 'r-a2-start', type: 'assistant_message_started', messageId: 'entry_a2', parentId: 'entry_compaction', turnId: 'turn-2', modelInfo: { api: 'test', provider: 'test', model: 'm' } },
+		{ ...scope, id: 'r-a2-think-start', type: 'assistant_reasoning_started', messageId: 'entry_a2', blockId: 'b-think', blockIndex: 0 },
+		{ ...scope, id: 'r-a2-think-delta', type: 'assistant_reasoning_delta', messageId: 'entry_a2', blockId: 'b-think', sequence: 0, delta: 'hmm ' },
+		{ ...scope, id: 'r-a2-text-start', type: 'assistant_text_started', messageId: 'entry_a2', blockId: 'b-text2', blockIndex: 1 },
+		{ ...scope, id: 'r-a2-text-delta', type: 'assistant_text_delta', messageId: 'entry_a2', blockId: 'b-text2', sequence: 0, delta: 'partial answer' },
+	] as ConversationRecord[];
+}
+
 describe('reduced-state snapshot codec', () => {
 	it('round-trips: decode(encode(state)) re-encodes identically and reduces identically', () => {
 		const records = chainedRecords(5);
@@ -93,78 +163,6 @@ describe('reduced-state snapshot codec', () => {
 		expect(encodeReducedState(decoded)).toBe(encodeReducedState(state));
 	});
 
-	// The codec paths that actually do Map/Set gymnastics — an in-progress
-	// assistant (blocks Map + blockIndexes Set), attachment refs, pending tool
-	// outcomes, settlements, and a compaction entry. A symmetric codec bug
-	// would round-trip byte-identically yet diverge from a full replay, so the
-	// decisive assertion is continued-reduction equivalence over the whole zoo.
-	function complexRecords(): ConversationRecord[] {
-		const scope = {
-			v: 1 as const,
-			conversationId: 'conversation-1',
-			harness: 'default',
-			session: 'default',
-			timestamp: '2026-01-01T00:00:00.000Z',
-		};
-		const attachment = { id: 'att-1', mimeType: 'image/png', size: 1234, filename: 'shot.png' };
-		return [
-			creationRecord(),
-			{
-				...scope,
-				id: 'r-user',
-				type: 'user_message',
-				messageId: 'entry_user',
-				parentId: null,
-				content: [
-					{ type: 'text', text: 'look at this' },
-					{ type: 'attachment', attachment },
-				],
-			},
-			{ ...scope, id: 'r-a1-start', type: 'assistant_message_started', messageId: 'entry_a1', parentId: 'entry_user', turnId: 'turn-1', modelInfo: { api: 'test', provider: 'test', model: 'm' } },
-			{ ...scope, id: 'r-a1-text-start', type: 'assistant_text_started', messageId: 'entry_a1', blockId: 'b-text', blockIndex: 0 },
-			{ ...scope, id: 'r-a1-delta', type: 'assistant_text_delta', messageId: 'entry_a1', blockId: 'b-text', sequence: 0, delta: 'thinking done' },
-			{ ...scope, id: 'r-a1-text-done', type: 'assistant_text_completed', messageId: 'entry_a1', blockId: 'b-text', deltaCount: 1 },
-			{ ...scope, id: 'r-a1-tool', type: 'assistant_tool_call', messageId: 'entry_a1', blockId: 'b-tool', blockIndex: 1, toolCallId: 'call-1', name: 'lookup', arguments: { q: 1 } },
-			{ ...scope, id: 'r-a1-done', type: 'assistant_message_completed', messageId: 'entry_a1', stopReason: 'toolUse', usage: { input: 1, output: 1 } },
-			{
-				...scope,
-				id: 'r-outcome',
-				type: 'tool_outcome',
-				assistantMessageId: 'entry_a1',
-				toolCallId: 'call-1',
-				toolName: 'lookup',
-				isError: false,
-				content: [
-					{ type: 'text', text: 'result' },
-					{ type: 'attachment', attachment },
-				],
-				output: { answer: 42 },
-				durationMs: 7,
-			},
-			{ ...scope, id: 'r-commit', type: 'tool_results_committed', assistantMessageId: 'entry_a1', parentId: 'entry_a1', outcomeIds: ['r-outcome'] },
-			{ ...scope, id: 'r-settled', type: 'submission_settled', submissionId: 'submission-1', outcome: 'completed' },
-			{
-				...scope,
-				id: 'r-compaction',
-				type: 'compaction',
-				entryId: 'entry_compaction',
-				parentId: 'entry_tool_result_ZW50cnlfYTE_Y2FsbC0x',
-				sourceLeafId: 'entry_tool_result_ZW50cnlfYTE_Y2FsbC0x',
-				firstKeptEntryId: 'entry_a1',
-				summary: 'earlier context',
-				tokensBefore: 10,
-				usage: { input: 1, output: 1 },
-			},
-			// A second assistant left MID-STREAM: in-progress blocks Map, delta
-			// arrays, and blockIndexes Set survive the checkpoint boundary.
-			{ ...scope, id: 'r-a2-start', type: 'assistant_message_started', messageId: 'entry_a2', parentId: 'entry_compaction', turnId: 'turn-2', modelInfo: { api: 'test', provider: 'test', model: 'm' } },
-			{ ...scope, id: 'r-a2-think-start', type: 'assistant_reasoning_started', messageId: 'entry_a2', blockId: 'b-think', blockIndex: 0 },
-			{ ...scope, id: 'r-a2-think-delta', type: 'assistant_reasoning_delta', messageId: 'entry_a2', blockId: 'b-think', sequence: 0, delta: 'hmm ' },
-			{ ...scope, id: 'r-a2-text-start', type: 'assistant_text_started', messageId: 'entry_a2', blockId: 'b-text2', blockIndex: 1 },
-			{ ...scope, id: 'r-a2-text-delta', type: 'assistant_text_delta', messageId: 'entry_a2', blockId: 'b-text2', sequence: 0, delta: 'partial answer' },
-		] as ConversationRecord[];
-	}
-
 	it('round-trips the complex paths and stays reduction-equivalent (in-progress blocks, outcomes, attachments, compaction)', () => {
 		const state = createReducedInstanceState();
 		for (const record of complexRecords()) applyConversationRecord(state, record, '3');
@@ -182,12 +180,7 @@ describe('reduced-state snapshot codec', () => {
 
 		// Continue the in-progress stream to completion on BOTH states — the
 		// decisive divergence check for a symmetric codec bug.
-		const tail: ConversationRecord[] = [
-			{ v: 1, conversationId: 'conversation-1', harness: 'default', session: 'default', timestamp: '2026-01-01T00:00:01.000Z', id: 'r-a2-think-done', type: 'assistant_reasoning_completed', messageId: 'entry_a2', blockId: 'b-think', deltaCount: 1 },
-			{ v: 1, conversationId: 'conversation-1', harness: 'default', session: 'default', timestamp: '2026-01-01T00:00:01.000Z', id: 'r-a2-text-done', type: 'assistant_text_completed', messageId: 'entry_a2', blockId: 'b-text2', deltaCount: 1 },
-			{ v: 1, conversationId: 'conversation-1', harness: 'default', session: 'default', timestamp: '2026-01-01T00:00:01.000Z', id: 'r-a2-done', type: 'assistant_message_completed', messageId: 'entry_a2', stopReason: 'stop', usage: { input: 1, output: 1 } },
-		] as ConversationRecord[];
-		for (const record of tail) {
+		for (const record of completeSecondAssistant()) {
 			applyConversationRecord(state, record, '4');
 			applyConversationRecord(decoded, record, '4');
 		}
@@ -197,11 +190,8 @@ describe('reduced-state snapshot codec', () => {
 	it('cold load through a mid-turn checkpoint equals a full replay of the complex stream', async () => {
 		const store = new InMemoryConversationStreamStore();
 		const writer = await writerWith(store);
-		// One record per batch so the 16-batch cadence lands a checkpoint while
-		// the second assistant is still mid-stream. The settle record is
-		// reducer-only here: the store rightly rejects submission-scoped records
-		// appended outside an admitted submission (settledSubmissions codec
-		// coverage lives in the round-trip test above).
+		// One record per batch lands a checkpoint mid-stream; the settle record is
+		// skipped because the store rejects submission-scoped appends outside an admitted submission.
 		for (const record of complexRecords()) {
 			if (record.type === 'submission_settled') continue;
 			await writer.append([record]);
@@ -218,6 +208,88 @@ describe('reduced-state snapshot codec', () => {
 	it('throws on malformed data instead of guessing', () => {
 		expect(() => decodeReducedState('not json')).toThrow();
 		expect(() => decodeReducedState('{"recordsThroughOffset":"1"}')).toThrow();
+	});
+});
+
+function completeSecondAssistant(): ConversationRecord[] {
+	return [
+		{ v: 1, conversationId: 'conversation-1', harness: 'default', session: 'default', timestamp: '2026-01-01T00:00:01.000Z', id: 'r-a2-think-done', type: 'assistant_reasoning_completed', messageId: 'entry_a2', blockId: 'b-think', deltaCount: 1 },
+		{ v: 1, conversationId: 'conversation-1', harness: 'default', session: 'default', timestamp: '2026-01-01T00:00:01.000Z', id: 'r-a2-text-done', type: 'assistant_text_completed', messageId: 'entry_a2', blockId: 'b-text2', deltaCount: 1 },
+		{ v: 1, conversationId: 'conversation-1', harness: 'default', session: 'default', timestamp: '2026-01-01T00:00:01.000Z', id: 'r-a2-done', type: 'assistant_message_completed', messageId: 'entry_a2', stopReason: 'stop', usage: { input: 1, output: 1 } },
+	] as ConversationRecord[];
+}
+
+describe('bounded record index (RUN-5441)', () => {
+	it("drops a settled assistant's streaming record ids from the record index", () => {
+		const state = createReducedInstanceState();
+		for (const record of complexRecords()) applyConversationRecord(state, record, '3');
+
+		// The first assistant settled: its streaming lifecycle ids are pruned...
+		for (const id of ['r-a1-start', 'r-a1-text-start', 'r-a1-delta', 'r-a1-text-done', 'r-a1-tool']) {
+			expect(state.recordIndex.has(id), id).toBe(false);
+		}
+		// ...while its completion, entry-bearing, and settlement records stay.
+		for (const id of ['record-created', 'r-user', 'r-a1-done', 'r-outcome', 'r-commit', 'r-settled', 'r-compaction']) {
+			expect(state.recordIndex.has(id), id).toBe(true);
+		}
+		// The second assistant is still mid-stream: its ids stay until settlement.
+		for (const id of ['r-a2-start', 'r-a2-think-start', 'r-a2-think-delta', 'r-a2-text-start', 'r-a2-text-delta']) {
+			expect(state.recordIndex.has(id), id).toBe(true);
+		}
+	});
+
+	it('still skips a redelivered streaming record while its message is in progress', () => {
+		const state = createReducedInstanceState();
+		for (const record of complexRecords()) applyConversationRecord(state, record, '3');
+		const before = encodeReducedState(state);
+
+		const redelivered = complexRecords().find((record) => record.id === 'r-a2-text-delta')!;
+		applyConversationRecord(state, redelivered, '3');
+		expect(encodeReducedState(state)).toBe(before);
+	});
+
+	it('fails loudly on a streaming record redelivered after its message settled', () => {
+		const state = createReducedInstanceState();
+		for (const record of complexRecords()) applyConversationRecord(state, record, '3');
+
+		const redelivered = complexRecords().find((record) => record.id === 'r-a1-delta')!;
+		expect(() => applyConversationRecord(state, redelivered, '3')).toThrow(
+			ConversationRecordInvariantError,
+		);
+	});
+
+	it('fails loudly on a started record redelivered after its message settled', () => {
+		const state = createReducedInstanceState();
+		for (const record of complexRecords()) applyConversationRecord(state, record, '3');
+
+		const redelivered = complexRecords().find((record) => record.id === 'r-a1-start')!;
+		expect(() => applyConversationRecord(state, redelivered, '3')).toThrow(
+			ConversationRecordInvariantError,
+		);
+	});
+
+	it('a message checkpointed mid-stream prunes identically once a cold load completes it', async () => {
+		const store = new InMemoryConversationStreamStore();
+		const writer = await writerWith(store);
+		for (const record of complexRecords()) {
+			if (record.type === 'submission_settled') continue;
+			await writer.append([record]);
+		}
+		const snapshot = await store.loadDerivedSnapshot(PATH);
+		expect(snapshot).not.toBeNull();
+
+		const viaSnapshot = await loadReducedConversationState({ store, path: PATH });
+		await store.saveDerivedSnapshot(PATH, { ...snapshot!, incarnation: 'invalidated' });
+		const viaFullReplay = await loadReducedConversationState({ store, path: PATH });
+		for (const record of completeSecondAssistant()) {
+			applyConversationRecord(viaSnapshot, record, '20');
+			applyConversationRecord(viaFullReplay, record, '20');
+		}
+		expect(encodeReducedState(viaSnapshot)).toBe(encodeReducedState(viaFullReplay));
+		for (const id of ['r-a2-start', 'r-a2-think-delta', 'r-a2-text-delta']) {
+			expect(viaSnapshot.recordIndex.has(id), id).toBe(false);
+		}
+		expect(viaSnapshot.recordIndex.has('r-a2-done')).toBe(true);
 	});
 });
 
@@ -320,6 +392,84 @@ describe('writer checkpointing (RUN-5218)', () => {
 		const writer = await writerWith(store);
 		for (const record of chainedRecords(20)) {
 			await expect(writer.append([record])).resolves.toBeDefined();
+		}
+	});
+
+	it('skips the checkpoint write when the encoded state exceeds the snapshot byte budget (RUN-5441)', async () => {
+		const store = new InMemoryConversationStreamStore();
+		const saves: unknown[] = [];
+		const originalSave = store.saveDerivedSnapshot.bind(store);
+		store.saveDerivedSnapshot = async (path, snapshot) => {
+			saves.push(snapshot);
+			return originalSave(path, snapshot);
+		};
+		const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+		try {
+			const writer = await writerWith(store);
+			const records = chainedRecords(19);
+			(records[1] as Extract<ConversationRecord, { type: 'user_message' }>).content = [
+				{ type: 'text', text: 'x'.repeat(2_100_000) },
+			];
+			for (const record of records) {
+				await expect(writer.append([record])).resolves.toBeDefined();
+			}
+			expect(saves).toHaveLength(0);
+			expect(errors.mock.calls.some(
+				(call) => call[0] === '[flue:conversation-checkpoint-skipped]',
+			)).toBe(true);
+		} finally {
+			errors.mockRestore();
+		}
+	});
+
+	it('resumes checkpointing after a skip once compaction shrinks the state', async () => {
+		const store = new InMemoryConversationStreamStore();
+		const saves: unknown[] = [];
+		const originalSave = store.saveDerivedSnapshot.bind(store);
+		store.saveDerivedSnapshot = async (path, snapshot) => {
+			saves.push(snapshot);
+			return originalSave(path, snapshot);
+		};
+		const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+		try {
+			const writer = await writerWith(store);
+			const records = chainedRecords(18);
+			(records[1] as Extract<ConversationRecord, { type: 'user_message' }>).content = [
+				{ type: 'text', text: 'x'.repeat(2_100_000) },
+			];
+			for (const record of records) await writer.append([record]);
+			expect(saves).toHaveLength(0);
+
+			await writer.append([
+				{
+					v: 1,
+					id: 'record-compaction',
+					type: 'compaction',
+					conversationId: 'conversation-1',
+					harness: 'default',
+					session: 'default',
+					timestamp: '2026-01-01T00:00:02.000Z',
+					entryId: 'entry_compaction',
+					parentId: 'entry_record-17',
+					sourceLeafId: 'entry_record-17',
+					firstKeptEntryId: 'entry_record-17',
+					summary: 'squashed',
+					tokensBefore: 10,
+				} as ConversationRecord,
+			]);
+			let parentId = 'entry_compaction';
+			for (let index = 0; index < 12; index++) {
+				const record = userRecord(`record-b2-${index}`) as Extract<
+					ConversationRecord,
+					{ type: 'user_message' }
+				>;
+				record.parentId = parentId;
+				parentId = record.messageId;
+				await writer.append([record]);
+			}
+			expect(saves).toHaveLength(1);
+		} finally {
+			errors.mockRestore();
 		}
 	});
 

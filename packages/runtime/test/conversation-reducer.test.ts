@@ -446,11 +446,13 @@ describe('reduceConversationRecords()', () => {
 		);
 	});
 
-	it('ignores an exact duplicate logical record when replay retries an append', () => {
+	it('ignores an exact duplicate logical record when an in-flight append retries', () => {
 		const records = canonicalConversation();
-		const state = reduceConversationRecords(createReducedInstanceState(), records, '8');
+		const state = reduceConversationRecords(createReducedInstanceState(), records.slice(0, 6), '6');
 
 		applyConversationRecord(state, required(records[5]));
+		applyConversationRecord(state, required(records[6]));
+		applyConversationRecord(state, required(records[7]));
 
 		expect(buildConversationContext(required(state.conversations.get('conv_01')))[1]).toMatchObject({
 			content: [{ type: 'text', text: 'Hi there' }],
@@ -1146,7 +1148,12 @@ describe('bounded conversation view (RUN-5210)', () => {
 	it('keeps no record bodies resident: the index carries offset + fingerprint only', () => {
 		const state = reduceConversationRecords(createReducedInstanceState(), canonicalConversation(), '8');
 
-		expect(state.recordIndex.size).toBe(8);
+		// Streaming lifecycle ids were pruned at settlement (RUN-5441).
+		expect([...state.recordIndex.keys()].sort()).toEqual([
+			'record_assistant_complete',
+			'record_created',
+			'record_user',
+		]);
 		for (const entry of state.recordIndex.values()) {
 			expect(entry).toEqual({ offset: '8', hash: expect.any(String) });
 		}

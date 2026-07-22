@@ -54,6 +54,9 @@ const CANONICAL_FLUSH_DELAY_MS = 1000;
  */
 const CHECKPOINT_EVERY_BATCHES = 16;
 
+// Headroom under workerd's 2,200,000-byte SQLite value/row cap (SQLITE_LIMIT_LENGTH).
+const SNAPSHOT_MAX_BYTES = 2_000_000;
+
 /**
  * Offset stamped on records during the optimistic pre-append reduce, before
  * the durable offset exists. Restamped to the real offset after the append
@@ -129,11 +132,17 @@ export class ConversationRecordWriter {
 		this.batchesSinceCheckpoint = 0;
 		if (!this.reducedState || !this.store.saveDerivedSnapshot) return;
 		try {
+			const data = encodeReducedState(this.reducedState);
+			const bytes = utf8ByteLength(data);
+			if (bytes > SNAPSHOT_MAX_BYTES) {
+				console.error('[flue:conversation-checkpoint-skipped]', { path: this.path, bytes });
+				return;
+			}
 			await this.store.saveDerivedSnapshot(this.path, {
 				version: SNAPSHOT_VERSION,
 				incarnation: this.claim.incarnation,
 				offset: this.reducedState.recordsThroughOffset,
-				data: encodeReducedState(this.reducedState),
+				data,
 			});
 		} catch (error) {
 			console.error('[flue:conversation-checkpoint]', { path: this.path }, error);
@@ -437,4 +446,10 @@ export class ConversationRecordWriter {
 function sameAppendOptions(left: ConversationAppendOptions, right: ConversationAppendOptions): boolean {
 	return left.submission?.submissionId === right.submission?.submissionId &&
 		left.submission?.attemptId === right.submission?.attemptId;
+}
+
+// UTF-8 bytes never exceed 3× UTF-16 length, so small states skip the encode pass.
+function utf8ByteLength(value: string): number {
+	if (value.length * 3 <= SNAPSHOT_MAX_BYTES) return value.length;
+	return new TextEncoder().encode(value).byteLength;
 }
