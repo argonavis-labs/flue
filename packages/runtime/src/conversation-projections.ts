@@ -238,6 +238,12 @@ export function projectConversationUi(
 	const byId = new Map<string, ConversationUiMessage>();
 	const windowed = windowActivePath(getActiveConversationPath(conversation), window);
 	for (const entry of windowed.entries) {
+		if (entry.type === 'compaction') {
+			const projected = projectCompactionEntry(entry);
+			messages.push(projected);
+			byId.set(projected.id, projected);
+			continue;
+		}
 		if (entry.type !== 'message') continue;
 		const projected = projectCompletedMessage(entry);
 		if (projected) {
@@ -397,6 +403,20 @@ function projectCompletedMessage(entry: ReducedMessageEntry): ConversationUiMess
 			usage: message.usage,
 			model: { provider: message.provider, id: message.model },
 		},
+	};
+}
+
+function projectCompactionEntry(entry: ReducedCompactionEntry): ConversationUiMessage {
+	return {
+		id: entry.id,
+		role: 'system',
+		purpose: 'advisory',
+		display: 'visible',
+		...(entry.submissionId ? { submissionId: entry.submissionId } : {}),
+		...(entry.turnId ? { turnId: entry.turnId } : {}),
+		signal: { tagName: 'compaction' },
+		parts: [],
+		metadata: { timestamp: entry.timestamp },
 	};
 }
 
