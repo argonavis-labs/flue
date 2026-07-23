@@ -37,7 +37,7 @@ export function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<
 			},
 			(error: unknown) => {
 				signal.removeEventListener('abort', onAbort);
-				reject(error instanceof Error ? error : new Error(String(error)));
+				reject(error);
 			},
 		);
 	});

@@ -230,7 +230,7 @@ describe('createSandboxSessionEnv()', () => {
 		expect(exec).not.toHaveBeenCalled();
 	});
 
-	it('rejects after execution when an adapted environment is aborted during a signal-blind command', async () => {
+	it("ignores a signal-blind command's late completion after an in-flight abort", async () => {
 		let markStarted: () => void = () => {};
 		const started = new Promise<void>((resolve) => {
 			markStarted = resolve;
@@ -256,12 +256,45 @@ describe('createSandboxSessionEnv()', () => {
 			name: 'AbortError',
 			message: 'stop during execution',
 		});
-		expect(exec).toHaveBeenCalledWith('npm test', {
-			cwd: '/workspace/project',
-			env: undefined,
-			timeoutMs: undefined,
-			signal: controller.signal,
+	});
+
+	it('passes a provider rejection through the abort race unchanged', async () => {
+		const sentinel = { code: 'PROVIDER_DOWN', status: 503 };
+		const exec = vi.fn(() => Promise.reject(sentinel));
+		const env = createSandboxSessionEnv(createSandboxApi({ exec }), '/workspace/project');
+		const controller = new AbortController();
+
+		await expect(env.exec('npm test', { signal: controller.signal })).rejects.toBe(sentinel);
+	});
+
+	it("keeps observing the orphan when it rejects after the caller's abort", async () => {
+		let markStarted: () => void = () => {};
+		const started = new Promise<void>((resolve) => {
+			markStarted = resolve;
 		});
+		let failCommand: (reason: unknown) => void = () => {};
+		const exec = vi.fn(
+			(): Promise<{ stdout: string; stderr: string; exitCode: number }> =>
+				new Promise((_resolve, reject) => {
+					markStarted();
+					failCommand = reject;
+				}),
+		);
+		const env = createSandboxSessionEnv(createSandboxApi({ exec }), '/workspace/project');
+		const controller = new AbortController();
+
+		const result = env.exec('npm test', { signal: controller.signal });
+		await started;
+		controller.abort('stop during execution');
+		await expect(result).rejects.toMatchObject({
+			name: 'AbortError',
+			message: 'stop during execution',
+		});
+
+		// A late structured rejection must land in the race's handlers, not
+		// surface as an unhandled rejection after the caller already settled.
+		failCommand({ code: 'PROVIDER_DOWN' });
+		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
 
 	it('unblocks on abort while a signal-blind command is still running', async () => {
