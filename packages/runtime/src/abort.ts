@@ -21,6 +21,28 @@ export function abortErrorFor(signal: AbortSignal): Error {
 	return error;
 }
 
+/** Await `promise`, rejecting on abort; the orphan stays observed so its late settlement never becomes an unhandled rejection. */
+export function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) {
+		promise.catch(() => {});
+		return Promise.reject(abortErrorFor(signal));
+	}
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = () => reject(abortErrorFor(signal));
+		signal.addEventListener('abort', onAbort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener('abort', onAbort);
+				resolve(value);
+			},
+			(error: unknown) => {
+				signal.removeEventListener('abort', onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
 /**
  * Translate a millisecond deadline into an `AbortSignal` and compose it with
  * the caller's signal. Single implementation of the timeout-to-signal
