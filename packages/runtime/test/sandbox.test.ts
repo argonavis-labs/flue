@@ -263,6 +263,28 @@ describe('createSandboxSessionEnv()', () => {
 			signal: controller.signal,
 		});
 	});
+
+	it('unblocks on abort while a signal-blind command is still running', async () => {
+		let markStarted: () => void = () => {};
+		const started = new Promise<void>((resolve) => {
+			markStarted = resolve;
+		});
+		const exec = vi.fn((): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
+			markStarted();
+			return new Promise(() => {});
+		});
+		const env = createSandboxSessionEnv(createSandboxApi({ exec }), '/workspace/project');
+		const controller = new AbortController();
+
+		const result = env.exec('sleep 30', { signal: controller.signal });
+		await started;
+		controller.abort('steer now');
+
+		await expect(result).rejects.toMatchObject({
+			name: 'AbortError',
+			message: 'steer now',
+		});
+	});
 });
 
 describe('bash()', () => {

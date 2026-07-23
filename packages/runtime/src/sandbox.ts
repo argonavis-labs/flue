@@ -2,7 +2,7 @@
  * Sandbox adapters: wraps BashFactory or SandboxApi into SessionEnv.
  */
 
-import { abortErrorFor, composeTimeoutSignal } from './abort.ts';
+import { abortable, abortErrorFor, composeTimeoutSignal } from './abort.ts';
 import type {
 	BashFactory,
 	BashLike,
@@ -249,22 +249,18 @@ export function createSandboxSessionEnv(api: SandboxApi, cwd: string): SessionEn
 				signal?: AbortSignal;
 			},
 		): Promise<ShellResult> {
-			// Pre/post abort checks here — not in every sandbox adapter. Most
-			// provider SDKs (E2B, Daytona, Modal, Boxd, etc.) don't accept
-			// an AbortSignal, so a caller that aborts during a long-running
-			// remote command would otherwise see the call return
-			// successfully and the abort silently dropped. Centralizing the
-			// check means sandbox adapters only need to wire `signal` into their
-			// provider SDK when one supports it (Mirage, Vercel); the rest get
-			// correct abort semantics for free.
+			// Most provider SDKs cannot cancel a running command, so the await
+			// races the signal; adapters that do wire `signal` into their SDK
+			// (Mirage, Vercel) also cancel the remote command itself.
 			const signal = options?.signal;
 			if (signal?.aborted) throw abortErrorFor(signal);
-			const result = await api.exec(command, {
+			const execution = api.exec(command, {
 				cwd: options?.cwd !== undefined ? resolvePath(options.cwd) : cwd,
 				env: options?.env,
 				timeoutMs: options?.timeoutMs,
 				signal,
 			});
+			const result = signal ? await abortable(execution, signal) : await execution;
 			if (signal?.aborted) throw abortErrorFor(signal);
 			return result;
 		},
