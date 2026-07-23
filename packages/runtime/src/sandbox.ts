@@ -211,7 +211,9 @@ function assertBashLike(value: unknown): asserts value is BashLike {
  *   - `signal?: AbortSignal` (optional): for sandbox adapters whose SDK supports
  *     mid-flight cancellation (Mirage's executor, in-process bash). Lets
  *     Programmatic callers do ad-hoc `abort()`. Sandbox adapters that can't honor it
- *     should ignore it; the deadline is still enforced via `timeoutMs`.
+ *     should ignore it; the wrapper still rejects the caller on abort while the
+ *     remote command may keep running, and the deadline is still enforced via
+ *     `timeoutMs`.
  *
  * Sandbox adapters that support both should observe whichever fires first.
  */
