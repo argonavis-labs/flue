@@ -1,4 +1,6 @@
 import {
+	type ConversationChunkPosition,
+	type ConversationSyncChunk,
 	projectAgentConversationBatch,
 	projectAgentConversationSnapshot,
 } from '../conversation-public.ts';
@@ -178,7 +180,8 @@ async function updatesResponse(options: {
 	const meta = await options.store.getMeta(options.path);
 	if (!meta) return errorResponse(new StreamNotFoundError({ path: options.path }));
 	if (live === 'sse') {
-		return sseResponse(options.store, options.path, offset, options.request.signal);
+		const sync = url.searchParams.get('sync') === '1';
+		return sseResponse(options.store, options.path, offset, options.request.signal, sync);
 	}
 	let state = await loadReducedConversationPrefix({
 		store: options.store,
@@ -245,6 +248,7 @@ function sseResponse(
 	path: string,
 	offset: string,
 	signal: AbortSignal,
+	sync: boolean,
 ): Response {
 	const encoder = new TextEncoder();
 	let active = true;
@@ -255,9 +259,22 @@ function sseResponse(
 			let state = await loadReducedConversationPrefix({ store, path, offset });
 			let currentOffset = offset;
 			let wake: (() => void) | undefined;
+			const connectionId = crypto.randomUUID();
+			let lastPosition: ConversationChunkPosition | null = null;
 			unsubscribe = store.subscribe(path, () => wake?.());
 			heartbeat = setInterval(() => {
-				if (active) controller.enqueue(encoder.encode(': heartbeat\n\n'));
+				if (!active) return;
+				if (!sync) {
+					controller.enqueue(encoder.encode(': heartbeat\n\n'));
+					return;
+				}
+				const frame: ConversationSyncChunk = { type: 'sync', connectionId, lastPosition };
+				controller.enqueue(encoder.encode(`event: data\ndata:${JSON.stringify([frame])}\n\n`));
+				controller.enqueue(
+					encoder.encode(
+						`event: control\ndata:${JSON.stringify({ streamNextOffset: currentOffset })}\n\n`,
+					),
+				);
 			}, SSE_HEARTBEAT_MS);
 			const onAbort = () => {
 				active = false;
@@ -273,6 +290,10 @@ function sseResponse(
 						controller.enqueue(
 							encoder.encode(`event: data\ndata:${JSON.stringify(projected.items)}\n\n`),
 						);
+						const tail = projected.items[projected.items.length - 1] as {
+							position?: ConversationChunkPosition;
+						};
+						if (tail.position) lastPosition = tail.position;
 					}
 					currentOffset = read.nextOffset;
 					const control = {

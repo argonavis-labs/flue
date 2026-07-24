@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ConversationRecord } from '../src/conversation-records.ts';
 import { sqlite } from '../src/node/agent-execution-store.ts';
 import type { ConversationStreamStore } from '../src/runtime/conversation-stream-store.ts';
@@ -263,5 +263,157 @@ describe('handleAgentAttachmentRead()', () => {
 
 		expect(response.status).toBe(404);
 		await adapter.close?.();
+	});
+});
+
+describe('sseResponse() sync frames', () => {
+	async function openSse(options: { sync: boolean; fromHead?: boolean }) {
+		const context = await setup();
+		const head = await context.append([
+			{
+				...scope,
+				id: 'created-1',
+				type: 'conversation_created',
+				kind: 'root',
+				affinityKey: 'affinity-1',
+				createdAt: scope.timestamp,
+			},
+		]);
+		let tail: string | undefined;
+		if (!options.fromHead) {
+			tail = await context.append([
+				{
+					...scope,
+					id: 'user-1',
+					type: 'user_message',
+					messageId: 'entry_user',
+					parentId: null,
+					content: [{ type: 'text', text: 'hello' }],
+				},
+			]);
+		}
+		const offset = options.fromHead ? head : '-1';
+		const query = `offset=${encodeURIComponent(offset)}&live=sse${options.sync ? '&sync=1' : ''}`;
+		const abort = new AbortController();
+		const response = await handleAgentConversationRead({
+			store: context.stores.conversationStreamStore,
+			path: context.path,
+			request: new Request(
+				`https://flue.test/agents/assistant/instance-1?view=updates&${query}`,
+				{ signal: abort.signal },
+			),
+		});
+		const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+		const decoder = new TextDecoder();
+		let buffer = '';
+		const readUntil = async (predicate: (text: string) => boolean) => {
+			for (let i = 0; i < 50 && !predicate(buffer); i++) {
+				const { value, done } = await reader.read();
+				if (done) break;
+				buffer += decoder.decode(value, { stream: true });
+			}
+			expect(predicate(buffer)).toBe(true);
+			return buffer;
+		};
+		return { ...context, tail, abort, readUntil };
+	}
+
+	it('emits a sync frame carrying the connection nonce and last sent position on the heartbeat tick', async () => {
+		vi.useFakeTimers();
+		try {
+			const sse = await openSse({ sync: true });
+			await sse.readUntil((text) => text.includes('event: control'));
+
+			await vi.advanceTimersByTimeAsync(15_000);
+			const text = await sse.readUntil((value) => value.includes('"type":"sync"'));
+
+			const frame = text.match(/event: data\ndata:(\[\{"type":"sync".*?\])\n\n/);
+			expect(frame).not.toBeNull();
+			const [chunk] = JSON.parse(frame![1] as string) as [
+				{ type: string; connectionId: string; lastPosition: { batch: number; index: number } | null },
+			];
+			expect(chunk.connectionId).toEqual(expect.any(String));
+			expect(chunk.connectionId.length).toBeGreaterThan(0);
+			expect(chunk.lastPosition).toEqual({ batch: parseOffset(sse.tail as string), index: 0 });
+			sse.abort.abort();
+			await sse.adapter.close?.();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('reports a null last position when no chunk was sent on the connection', async () => {
+		vi.useFakeTimers();
+		try {
+			const sse = await openSse({ sync: true, fromHead: true });
+			await sse.readUntil((text) => text.includes('event: control'));
+
+			await vi.advanceTimersByTimeAsync(15_000);
+			const text = await sse.readUntil((value) => value.includes('"type":"sync"'));
+
+			const frame = text.match(/event: data\ndata:(\[\{"type":"sync".*?\])\n\n/);
+			expect(frame).not.toBeNull();
+			const [chunk] = JSON.parse(frame![1] as string) as [{ lastPosition: unknown }];
+			expect(chunk.lastPosition).toBeNull();
+			sse.abort.abort();
+			await sse.adapter.close?.();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('keeps the bare heartbeat comment when sync is not requested', async () => {
+		vi.useFakeTimers();
+		try {
+			const sse = await openSse({ sync: false });
+			await sse.readUntil((text) => text.includes('event: control'));
+
+			await vi.advanceTimersByTimeAsync(15_000);
+			const text = await sse.readUntil((value) => value.includes(': heartbeat'));
+
+			expect(text).not.toContain('"type":"sync"');
+			sse.abort.abort();
+			await sse.adapter.close?.();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
+describe('settled-chunk suppression', () => {
+	it('logs loudly when a submission_settled record without submissionId is suppressed', async () => {
+		const { adapter, stores, path, append } = await setup();
+		const start = await append([
+			{
+				...scope,
+				id: 'created-1',
+				type: 'conversation_created',
+				kind: 'root',
+				affinityKey: 'affinity-1',
+				createdAt: scope.timestamp,
+			},
+		]);
+		await append([{ ...scope, id: 'settled-1', type: 'submission_settled', outcome: 'completed' }]);
+		const failure = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+		try {
+			const response = await handleAgentConversationRead({
+				store: stores.conversationStreamStore,
+				path,
+				request: new Request(
+					`https://flue.test/agents/assistant/instance-1?view=updates&offset=${encodeURIComponent(start)}`,
+				),
+			});
+			const updates = (await response.json()) as unknown[];
+
+			expect(updates).toEqual([]);
+			expect(failure).toHaveBeenCalledWith(
+				expect.stringContaining('submission_settled'),
+				expect.objectContaining({ recordId: 'settled-1' }),
+			);
+		} finally {
+			failure.mockRestore();
+			await adapter.close?.();
+		}
 	});
 });

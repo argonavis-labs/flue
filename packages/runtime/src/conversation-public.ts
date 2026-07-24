@@ -87,10 +87,19 @@ type ConversationStreamChunkBody =
  * then `index`) to dedupe chunks redelivered under at-least-once transports
  * (e.g. an SSE reconnect). Opaque otherwise — do not interpret the numbers.
  */
-type ConversationChunkPosition = { batch: number; index: number };
+export type ConversationChunkPosition = { batch: number; index: number };
 
-export type ConversationStreamChunk = ConversationStreamChunkBody & {
-	position: ConversationChunkPosition;
+export type ConversationStreamChunk =
+	| (ConversationStreamChunkBody & { position: ConversationChunkPosition })
+	| ConversationSyncChunk;
+
+/** SSE-heartbeat continuity frame (`sync=1` only): a per-connection nonce plus
+ *  the last chunk position sent on that connection (`null` before the first).
+ *  Not a projection product, so it carries no `position`. */
+export type ConversationSyncChunk = {
+	type: 'sync';
+	connectionId: string;
+	lastPosition: ConversationChunkPosition | null;
 };
 
 // The public conversation API addresses exactly one conversation per agent
@@ -279,17 +288,22 @@ function encodeRecord(
 				encodeToolOutcome(outcomeId, index, conversationId, record, state, batchRecords),
 			);
 		case 'submission_settled':
-			return record.submissionId
-				? [
-						{
-							type: 'submission-settled',
-							conversationId,
-							submissionId: record.submissionId,
-							outcome: record.outcome,
-							...(record.error === undefined ? {} : { error: record.error }),
-						},
-					]
-				: [];
+			if (!record.submissionId) {
+				console.error(
+					'[flue:conversation-projection] suppressed a submission_settled record with no submissionId; settlement consumers will not observe this outcome',
+					{ conversationId, recordId: record.id },
+				);
+				return [];
+			}
+			return [
+				{
+					type: 'submission-settled',
+					conversationId,
+					submissionId: record.submissionId,
+					outcome: record.outcome,
+					...(record.error === undefined ? {} : { error: record.error }),
+				},
+			];
 		default:
 			return [];
 	}

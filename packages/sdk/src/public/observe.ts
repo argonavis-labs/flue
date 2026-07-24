@@ -5,6 +5,7 @@ import {
 	type ConversationChunkPosition,
 	type ConversationStreamChunk,
 	createConversationStreamState,
+	SSE_SYNC_INTERVAL_MS,
 } from './conversation-stream.ts';
 import type { FlueEventStream } from './stream.ts';
 
@@ -153,9 +154,44 @@ export function createAgentConversationObservation(
 			return;
 		}
 		stream = nextStream;
+		// Sync-frame continuity state, scoped to this stream: the nonce proves the
+		// transport stayed on one server connection, and the watchdog arms only
+		// after the first sync frame so an old runtime never trips it.
+		let syncConnectionId: string | undefined;
+		let syncWatchdog: ReturnType<typeof setTimeout> | undefined;
+		const failStream = (error: Error) => {
+			stream = undefined;
+			nextStream.cancel();
+			scheduleRetry(value, error);
+		};
+		const armSyncWatchdog = () => {
+			if (syncWatchdog) clearTimeout(syncWatchdog);
+			syncWatchdog = setTimeout(() => {
+				if (!isCurrent(value) || stream !== nextStream) return;
+				failStream(new Error('Agent conversation sync frames stopped; treating the stream as dead.'));
+			}, SSE_SYNC_INTERVAL_MS * 3);
+		};
 		try {
 			for await (const chunk of nextStream) {
 				if (!isCurrent(value) || stream !== nextStream) return;
+				if (chunk.type === 'sync') {
+					if (syncConnectionId !== undefined && chunk.connectionId !== syncConnectionId) {
+						failStream(
+							new Error('Agent conversation stream reconnected invisibly; rehydrating.'),
+						);
+						return;
+					}
+					syncConnectionId = chunk.connectionId;
+					armSyncWatchdog();
+					if (
+						chunk.lastPosition &&
+						(lastApplied === undefined || comparePosition(lastApplied, chunk.lastPosition) < 0)
+					) {
+						failStream(new Error('Agent conversation chunks were lost in transit; rehydrating.'));
+						return;
+					}
+					continue;
+				}
 				if (!streamState) throw new Error('Agent conversation updates require materialized state.');
 				// Drop redelivered chunks (at-least-once transports replay the
 				// in-flight batch on reconnect). Positions are monotonic but not
@@ -181,6 +217,8 @@ export function createAgentConversationObservation(
 			if (!isCurrent(value) || stream !== nextStream) return;
 			stream = undefined;
 			scheduleRetry(value, toError(error));
+		} finally {
+			if (syncWatchdog) clearTimeout(syncWatchdog);
 		}
 	};
 

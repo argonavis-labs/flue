@@ -33,7 +33,22 @@ import type {
  */
 export type ConversationChunkPosition = { batch: number; index: number };
 
+/** Cadence of the server's SSE sync frames; `observe()` allows three missed
+ *  intervals before treating a live stream as dead. Mirrors the runtime's
+ *  `SSE_HEARTBEAT_MS` — the wire contract pins them equal. */
+export const SSE_SYNC_INTERVAL_MS = 15_000;
+
+/** SSE-heartbeat continuity frame (`sync=1` only): a per-connection nonce plus
+ *  the last chunk position sent on that connection (`null` before the first).
+ *  Not a projection product, so it carries no `position`. */
+type ConversationSyncChunk = {
+	type: 'sync';
+	connectionId: string;
+	lastPosition: ConversationChunkPosition | null;
+};
+
 export type ConversationStreamChunk =
+	| ConversationSyncChunk
 	| { type: 'conversation-reset'; conversationId: string; snapshot: FlueConversationSnapshot; position: ConversationChunkPosition }
 	| { type: 'message-appended'; conversationId: string; message: FlueConversationMessage; position: ConversationChunkPosition }
 	| {
@@ -110,6 +125,21 @@ const CHUNK_TYPES = new Set<ConversationStreamChunk['type']>([
  * producing incomplete state.
  */
 export function assertConversationStreamChunk(value: ConversationStreamChunk): ConversationStreamChunk {
+	if (value && typeof value === 'object' && (value as { type?: unknown }).type === 'sync') {
+		const sync = value as ConversationSyncChunk;
+		const valid =
+			typeof sync.connectionId === 'string' &&
+			(sync.lastPosition === null ||
+				(!!sync.lastPosition &&
+					Number.isFinite(sync.lastPosition.batch) &&
+					Number.isFinite(sync.lastPosition.index)));
+		if (!valid) {
+			throw new ConversationStreamError(
+				`Unsupported agent conversation sync frame: ${JSON.stringify(value)}.`,
+			);
+		}
+		return value;
+	}
 	if (
 		!value ||
 		typeof value !== 'object' ||

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
 	type ConversationStreamChunk,
 	createFlueClient,
@@ -819,3 +819,33 @@ function dsJsonResponse(
 		{ status: 200, headers },
 	);
 }
+
+describe('agents.observe() sync opt-in', () => {
+	it('requests sync frames only for sse observation', async () => {
+		const syncParams: Array<string | null> = [];
+		const client = createFlueClient({
+			baseUrl: 'https://flue.test',
+			fetch: async (input) => {
+				const url = new URL(typeof input === 'string' ? input : new Request(input).url);
+				if (url.searchParams.get('view') === 'history') {
+					return Response.json({ v: 1, conversationId: 'c1', offset: '0', messages: [], settlements: [] });
+				}
+				syncParams.push(url.searchParams.get('sync'));
+				return dsJsonResponse([], { nextOffset: '0', upToDate: true, closed: true });
+			},
+		});
+
+		const sse = client.agents.observe('agent', 'sse-instance', { live: 'sse' });
+		sse.subscribe(() => {});
+		await vi.waitFor(() => expect(syncParams.length).toBeGreaterThan(0));
+		sse.close();
+		expect(syncParams[0]).toBe('1');
+
+		syncParams.length = 0;
+		const longPoll = client.agents.observe('agent', 'lp-instance');
+		longPoll.subscribe(() => {});
+		await vi.waitFor(() => expect(syncParams.length).toBeGreaterThan(0));
+		longPoll.close();
+		expect(syncParams[0]).toBeNull();
+	});
+});

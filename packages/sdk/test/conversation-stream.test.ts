@@ -292,3 +292,37 @@ describe('assertConversationStreamChunk()', () => {
 		expect(() => assertConversationStreamChunk(chunk)).toThrow(ConversationStreamError);
 	});
 });
+
+describe('assertConversationStreamChunk() sync frames', () => {
+	it('accepts a sync frame with a last position', () => {
+		const chunk: ConversationStreamChunk = {
+			type: 'sync',
+			connectionId: 'conn-1',
+			lastPosition: { batch: 3, index: 1 },
+		};
+		expect(assertConversationStreamChunk(chunk)).toBe(chunk);
+	});
+
+	it('accepts a sync frame with a null last position', () => {
+		const chunk: ConversationStreamChunk = {
+			type: 'sync',
+			connectionId: 'conn-1',
+			lastPosition: null,
+		};
+		expect(assertConversationStreamChunk(chunk)).toBe(chunk);
+	});
+
+	it('rejects a sync frame without a connection nonce', () => {
+		const chunk = { type: 'sync', lastPosition: null } as unknown as ConversationStreamChunk;
+		expect(() => assertConversationStreamChunk(chunk)).toThrow(ConversationStreamError);
+	});
+
+	it('rejects a sync frame with an invalid last position', () => {
+		const chunk = {
+			type: 'sync',
+			connectionId: 'conn-1',
+			lastPosition: { batch: 'nope' },
+		} as unknown as ConversationStreamChunk;
+		expect(() => assertConversationStreamChunk(chunk)).toThrow(ConversationStreamError);
+	});
+});
