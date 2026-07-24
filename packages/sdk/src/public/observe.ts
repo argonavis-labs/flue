@@ -205,6 +205,8 @@ export function createAgentConversationObservation(
 					}
 					continue;
 				}
+				// Counted pre-dedup: within one nonce no replay is possible — a transport
+				// reconnect's replayed data always follows a fresh-nonce open-sync.
 				receivedChunks++;
 				if (!streamState) throw new Error('Agent conversation updates require materialized state.');
 				// Drop redelivered chunks (at-least-once transports replay the
