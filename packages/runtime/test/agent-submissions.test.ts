@@ -1,5 +1,6 @@
 import {
 	type FauxProviderRegistration,
+	fauxAssistantMessage,
 	registerFauxProvider,
 } from '@earendil-works/pi-ai/compat';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,6 +12,8 @@ import { createFlueContext, InMemoryAttachmentStore, InMemoryConversationStreamS
 import { sqlite } from '../src/node/agent-execution-store.ts';
 import {
 	type AgentSubmissionInput,
+	type AgentSubmissionSettlement,
+	processSubmission,
 	reconcileInterruptedSubmission,
 	submissionSyntheticRequest,
 } from '../src/runtime/agent-submissions.ts';
@@ -356,5 +359,105 @@ describe('reconcileInterruptedSubmission()', () => {
 			{ submissionId: 'direct-1', attemptId: replaced?.attemptId },
 		]);
 		expect(await store.submissions.listAttemptMarkers()).toEqual([]);
+	});
+
+	it('reports the aborted settlement to the onSettled callback', async () => {
+		const provider = createProvider();
+		const store = await openExecutionStore();
+		const writer = await ConversationRecordWriter.create({
+			store: new InMemoryConversationStreamStore(),
+			path: 'agents/assistant/agent-1',
+			identity: { agentName: 'assistant', instanceId: 'agent-1' },
+			producerId: 'producer-1',
+		});
+		await seedContinuableConversation(writer, provider);
+		await seedRunningSubmission(store);
+		const running = await store.submissions.getSubmission('direct-1');
+		if (!running) throw new Error('Expected a running submission.');
+		await store.submissions.requestSessionAbort(running.sessionKey);
+		const submission = await store.submissions.getSubmission('direct-1');
+		if (!submission) throw new Error('Expected the abort-stamped submission.');
+		const settlements: AgentSubmissionSettlement[] = [];
+
+		await reconcileInterruptedSubmission(
+			store.submissions,
+			submission,
+			AGENT,
+			makeContextFactory(provider, writer),
+			{ ownerId: 'test-owner', leaseExpiresAt: 0 },
+			writer,
+			undefined,
+			(settlement) => settlements.push(settlement),
+		);
+
+		expect(await store.submissions.getSubmission('direct-1')).toMatchObject({
+			status: 'settled',
+		});
+		expect(settlements).toEqual([
+			{
+				submissionId: 'direct-1',
+				outcome: 'aborted',
+				attemptCount: 1,
+				error: expect.any(String),
+			},
+		]);
+	});
+});
+
+describe('processSubmission()', () => {
+	it('finalizes the direct settlement before publishing the settled event', async () => {
+		const provider = createProvider();
+		provider.setResponses([fauxAssistantMessage('Done.')]);
+		const store = await openExecutionStore();
+		const writer = await ConversationRecordWriter.create({
+			store: new InMemoryConversationStreamStore(),
+			path: 'agents/assistant/agent-1',
+			identity: { agentName: 'assistant', instanceId: 'agent-1' },
+			producerId: 'producer-1',
+		});
+		await seedContinuableConversation(writer, provider);
+		await seedRunningSubmission(store);
+		const submission = await store.submissions.getSubmission('direct-1');
+		if (!submission) throw new Error('Expected a running submission.');
+		const order: string[] = [];
+		const settlements: Array<AgentSubmissionSettlement | undefined> = [];
+		const instrumentedSubmissions = new Proxy(store.submissions, {
+			get(target, property) {
+				if (property === 'finalizeSubmissionSettlement') {
+					return async (...args: Parameters<typeof target.finalizeSubmissionSettlement>) => {
+						order.push('finalize');
+						return target.finalizeSubmissionSettlement(...args);
+					};
+				}
+				const value = Reflect.get(target, property, target);
+				return typeof value === 'function' ? value.bind(target) : value;
+			},
+		});
+		const contextFactory = makeContextFactory(provider, writer);
+
+		await processSubmission({
+			submissions: instrumentedSubmissions,
+			submission,
+			resolveAgent: () => AGENT,
+			createContext: (dispatchId) => {
+				const ctx = contextFactory(dispatchId);
+				const originalPublish = ctx.publishEvent.bind(ctx);
+				ctx.publishEvent = (event) => {
+					if ((event as { type?: string }).type === 'submission_settled') order.push('publish');
+					return originalPublish(event);
+				};
+				return ctx;
+			},
+			conversationWriter: writer,
+			onSettled: (settlement) => settlements.push(settlement),
+		});
+
+		expect(await store.submissions.getSubmission('direct-1')).toMatchObject({
+			status: 'settled',
+		});
+		expect(order).toEqual(['finalize', 'publish']);
+		expect(settlements).toEqual([
+			{ submissionId: 'direct-1', outcome: 'completed', attemptCount: 1 },
+		]);
 	});
 });
