@@ -21,6 +21,9 @@ export interface RunRecord {
  */
 export const IMAGE_DATA_OMITTED = '[image data omitted from event]';
 
+/** Runtime working-heartbeat cadence in seconds; clients derive activity-staleness leases from this, never hardcode it. */
+export const FLUE_AGENT_ACTIVITY_BEAT_SECONDS = 30;
+
 /** Aggregated token and cost usage for model work. */
 export interface PromptUsage {
 	input: number;

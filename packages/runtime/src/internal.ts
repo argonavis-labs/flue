@@ -193,3 +193,10 @@ export {
 	appendAgentConversationSignal,
 } from './cloudflare/app-signals.ts';
 export { ensureAgentConversation } from './cloudflare/app-conversation.ts';
+export {
+	FLUE_AGENT_ACTIVITY_BEAT_SECONDS,
+	type FlueAgentActivity,
+	agentQueueBusy,
+	agentSubmissionAttemptCount,
+} from './cloudflare/agent-activity.ts';
+export type { AgentSubmissionSettlement } from './runtime/agent-submissions.ts';
