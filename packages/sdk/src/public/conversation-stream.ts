@@ -33,7 +33,25 @@ import type {
  */
 export type ConversationChunkPosition = { batch: number; index: number };
 
+/** Cadence of the server's SSE sync frames; `observe()` allows three missed
+ *  intervals before treating a live stream as dead. Mirrors the runtime's
+ *  `SSE_HEARTBEAT_MS` — the wire contract pins them equal. */
+export const SSE_SYNC_INTERVAL_MS = 15_000;
+
+/** SSE-heartbeat continuity frame (`sync=1` only): per-connection nonce + count
+ *  of chunks sent on that connection. The count proves the whole prefix — a max
+ *  position misses interior loss. Not projected, so no `position`. */
+type ConversationSyncChunk = {
+	type: 'sync';
+	connectionId: string;
+	sentChunks: number;
+	/** Offset this connection started serving from; lets a consumer detect a
+	 *  replacement connection that resumed past its proven prefix. */
+	sinceOffset: string;
+};
+
 export type ConversationStreamChunk =
+	| ConversationSyncChunk
 	| { type: 'conversation-reset'; conversationId: string; snapshot: FlueConversationSnapshot; position: ConversationChunkPosition }
 	| { type: 'message-appended'; conversationId: string; message: FlueConversationMessage; position: ConversationChunkPosition }
 	| {
@@ -110,6 +128,20 @@ const CHUNK_TYPES = new Set<ConversationStreamChunk['type']>([
  * producing incomplete state.
  */
 export function assertConversationStreamChunk(value: ConversationStreamChunk): ConversationStreamChunk {
+	if (value && typeof value === 'object' && (value as { type?: unknown }).type === 'sync') {
+		const sync = value as ConversationSyncChunk;
+		const valid =
+			typeof sync.connectionId === 'string' &&
+			Number.isInteger(sync.sentChunks) &&
+			sync.sentChunks >= 0 &&
+			typeof sync.sinceOffset === 'string';
+		if (!valid) {
+			throw new ConversationStreamError(
+				`Unsupported agent conversation sync frame: ${JSON.stringify(value)}.`,
+			);
+		}
+		return value;
+	}
 	if (
 		!value ||
 		typeof value !== 'object' ||

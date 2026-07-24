@@ -89,8 +89,20 @@ type ConversationStreamChunkBody =
  */
 type ConversationChunkPosition = { batch: number; index: number };
 
-export type ConversationStreamChunk = ConversationStreamChunkBody & {
-	position: ConversationChunkPosition;
+export type ConversationStreamChunk =
+	| (ConversationStreamChunkBody & { position: ConversationChunkPosition })
+	| ConversationSyncChunk;
+
+/** SSE-heartbeat continuity frame (`sync=1` only): per-connection nonce + count
+ *  of chunks sent on that connection. The count proves the whole prefix — a max
+ *  position misses interior loss. Not projected, so no `position`. */
+export type ConversationSyncChunk = {
+	type: 'sync';
+	connectionId: string;
+	sentChunks: number;
+	/** Offset this connection started serving from; lets a consumer detect a
+	 *  replacement connection that resumed past its proven prefix. */
+	sinceOffset: string;
 };
 
 // The public conversation API addresses exactly one conversation per agent
@@ -279,17 +291,22 @@ function encodeRecord(
 				encodeToolOutcome(outcomeId, index, conversationId, record, state, batchRecords),
 			);
 		case 'submission_settled':
-			return record.submissionId
-				? [
-						{
-							type: 'submission-settled',
-							conversationId,
-							submissionId: record.submissionId,
-							outcome: record.outcome,
-							...(record.error === undefined ? {} : { error: record.error }),
-						},
-					]
-				: [];
+			if (!record.submissionId) {
+				console.error(
+					'[flue:conversation-projection] suppressed a submission_settled record with no submissionId; settlement consumers will not observe this outcome',
+					{ conversationId, recordId: record.id },
+				);
+				return [];
+			}
+			return [
+				{
+					type: 'submission-settled',
+					conversationId,
+					submissionId: record.submissionId,
+					outcome: record.outcome,
+					...(record.error === undefined ? {} : { error: record.error }),
+				},
+			];
 		default:
 			return [];
 	}

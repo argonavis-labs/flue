@@ -292,3 +292,39 @@ describe('assertConversationStreamChunk()', () => {
 		expect(() => assertConversationStreamChunk(chunk)).toThrow(ConversationStreamError);
 	});
 });
+
+describe('assertConversationStreamChunk() sync frames', () => {
+	it('accepts a sync frame', () => {
+		const chunk: ConversationStreamChunk = {
+			type: 'sync',
+			connectionId: 'conn-1',
+			sentChunks: 3,
+			sinceOffset: '0000000000000000_0000000000000001',
+		};
+		expect(assertConversationStreamChunk(chunk)).toBe(chunk);
+	});
+
+	it('rejects a sync frame without a connection nonce', () => {
+		const chunk = { type: 'sync', sentChunks: 0, sinceOffset: '-1' } as unknown as ConversationStreamChunk;
+		expect(() => assertConversationStreamChunk(chunk)).toThrow(ConversationStreamError);
+	});
+
+	it('rejects a sync frame with an invalid sent count', () => {
+		const chunk = {
+			type: 'sync',
+			connectionId: 'conn-1',
+			sentChunks: 'nope',
+			sinceOffset: '-1',
+		} as unknown as ConversationStreamChunk;
+		expect(() => assertConversationStreamChunk(chunk)).toThrow(ConversationStreamError);
+	});
+
+	it('rejects a sync frame without a start offset', () => {
+		const chunk = {
+			type: 'sync',
+			connectionId: 'conn-1',
+			sentChunks: 0,
+		} as unknown as ConversationStreamChunk;
+		expect(() => assertConversationStreamChunk(chunk)).toThrow(ConversationStreamError);
+	});
+});
