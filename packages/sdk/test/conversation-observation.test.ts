@@ -89,10 +89,11 @@ const delta = (batch: number, index = 0): ConversationStreamChunk => ({
 	position: { batch, index },
 });
 
-const sync = (
-	connectionId: string,
-	lastPosition: { batch: number; index: number } | null,
-): ConversationStreamChunk => ({ type: 'sync', connectionId, lastPosition });
+const sync = (connectionId: string, sentChunks: number): ConversationStreamChunk => ({
+	type: 'sync',
+	connectionId,
+	sentChunks,
+});
 
 describe('createAgentConversationObservation() sync frames', () => {
 	beforeEach(() => {
@@ -102,7 +103,27 @@ describe('createAgentConversationObservation() sync frames', () => {
 		vi.useRealTimers();
 	});
 
-	it('rehydrates when a sync frame reports a position ahead of the last applied', async () => {
+	it('rehydrates when an interior chunk is lost even though a later chunk was applied', async () => {
+		const { source, streams, historyCalls } = makeSource();
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+		streams[0]?.push(delta(1));
+		// The chunk at batch 2 is lost in transit; batch 3 still arrives and applies.
+		streams[0]?.push(delta(3));
+		await flush();
+
+		streams[0]?.push(sync('conn-1', 3));
+		await flush();
+
+		expect(streams[0]?.cancelled).toBe(true);
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+		expect(historyCalls()).toBe(2);
+		observation.close();
+	});
+
+	it('rehydrates when the tail chunk is lost', async () => {
 		const { source, streams, historyCalls } = makeSource();
 		const observation = createAgentConversationObservation(source, { live: 'sse' });
 		observation.subscribe(() => {});
@@ -110,7 +131,7 @@ describe('createAgentConversationObservation() sync frames', () => {
 		streams[0]?.push(delta(1));
 		await flush();
 
-		streams[0]?.push(sync('conn-1', { batch: 3, index: 0 }));
+		streams[0]?.push(sync('conn-1', 2));
 		await flush();
 
 		expect(streams[0]?.cancelled).toBe(true);
@@ -120,13 +141,13 @@ describe('createAgentConversationObservation() sync frames', () => {
 		observation.close();
 	});
 
-	it('rehydrates when a sync frame reports sent chunks while none were applied', async () => {
+	it('rehydrates when chunks were sent but none arrived', async () => {
 		const { source, streams, historyCalls } = makeSource();
 		const observation = createAgentConversationObservation(source, { live: 'sse' });
 		observation.subscribe(() => {});
 		await flush();
 
-		streams[0]?.push(sync('conn-1', { batch: 1, index: 0 }));
+		streams[0]?.push(sync('conn-1', 1));
 		await flush();
 
 		expect(streams[0]?.cancelled).toBe(true);
@@ -136,20 +157,42 @@ describe('createAgentConversationObservation() sync frames', () => {
 		observation.close();
 	});
 
-	it('treats a sync frame at or below the last applied position as a no-op', async () => {
+	it('treats a matching sent count as a no-op and never counts sync frames', async () => {
 		const { source, streams, historyCalls } = makeSource();
 		const observation = createAgentConversationObservation(source, { live: 'sse' });
 		observation.subscribe(() => {});
 		await flush();
+		streams[0]?.push(delta(1));
 		streams[0]?.push(delta(2));
 		await flush();
 
-		streams[0]?.push(sync('conn-1', { batch: 2, index: 0 }));
-		streams[0]?.push(sync('conn-1', null));
+		streams[0]?.push(sync('conn-1', 2));
+		streams[0]?.push(sync('conn-1', 2));
 		await flush();
 
 		expect(streams[0]?.cancelled).toBe(false);
 		expect(historyCalls()).toBe(1);
+		observation.close();
+	});
+
+	it('counts received chunks per stream, not across rehydrates', async () => {
+		const { source, streams, historyCalls } = makeSource();
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+		streams[0]?.push(sync('conn-1', 1));
+		await flush();
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+		expect(historyCalls()).toBe(2);
+
+		streams[1]?.push(delta(5));
+		await flush();
+		streams[1]?.push(sync('conn-2', 1));
+		await flush();
+
+		expect(streams[1]?.cancelled).toBe(false);
+		expect(historyCalls()).toBe(2);
 		observation.close();
 	});
 
@@ -158,11 +201,11 @@ describe('createAgentConversationObservation() sync frames', () => {
 		const observation = createAgentConversationObservation(source, { live: 'sse' });
 		observation.subscribe(() => {});
 		await flush();
-		streams[0]?.push(sync('conn-1', null));
+		streams[0]?.push(sync('conn-1', 0));
 		await flush();
 		expect(streams[0]?.cancelled).toBe(false);
 
-		streams[0]?.push(sync('conn-2', null));
+		streams[0]?.push(sync('conn-2', 0));
 		await flush();
 
 		expect(streams[0]?.cancelled).toBe(true);
@@ -191,7 +234,7 @@ describe('createAgentConversationObservation() sync frames', () => {
 		const observation = createAgentConversationObservation(source, { live: 'sse' });
 		observation.subscribe(() => {});
 		await flush();
-		streams[0]?.push(sync('conn-1', null));
+		streams[0]?.push(sync('conn-1', 0));
 		await flush();
 
 		await vi.advanceTimersByTimeAsync(SSE_SYNC_INTERVAL_MS * 3 + 1_000);
@@ -209,12 +252,12 @@ describe('createAgentConversationObservation() sync frames', () => {
 		const observation = createAgentConversationObservation(source, { live: 'sse' });
 		observation.subscribe(() => {});
 		await flush();
-		streams[0]?.push(sync('conn-1', null));
+		streams[0]?.push(sync('conn-1', 0));
 		await flush();
 
 		for (let i = 0; i < 4; i++) {
 			await vi.advanceTimersByTimeAsync(SSE_SYNC_INTERVAL_MS * 2);
-			streams[0]?.push(sync('conn-1', null));
+			streams[0]?.push(sync('conn-1', 0));
 			await flush();
 		}
 
@@ -228,7 +271,7 @@ describe('createAgentConversationObservation() sync frames', () => {
 		const observation = createAgentConversationObservation(source, { live: 'sse' });
 		observation.subscribe(() => {});
 		await flush();
-		streams[0]?.push(sync('conn-1', null));
+		streams[0]?.push(sync('conn-1', 0));
 		await flush();
 
 		observation.close();

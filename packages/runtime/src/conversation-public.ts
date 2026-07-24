@@ -87,19 +87,19 @@ type ConversationStreamChunkBody =
  * then `index`) to dedupe chunks redelivered under at-least-once transports
  * (e.g. an SSE reconnect). Opaque otherwise — do not interpret the numbers.
  */
-export type ConversationChunkPosition = { batch: number; index: number };
+type ConversationChunkPosition = { batch: number; index: number };
 
 export type ConversationStreamChunk =
 	| (ConversationStreamChunkBody & { position: ConversationChunkPosition })
 	| ConversationSyncChunk;
 
-/** SSE-heartbeat continuity frame (`sync=1` only): a per-connection nonce plus
- *  the last chunk position sent on that connection (`null` before the first).
- *  Not a projection product, so it carries no `position`. */
+/** SSE-heartbeat continuity frame (`sync=1` only): per-connection nonce + count
+ *  of chunks sent on that connection. The count proves the whole prefix — a max
+ *  position misses interior loss. Not projected, so no `position`. */
 export type ConversationSyncChunk = {
 	type: 'sync';
 	connectionId: string;
-	lastPosition: ConversationChunkPosition | null;
+	sentChunks: number;
 };
 
 // The public conversation API addresses exactly one conversation per agent

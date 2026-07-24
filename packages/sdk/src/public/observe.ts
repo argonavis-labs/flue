@@ -158,6 +158,7 @@ export function createAgentConversationObservation(
 		// transport stayed on one server connection, and the watchdog arms only
 		// after the first sync frame so an old runtime never trips it.
 		let syncConnectionId: string | undefined;
+		let receivedChunks = 0;
 		let syncWatchdog: ReturnType<typeof setTimeout> | undefined;
 		const failStream = (error: Error) => {
 			stream = undefined;
@@ -183,15 +184,13 @@ export function createAgentConversationObservation(
 					}
 					syncConnectionId = chunk.connectionId;
 					armSyncWatchdog();
-					if (
-						chunk.lastPosition &&
-						(lastApplied === undefined || comparePosition(lastApplied, chunk.lastPosition) < 0)
-					) {
+					if (chunk.sentChunks !== receivedChunks) {
 						failStream(new Error('Agent conversation chunks were lost in transit; rehydrating.'));
 						return;
 					}
 					continue;
 				}
+				receivedChunks++;
 				if (!streamState) throw new Error('Agent conversation updates require materialized state.');
 				// Drop redelivered chunks (at-least-once transports replay the
 				// in-flight batch on reconnect). Positions are monotonic but not

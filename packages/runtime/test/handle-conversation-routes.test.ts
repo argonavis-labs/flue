@@ -318,7 +318,7 @@ describe('sseResponse() sync frames', () => {
 		return { ...context, tail, abort, readUntil };
 	}
 
-	it('emits a sync frame carrying the connection nonce and last sent position on the heartbeat tick', async () => {
+	it('emits a sync frame carrying the connection nonce and sent-chunk count on the heartbeat tick', async () => {
 		vi.useFakeTimers();
 		try {
 			const sse = await openSse({ sync: true });
@@ -330,11 +330,12 @@ describe('sseResponse() sync frames', () => {
 			const frame = text.match(/event: data\ndata:(\[\{"type":"sync".*?\])\n\n/);
 			expect(frame).not.toBeNull();
 			const [chunk] = JSON.parse(frame![1] as string) as [
-				{ type: string; connectionId: string; lastPosition: { batch: number; index: number } | null },
+				{ type: string; connectionId: string; sentChunks: number },
 			];
 			expect(chunk.connectionId).toEqual(expect.any(String));
 			expect(chunk.connectionId.length).toBeGreaterThan(0);
-			expect(chunk.lastPosition).toEqual({ batch: parseOffset(sse.tail as string), index: 0 });
+			// Catch-up projected the created batch's reset chunk plus the user message.
+			expect(chunk.sentChunks).toBe(2);
 			sse.abort.abort();
 			await sse.adapter.close?.();
 		} finally {
@@ -342,7 +343,7 @@ describe('sseResponse() sync frames', () => {
 		}
 	});
 
-	it('reports a null last position when no chunk was sent on the connection', async () => {
+	it('reports a zero sent count when no chunk was sent on the connection', async () => {
 		vi.useFakeTimers();
 		try {
 			const sse = await openSse({ sync: true, fromHead: true });
@@ -353,8 +354,8 @@ describe('sseResponse() sync frames', () => {
 
 			const frame = text.match(/event: data\ndata:(\[\{"type":"sync".*?\])\n\n/);
 			expect(frame).not.toBeNull();
-			const [chunk] = JSON.parse(frame![1] as string) as [{ lastPosition: unknown }];
-			expect(chunk.lastPosition).toBeNull();
+			const [chunk] = JSON.parse(frame![1] as string) as [{ sentChunks: number }];
+			expect(chunk.sentChunks).toBe(0);
 			sse.abort.abort();
 			await sse.adapter.close?.();
 		} finally {

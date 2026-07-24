@@ -64,6 +64,18 @@ SSE responses contain:
 
 - `event: data` frames with a JSON array of conversation chunks or workflow events;
 - `event: control` frames with `streamNextOffset` and optional `upToDate`; workflow event streams may also include `streamClosed`;
-- heartbeat comments on idle connections.
+- heartbeat comments on idle connections, unless the client opted into sync frames.
 
 Track `streamNextOffset` from control frames to resume after a disconnect.
+
+### Sync frames (`sync=1`)
+
+Agent conversation SSE reads accept a `sync=1` query parameter. When present, the 15-second heartbeat tick emits a real data+control frame pair instead of a comment. The data frame carries exactly one chunk:
+
+```json
+{ "type": "sync", "connectionId": "…", "sentChunks": 3 }
+```
+
+`connectionId` is a nonce minted per SSE connection. `sentChunks` is the cumulative count of conversation chunks sent on that connection, so a consumer can prove the entire delivered prefix — a maximum position would miss an interior loss once a later chunk arrives. Unlike every projected chunk, a sync chunk carries no `position` and no `conversationId`.
+
+The SDK's `observe()` uses sync frames as its continuity contract: a `sentChunks` that disagrees with the chunks received on the connection (loss anywhere in the prefix), a changed `connectionId` (an invisible transport reconnect), or three missed sync intervals (a dead or stalled stream) each force a fresh history rehydrate. The watchdog arms only after the first sync frame observed on a stream, so either side of a version skew sees the pre-sync wire unchanged.

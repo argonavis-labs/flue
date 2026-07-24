@@ -38,13 +38,13 @@ export type ConversationChunkPosition = { batch: number; index: number };
  *  `SSE_HEARTBEAT_MS` — the wire contract pins them equal. */
 export const SSE_SYNC_INTERVAL_MS = 15_000;
 
-/** SSE-heartbeat continuity frame (`sync=1` only): a per-connection nonce plus
- *  the last chunk position sent on that connection (`null` before the first).
- *  Not a projection product, so it carries no `position`. */
+/** SSE-heartbeat continuity frame (`sync=1` only): per-connection nonce + count
+ *  of chunks sent on that connection. The count proves the whole prefix — a max
+ *  position misses interior loss. Not projected, so no `position`. */
 type ConversationSyncChunk = {
 	type: 'sync';
 	connectionId: string;
-	lastPosition: ConversationChunkPosition | null;
+	sentChunks: number;
 };
 
 export type ConversationStreamChunk =
@@ -129,10 +129,8 @@ export function assertConversationStreamChunk(value: ConversationStreamChunk): C
 		const sync = value as ConversationSyncChunk;
 		const valid =
 			typeof sync.connectionId === 'string' &&
-			(sync.lastPosition === null ||
-				(!!sync.lastPosition &&
-					Number.isFinite(sync.lastPosition.batch) &&
-					Number.isFinite(sync.lastPosition.index)));
+			Number.isInteger(sync.sentChunks) &&
+			sync.sentChunks >= 0;
 		if (!valid) {
 			throw new ConversationStreamError(
 				`Unsupported agent conversation sync frame: ${JSON.stringify(value)}.`,

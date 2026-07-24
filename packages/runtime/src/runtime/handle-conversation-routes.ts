@@ -1,5 +1,4 @@
 import {
-	type ConversationChunkPosition,
 	type ConversationSyncChunk,
 	projectAgentConversationBatch,
 	projectAgentConversationSnapshot,
@@ -260,7 +259,7 @@ function sseResponse(
 			let currentOffset = offset;
 			let wake: (() => void) | undefined;
 			const connectionId = crypto.randomUUID();
-			let lastPosition: ConversationChunkPosition | null = null;
+			let sentChunks = 0;
 			unsubscribe = store.subscribe(path, () => wake?.());
 			heartbeat = setInterval(() => {
 				if (!active) return;
@@ -268,7 +267,7 @@ function sseResponse(
 					controller.enqueue(encoder.encode(': heartbeat\n\n'));
 					return;
 				}
-				const frame: ConversationSyncChunk = { type: 'sync', connectionId, lastPosition };
+				const frame: ConversationSyncChunk = { type: 'sync', connectionId, sentChunks };
 				controller.enqueue(encoder.encode(`event: data\ndata:${JSON.stringify([frame])}\n\n`));
 				controller.enqueue(
 					encoder.encode(
@@ -290,10 +289,7 @@ function sseResponse(
 						controller.enqueue(
 							encoder.encode(`event: data\ndata:${JSON.stringify(projected.items)}\n\n`),
 						);
-						const tail = projected.items[projected.items.length - 1] as {
-							position?: ConversationChunkPosition;
-						};
-						if (tail.position) lastPosition = tail.position;
+						sentChunks += projected.items.length;
 					}
 					currentOffset = read.nextOffset;
 					const control = {

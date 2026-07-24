@@ -849,3 +849,51 @@ describe('agents.observe() sync opt-in', () => {
 		expect(syncParams[0]).toBeNull();
 	});
 });
+
+describe('agents.observe() sse transport contract', () => {
+	it('rehydrates when a data frame is dropped while its control frame advances the offset', async () => {
+		const encoder = new TextEncoder();
+		const sseFrames = [
+			'event: data\ndata:[{"type":"message-delta","conversationId":"c1","messageId":"a1","kind":"text","delta":"a","position":{"batch":1,"index":0}}]\n\n',
+			'event: control\ndata:{"streamNextOffset":"0000000000000000_0000000000000002"}\n\n',
+			// batch 2's data frame is lost in transit; its control frame still arrives.
+			'event: control\ndata:{"streamNextOffset":"0000000000000000_0000000000000003"}\n\n',
+			'event: data\ndata:[{"type":"message-delta","conversationId":"c1","messageId":"a1","kind":"text","delta":"c","position":{"batch":3,"index":0}}]\n\n',
+			'event: control\ndata:{"streamNextOffset":"0000000000000000_0000000000000004"}\n\n',
+			'event: data\ndata:[{"type":"sync","connectionId":"conn-1","sentChunks":3}]\n\n',
+			'event: control\ndata:{"streamNextOffset":"0000000000000000_0000000000000004"}\n\n',
+		];
+		let historyCalls = 0;
+		let updatesCalls = 0;
+		const client = createFlueClient({
+			baseUrl: 'https://flue.test',
+			fetch: async (input, init) => {
+				const request = new Request(input, init);
+				const url = new URL(request.url);
+				if (url.searchParams.get('view') === 'history') {
+					historyCalls++;
+					return Response.json({
+						v: 1,
+						conversationId: 'c1',
+						offset: '0000000000000000_0000000000000001',
+						messages: [],
+						settlements: [],
+					});
+				}
+				updatesCalls++;
+				const frames = updatesCalls === 1 ? sseFrames : [];
+				const body = new ReadableStream<Uint8Array>({
+					start(controller) {
+						for (const frame of frames) controller.enqueue(encoder.encode(frame));
+					},
+				});
+				return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+			},
+		});
+
+		const observation = client.agents.observe('agent', 'transport-instance', { live: 'sse' });
+		observation.subscribe(() => {});
+		await vi.waitFor(() => expect(historyCalls).toBe(2), { timeout: 4_000 });
+		observation.close();
+	});
+});
