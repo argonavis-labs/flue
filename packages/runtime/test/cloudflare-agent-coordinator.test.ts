@@ -3,6 +3,12 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentExecutionStore } from '../src/agent-execution-store.ts';
 import type { FlueContextInternal } from '../src/client.ts';
+import {
+	FLUE_AGENT_ACTIVITY_BEAT_SECONDS,
+	type FlueAgentActivity,
+	agentQueueBusy,
+	agentSubmissionAttemptCount,
+} from '../src/cloudflare/agent-activity.ts';
 import { createCloudflareAgentRuntime } from '../src/cloudflare/agent-coordinator.ts';
 import type {
 	AgentSubmissionInspection,
@@ -79,7 +85,11 @@ function makeRuntime(
 	});
 }
 
-function makeInstance(storage: ReturnType<typeof makeFakeSql>['storage'], events: string[] = []) {
+function makeInstance(
+	storage: ReturnType<typeof makeFakeSql>['storage'],
+	events: string[] = [],
+	activities: FlueAgentActivity[] = [],
+) {
 	return {
 		name: 'agent-1',
 		env: {},
@@ -100,6 +110,10 @@ function makeInstance(storage: ReturnType<typeof makeFakeSql>['storage'], events
 			_name: string,
 			_callback: (ctx: { stash(snapshot: unknown): void }) => Promise<void>,
 		) {},
+		onFlueAgentActivity(activity: FlueAgentActivity) {
+			activities.push(activity);
+			if (activity.type === 'idle') events.push('idle-emitted');
+		},
 	};
 }
 
@@ -826,5 +840,239 @@ describe('createCloudflareAgentRuntime()', () => {
 		);
 
 		expect(await response?.json()).toEqual({ aborted: false });
+	});
+});
+
+function makeProcessingContext() {
+	const session = {
+		async processSubmissionInput() {},
+		async recordSubmissionTerminal() {
+			return [];
+		},
+	};
+	return {
+		async initializeRootHarness() {
+			return {
+				async session() {
+					return session;
+				},
+			};
+		},
+		setEventCallback() {},
+		createEvent(event: unknown) {
+			return event;
+		},
+		publishEvent() {},
+		emitEvent(event: unknown) {
+			return event;
+		},
+		async flushEventCallbacks() {},
+		subscribeEvent() {
+			return () => {};
+		},
+	} as unknown as FlueContextInternal;
+}
+
+function makeProcessingRuntime() {
+	return makeRuntime({
+		createdAgent: {} as never,
+		createContext: () => makeProcessingContext(),
+	});
+}
+
+function dispatchRequest(dispatchId = 'dispatch-1') {
+	return new Request('https://flue.invalid/__flue/internal/dispatch', {
+		method: 'POST',
+		body: JSON.stringify({ ...dispatchInput(), dispatchId }),
+	});
+}
+
+async function settledQuiescence(
+	store: AgentExecutionStore,
+	submissionIds: string[],
+): Promise<void> {
+	await vi.waitFor(async () => {
+		for (const submissionId of submissionIds) {
+			expect(await store.submissions.getSubmission(submissionId)).toMatchObject({
+				status: 'settled',
+			});
+		}
+	});
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+describe('agent activity hook', () => {
+	it('emits a working edge when an attached submission is admitted', async () => {
+		const { storage } = makeFakeSql();
+		const activities: FlueAgentActivity[] = [];
+		const runtime = makeProcessingRuntime();
+		const instance = makeInstance(storage, [], activities);
+		instance.runFiber = async (_name, callback) => callback({ stash() {} });
+		prepare(runtime, instance);
+
+		const response = await runtime.onRequest(
+			instance,
+			new Request('https://flue.invalid/agents/assistant/agent-1', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ kind: 'user', body: 'Hello', submissionId: 'direct-1' }),
+			}),
+		);
+
+		expect(response?.status).toBe(202);
+		expect(activities[0]).toMatchObject({ type: 'working', at: expect.any(Date) });
+	});
+
+	it('emits a working edge when an internal dispatch is admitted, once across replays', async () => {
+		const { storage } = makeFakeSql();
+		const activities: FlueAgentActivity[] = [];
+		const runtime = makeProcessingRuntime();
+		const instance = makeInstance(storage, [], activities);
+		instance.runFiber = async (_name, callback) => callback({ stash() {} });
+		const executionStore = prepare(runtime, instance);
+
+		await runtime.onRequest(instance, dispatchRequest());
+		await settledQuiescence(executionStore, ['dispatch-1']);
+		const workingBeforeReplay = activities.filter((a) => a.type === 'working').length;
+		await runtime.onRequest(instance, dispatchRequest());
+
+		expect(workingBeforeReplay).toBe(1);
+		expect(activities.filter((a) => a.type === 'working')).toHaveLength(1);
+	});
+
+	it('emits a working heartbeat on each wake while the queue is busy', async () => {
+		const { storage } = makeFakeSql();
+		const activities: FlueAgentActivity[] = [];
+		const delays: number[] = [];
+		const runtime = makeRuntime();
+		const instance = makeInstance(storage, [], activities);
+		instance.schedule = async (delaySeconds) => {
+			delays.push(delaySeconds);
+		};
+		const executionStore = prepare(runtime, instance);
+		await executionStore.submissions.admitDirect(directInput());
+
+		await runtime.wakeSubmissions(instance);
+
+		expect(activities).toContainEqual({ type: 'working', at: expect.any(Date) });
+		expect(delays.every((delay) => delay <= FLUE_AGENT_ACTIVITY_BEAT_SECONDS)).toBe(true);
+		expect(delays.length).toBeGreaterThan(0);
+	});
+
+	it('re-fires the idle edge when a wake finds the queue already settled', async () => {
+		const { storage } = makeFakeSql();
+		const activities: FlueAgentActivity[] = [];
+		const runtime = makeRuntime();
+		const instance = makeInstance(storage, [], activities);
+		prepare(runtime, instance);
+
+		await runtime.wakeSubmissions(instance);
+
+		expect(activities).toEqual([{ type: 'idle', at: expect.any(Date) }]);
+	});
+
+	it('fires idle strictly after settlement with the queue-level outcome', async () => {
+		const { storage } = makeFakeSql();
+		const activities: FlueAgentActivity[] = [];
+		const events: string[] = [];
+		const runtime = makeProcessingRuntime();
+		const instance = makeInstance(storage, events, activities);
+		instance.runFiber = async (_name, callback) => callback({ stash() {} });
+		const executionStore = prepare(runtime, instance);
+		const originalComplete = executionStore.submissions.completeSubmission.bind(
+			executionStore.submissions,
+		);
+		executionStore.submissions.completeSubmission = async (attempt) => {
+			events.push('settled');
+			return originalComplete(attempt);
+		};
+
+		await runtime.onRequest(instance, dispatchRequest());
+		await settledQuiescence(executionStore, ['dispatch-1']);
+
+		const firstIdle = events.indexOf('idle-emitted');
+		expect(firstIdle).toBeGreaterThan(events.indexOf('settled'));
+		expect(activities.filter((a) => a.type === 'idle')).toContainEqual({
+			type: 'idle',
+			at: expect.any(Date),
+			last: {
+				submissionId: 'dispatch-1',
+				outcome: 'completed',
+				attemptCount: 1,
+			},
+		});
+	});
+
+	it('holds the idle edge while queued work remains', async () => {
+		const { storage } = makeFakeSql();
+		const activities: FlueAgentActivity[] = [];
+		const events: string[] = [];
+		const runtime = makeProcessingRuntime();
+		const instance = makeInstance(storage, events, activities);
+		instance.runFiber = async (_name, callback) => callback({ stash() {} });
+		const executionStore = prepare(runtime, instance);
+		const originalComplete = executionStore.submissions.completeSubmission.bind(
+			executionStore.submissions,
+		);
+		const settledIds: string[] = [];
+		executionStore.submissions.completeSubmission = async (attempt) => {
+			settledIds.push(attempt.submissionId);
+			events.push(`settled:${attempt.submissionId}`);
+			return originalComplete(attempt);
+		};
+
+		await runtime.onRequest(instance, dispatchRequest('dispatch-1'));
+		await runtime.onRequest(instance, dispatchRequest('dispatch-2'));
+		await settledQuiescence(executionStore, ['dispatch-1', 'dispatch-2']);
+
+		expect(settledIds).toEqual(['dispatch-1', 'dispatch-2']);
+		expect(events.indexOf('idle-emitted')).toBeGreaterThan(events.indexOf('settled:dispatch-2'));
+		const idles = activities.filter((a) => a.type === 'idle');
+		expect(idles.at(-1)).toMatchObject({
+			last: { submissionId: 'dispatch-2', outcome: 'completed' },
+		});
+	});
+
+	it('never lets a throwing activity hook block coordination', async () => {
+		const { storage } = makeFakeSql();
+		const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const runtime = makeProcessingRuntime();
+		const instance = makeInstance(storage);
+		instance.runFiber = async (_name, callback) => callback({ stash() {} });
+		instance.onFlueAgentActivity = () => {
+			throw new Error('hook exploded');
+		};
+		const executionStore = prepare(runtime, instance);
+
+		await runtime.onRequest(instance, dispatchRequest());
+		await settledQuiescence(executionStore, ['dispatch-1']);
+
+		expect(await executionStore.submissions.getSubmission('dispatch-1')).toMatchObject({
+			status: 'settled',
+		});
+		expect(consoleError).toHaveBeenCalledWith(
+			'[flue:agent-activity]',
+			expect.objectContaining({ outcome: 'hook_failed' }),
+			expect.any(Error),
+		);
+	});
+
+	it('reads queue business and attempt counts through the coordinator', async () => {
+		const { storage } = makeFakeSql();
+		const runtime = makeProcessingRuntime();
+		const instance = makeInstance(storage);
+		const executionStore = prepare(runtime, instance);
+		await executionStore.submissions.admitDispatch(dispatchInput());
+
+		expect(await agentQueueBusy(instance)).toBe(true);
+
+		instance.runFiber = async (_name, callback) => callback({ stash() {} });
+		await runtime.onStart(instance, () => {});
+		await settledQuiescence(executionStore, ['dispatch-1']);
+
+		expect(await agentQueueBusy(instance)).toBe(false);
+		expect(await agentSubmissionAttemptCount(instance, 'dispatch-1')).toBe(1);
+		expect(await agentSubmissionAttemptCount(instance, 'missing')).toBeUndefined();
 	});
 });

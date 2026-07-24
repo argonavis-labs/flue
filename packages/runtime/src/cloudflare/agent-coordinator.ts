@@ -10,6 +10,7 @@ import { ConversationRecordWriter } from '../conversation-writer.ts';
 import { SubmissionAbortedError } from '../errors.ts';
 import type { FlueTraceCarrier } from '../execution-interceptor.ts';
 import {
+	type AgentSubmissionSettlement,
 	agentSubmissionDispatchId,
 	type createAgentSubmissionSessionHandler,
 	createDirectAgentSubmissionInput,
@@ -32,6 +33,7 @@ import {
 } from '../runtime/handle-conversation-routes.ts';
 import { createSessionStorageKey } from '../session-identity.ts';
 import type { DeliveredMessage } from '../types.ts';
+import { FLUE_AGENT_ACTIVITY_BEAT_SECONDS, type FlueAgentActivity } from './agent-activity.ts';
 import {
 	createSqlAgentExecutionStore,
 	createSqlConversationStores,
@@ -41,7 +43,7 @@ import { type AgentConversationSignalInput, cloudflareAgentCoordinators } from '
 export const CLOUDFLARE_AGENT_INTERNAL_DISPATCH_PATH = '/__flue/internal/dispatch';
 
 const FLUE_AGENT_SUBMISSION_WAKE_CALLBACK = '__flueWakeAgentSubmissions';
-const FLUE_AGENT_SUBMISSION_WAKE_SECONDS = 30;
+const FLUE_AGENT_SUBMISSION_WAKE_SECONDS = FLUE_AGENT_ACTIVITY_BEAT_SECONDS;
 const FLUE_AGENT_SUBMISSION_ATTEMPT_STALE_MS = 15 * 60 * 1000;
 const FLUE_AGENT_SUBMISSION_ATTEMPT_FIBER = 'flue:submission-attempt';
 
@@ -70,6 +72,7 @@ interface CloudflareAgentInstance {
 		name: string,
 		callback: (ctx: { stash(snapshot: unknown): void }) => Promise<void>,
 	): Promise<void>;
+	onFlueAgentActivity?(activity: FlueAgentActivity): void;
 }
 
 interface CloudflareAgentRecoveredFiberContext {
@@ -201,6 +204,9 @@ export class CloudflareAgentCoordinator {
 	 */
 	private activeControllers = new Map<string, AbortController>();
 
+	// In-isolate memory only: an idle edge fired after eviction simply omits `last`.
+	private lastSettlement: AgentSubmissionSettlement | undefined;
+
 	// Instance context is established at exactly two boundaries: the public
 	// coordinator entry points below (onStart/wakeSubmissions/onRequest/
 	// onFiberRecovered) and the durable submission fiber in
@@ -219,7 +225,13 @@ export class CloudflareAgentCoordinator {
 
 	wakeSubmissions(): Promise<void> {
 		return this.runWithInstanceContext(async () => {
-			if (!(await this.submissions.hasUnsettledSubmissions())) return;
+			if (!(await this.submissions.hasUnsettledSubmissions())) {
+				// A wake that finds the queue settled re-fires the idle edge,
+				// repairing an idle edge lost to isolate death.
+				this.emitIdleActivity();
+				return;
+			}
+			this.emitActivity({ type: 'working', at: new Date() });
 			await this.armSubmissionWake({ idempotent: false });
 			await this.reconcileSubmissions({ driverAlreadyArmed: true });
 		});
@@ -314,6 +326,45 @@ export class CloudflareAgentCoordinator {
 
 	private runWithInstanceContext<T>(callback: () => T): T {
 		return this.options.runWithInstanceContext(this.instance, this.agentName, callback);
+	}
+
+	/** See {@link agentQueueBusy}: unsettled-queue read for the embedding application. */
+	queueBusy(): Promise<boolean> {
+		return this.submissions.hasUnsettledSubmissions();
+	}
+
+	/** See {@link agentSubmissionAttemptCount}: attempt-counter read for the embedding application. */
+	async submissionAttemptCount(submissionId: string): Promise<number | undefined> {
+		return (await this.submissions.getSubmission(submissionId))?.attemptCount;
+	}
+
+	private emitActivity(activity: FlueAgentActivity): void {
+		try {
+			this.instance.onFlueAgentActivity?.(activity);
+		} catch (error) {
+			console.error(
+				'[flue:agent-activity]',
+				{
+					agentName: this.agentName,
+					instanceId: this.instance.name,
+					operation: 'activity_hook',
+					outcome: 'hook_failed',
+				},
+				error,
+			);
+		}
+	}
+
+	private emitIdleActivity(): void {
+		this.emitActivity({
+			type: 'idle',
+			at: new Date(),
+			...(this.lastSettlement ? { last: this.lastSettlement } : {}),
+		});
+	}
+
+	private noteSettlement(settlement?: AgentSubmissionSettlement): void {
+		if (settlement) this.lastSettlement = settlement;
 	}
 
 	/** See {@link appendAgentConversationSignal}: out-of-turn canonical signal append. */
@@ -429,7 +480,10 @@ export class CloudflareAgentCoordinator {
 	private async reconcileSubmissions(
 		options: { driverAlreadyArmed?: boolean } = {},
 	): Promise<boolean> {
-		if (!(await this.submissions.hasUnsettledSubmissions())) return false;
+		if (!(await this.submissions.hasUnsettledSubmissions())) {
+			this.emitIdleActivity();
+			return false;
+		}
 		if (!options.driverAlreadyArmed) await this.restoreSubmissionWake();
 		try {
 			for (const submission of await this.submissions.listUnreadySubmissions()) {
@@ -532,7 +586,9 @@ export class CloudflareAgentCoordinator {
 			);
 			return true;
 		}
-		return await this.submissions.hasUnsettledSubmissions();
+		const busy = await this.submissions.hasUnsettledSubmissions();
+		if (!busy) this.emitIdleActivity();
+		return busy;
 	}
 
 	private logSubmissionReconciliationFailure(
@@ -571,6 +627,7 @@ export class CloudflareAgentCoordinator {
 				acquire: (attempt) => this.submissions.insertAttemptMarker(attempt),
 				release: (attempt) => this.deleteAttemptMarkerSafely(attempt),
 			},
+			(settlement) => this.noteSettlement(settlement),
 		);
 		if (replacement) {
 			await this.startSubmissionAttempt(replacement);
@@ -722,7 +779,8 @@ export class CloudflareAgentCoordinator {
 			conversationWriter,
 			onInteractionStart: this.options.onInteractionStart,
 			signal,
-			onSettled: () => {
+			onSettled: (settlement) => {
+				this.noteSettlement(settlement);
 				void this.reconcileSubmissions().catch((error) => {
 					console.error(
 						'[flue:submission-reconciliation]',
@@ -754,6 +812,7 @@ export class CloudflareAgentCoordinator {
 		const agent = this.options.agents.find((record) => record.name === this.agentName)?.definition;
 		if (!agent) throw new Error('[flue] Agent target unavailable during durable admission.');
 		const admitted = await this.submissions.admitDirect(input);
+		if (admitted.status !== 'settled') this.emitActivity({ type: 'working', at: new Date() });
 		if (admitted.canonicalReadyAt === null) {
 			await this.materializeSubmissionConversation(input);
 			await this.submissions.markSubmissionCanonicalReady(input.submissionId);
@@ -781,6 +840,9 @@ export class CloudflareAgentCoordinator {
 		}
 		if (admission.kind === 'conflict') {
 			return new Response('Conflicting internal dispatch replay.', { status: 409 });
+		}
+		if (admission.submission.status !== 'settled') {
+			this.emitActivity({ type: 'working', at: new Date() });
 		}
 		if (admission.submission.canonicalReadyAt === null) {
 			await this.materializeSubmissionConversation(createDispatchAgentSubmissionInput(input));
