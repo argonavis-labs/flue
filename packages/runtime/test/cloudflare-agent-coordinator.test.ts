@@ -6,6 +6,7 @@ import type { FlueContextInternal } from '../src/client.ts';
 import {
 	FLUE_AGENT_ACTIVITY_BEAT_SECONDS,
 	type FlueAgentActivity,
+	type FlueReconciliationFailure,
 	agentQueueBusy,
 	agentSubmissionAttemptCount,
 } from '../src/cloudflare/agent-activity.ts';
@@ -89,6 +90,7 @@ function makeInstance(
 	storage: ReturnType<typeof makeFakeSql>['storage'],
 	events: string[] = [],
 	activities: FlueAgentActivity[] = [],
+	reconciliationFailures: FlueReconciliationFailure[] = [],
 ) {
 	return {
 		name: 'agent-1',
@@ -113,6 +115,9 @@ function makeInstance(
 		onFlueAgentActivity(activity: FlueAgentActivity) {
 			activities.push(activity);
 			if (activity.type === 'idle') events.push('idle-emitted');
+		},
+		onFlueReconciliationFailure(failure: FlueReconciliationFailure) {
+			reconciliationFailures.push(failure);
 		},
 	};
 }
@@ -1074,5 +1079,83 @@ describe('agent activity hook', () => {
 		expect(await agentQueueBusy(instance)).toBe(false);
 		expect(await agentSubmissionAttemptCount(instance, 'dispatch-1')).toBe(1);
 		expect(await agentSubmissionAttemptCount(instance, 'missing')).toBeUndefined();
+	});
+});
+
+describe('reconciliation failure hook', () => {
+	it('reports a degraded marker scan to the host, carrying the cause', async () => {
+		const { db, storage } = makeFakeSql();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const failures: FlueReconciliationFailure[] = [];
+		const runtime = makeRuntime();
+		const instance = makeInstance(storage, [], [], failures);
+		const executionStore = prepare(runtime, instance);
+		db.exec('DROP TABLE flue_agent_attempt_markers');
+		await executionStore.submissions.admitDirect(directInput());
+		await executionStore.submissions.markSubmissionCanonicalReady('direct-1');
+
+		await runtime.onStart(instance, () => {});
+
+		expect(failures).toContainEqual(
+			expect.objectContaining({
+				operation: 'list_attempt_markers',
+				outcome: 'degraded_to_empty_marker_set',
+				error: expect.any(Error),
+			}),
+		);
+	});
+
+	it('reports a submission that fails to start, carrying its id and the cause', async () => {
+		const { storage } = makeFakeSql();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const failures: FlueReconciliationFailure[] = [];
+		let startCalls = 0;
+		const runtime = makeRuntime();
+		const instance = makeInstance(storage, [], [], failures);
+		instance.runFiber = (_name, _callback) => {
+			startCalls += 1;
+			if (startCalls === 1) throw new Error('Fiber startup failed');
+			return new Promise<void>(() => {});
+		};
+		const executionStore = prepare(runtime, instance);
+		await executionStore.submissions.admitDirect(directInput());
+		await executionStore.submissions.markSubmissionCanonicalReady('direct-1');
+
+		await runtime.onStart(instance, () => {});
+
+		expect(failures).toContainEqual(
+			expect.objectContaining({
+				operation: 'start_submission',
+				outcome: 'deferred_to_scheduled_wake',
+				submissionId: 'direct-1',
+				error: expect.any(Error),
+			}),
+		);
+	});
+
+	it('never lets a throwing reconciliation-failure hook block coordination', async () => {
+		const { db, storage } = makeFakeSql();
+		const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const runtime = makeRuntime();
+		const instance = makeInstance(storage);
+		instance.onFlueReconciliationFailure = () => {
+			throw new Error('hook exploded');
+		};
+		const executionStore = prepare(runtime, instance);
+		db.exec('DROP TABLE flue_agent_attempt_markers');
+		await executionStore.submissions.admitDirect(directInput());
+		await executionStore.submissions.markSubmissionCanonicalReady('direct-1');
+
+		await runtime.onStart(instance, () => {});
+
+		// Coordination still recovers the submission despite the throwing hook.
+		expect(await executionStore.submissions.getSubmission('direct-1')).toMatchObject({
+			status: 'running',
+		});
+		expect(consoleError).toHaveBeenCalledWith(
+			'[flue:submission-reconciliation]',
+			expect.objectContaining({ outcome: 'hook_failed' }),
+			expect.any(Error),
+		);
 	});
 });
