@@ -80,4 +80,4 @@ export type {
 	RunRecord,
 	RunStatus,
 } from './types.ts';
-export { IMAGE_DATA_OMITTED } from './types.ts';
+export { FLUE_AGENT_ACTIVITY_BEAT_SECONDS, IMAGE_DATA_OMITTED } from './types.ts';
