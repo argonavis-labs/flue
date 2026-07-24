@@ -860,7 +860,7 @@ describe('agents.observe() sse transport contract', () => {
 			'event: control\ndata:{"streamNextOffset":"0000000000000000_0000000000000003"}\n\n',
 			'event: data\ndata:[{"type":"message-delta","conversationId":"c1","messageId":"a1","kind":"text","delta":"c","position":{"batch":3,"index":0}}]\n\n',
 			'event: control\ndata:{"streamNextOffset":"0000000000000000_0000000000000004"}\n\n',
-			'event: data\ndata:[{"type":"sync","connectionId":"conn-1","sentChunks":3}]\n\n',
+			'event: data\ndata:[{"type":"sync","connectionId":"conn-1","sentChunks":3,"sinceOffset":"0000000000000000_0000000000000001"}]\n\n',
 			'event: control\ndata:{"streamNextOffset":"0000000000000000_0000000000000004"}\n\n',
 		];
 		let historyCalls = 0;

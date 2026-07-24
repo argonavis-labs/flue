@@ -315,27 +315,41 @@ describe('sseResponse() sync frames', () => {
 			expect(predicate(buffer)).toBe(true);
 			return buffer;
 		};
-		return { ...context, tail, abort, readUntil };
+		return { ...context, head, tail, abort, readUntil };
 	}
 
-	it('emits a sync frame carrying the connection nonce and sent-chunk count on the heartbeat tick', async () => {
+	function syncFrames(text: string) {
+		return [...text.matchAll(/event: data\ndata:(\[\{"type":"sync".*?\])\n\n/g)].map(
+			(match) =>
+				(JSON.parse(match[1] as string) as [
+					{ type: string; connectionId: string; sentChunks: number; sinceOffset: string },
+				])[0],
+		);
+	}
+
+	it('opens the stream with a sync frame before any data, then counts sent chunks on the tick', async () => {
 		vi.useFakeTimers();
 		try {
 			const sse = await openSse({ sync: true });
-			await sse.readUntil((text) => text.includes('event: control'));
-
+			const opening = await sse.readUntil(
+				(value) => value.includes('"type":"sync"') && value.includes('message-appended'),
+			);
+			// The connection-identity frame precedes the catch-up data.
+			expect(opening.indexOf('"type":"sync"')).toBeLessThan(opening.indexOf('message-appended'));
 			await vi.advanceTimersByTimeAsync(15_000);
-			const text = await sse.readUntil((value) => value.includes('"type":"sync"'));
+			const text = await sse.readUntil((value) => syncFrames(value).length >= 2);
 
-			const frame = text.match(/event: data\ndata:(\[\{"type":"sync".*?\])\n\n/);
-			expect(frame).not.toBeNull();
-			const [chunk] = JSON.parse(frame![1] as string) as [
-				{ type: string; connectionId: string; sentChunks: number },
-			];
-			expect(chunk.connectionId).toEqual(expect.any(String));
-			expect(chunk.connectionId.length).toBeGreaterThan(0);
+			const frames = syncFrames(text);
+			const first = frames[0]!;
+			const tick = frames[frames.length - 1]!;
+			expect(first.connectionId).toEqual(expect.any(String));
+			expect(first.connectionId.length).toBeGreaterThan(0);
+			expect(first.sentChunks).toBe(0);
+			expect(first.sinceOffset).toBe('-1');
 			// Catch-up projected the created batch's reset chunk plus the user message.
-			expect(chunk.sentChunks).toBe(2);
+			expect(tick.sentChunks).toBe(2);
+			expect(tick.connectionId).toBe(first.connectionId);
+			expect(tick.sinceOffset).toBe('-1');
 			sse.abort.abort();
 			await sse.adapter.close?.();
 		} finally {
@@ -343,19 +357,16 @@ describe('sseResponse() sync frames', () => {
 		}
 	});
 
-	it('reports a zero sent count when no chunk was sent on the connection', async () => {
+	it('reports a zero sent count and the request offset when no chunk was sent on the connection', async () => {
 		vi.useFakeTimers();
 		try {
 			const sse = await openSse({ sync: true, fromHead: true });
-			await sse.readUntil((text) => text.includes('event: control'));
-
 			await vi.advanceTimersByTimeAsync(15_000);
-			const text = await sse.readUntil((value) => value.includes('"type":"sync"'));
+			const text = await sse.readUntil((value) => syncFrames(value).length >= 2);
 
-			const frame = text.match(/event: data\ndata:(\[\{"type":"sync".*?\])\n\n/);
-			expect(frame).not.toBeNull();
-			const [chunk] = JSON.parse(frame![1] as string) as [{ sentChunks: number }];
-			expect(chunk.sentChunks).toBe(0);
+			const frames = syncFrames(text);
+			expect(frames[frames.length - 1]!.sentChunks).toBe(0);
+			expect(frames[0]!.sinceOffset).toBe(sse.head);
 			sse.abort.abort();
 			await sse.adapter.close?.();
 		} finally {

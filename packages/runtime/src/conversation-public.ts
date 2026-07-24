@@ -100,6 +100,9 @@ export type ConversationSyncChunk = {
 	type: 'sync';
 	connectionId: string;
 	sentChunks: number;
+	/** Offset this connection started serving from; lets a consumer detect a
+	 *  replacement connection that resumed past its proven prefix. */
+	sinceOffset: string;
 };
 
 // The public conversation API addresses exactly one conversation per agent

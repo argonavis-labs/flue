@@ -45,6 +45,9 @@ type ConversationSyncChunk = {
 	type: 'sync';
 	connectionId: string;
 	sentChunks: number;
+	/** Offset this connection started serving from; lets a consumer detect a
+	 *  replacement connection that resumed past its proven prefix. */
+	sinceOffset: string;
 };
 
 export type ConversationStreamChunk =
@@ -130,7 +133,8 @@ export function assertConversationStreamChunk(value: ConversationStreamChunk): C
 		const valid =
 			typeof sync.connectionId === 'string' &&
 			Number.isInteger(sync.sentChunks) &&
-			sync.sentChunks >= 0;
+			sync.sentChunks >= 0 &&
+			typeof sync.sinceOffset === 'string';
 		if (!valid) {
 			throw new ConversationStreamError(
 				`Unsupported agent conversation sync frame: ${JSON.stringify(value)}.`,

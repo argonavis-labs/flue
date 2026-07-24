@@ -260,20 +260,31 @@ function sseResponse(
 			let wake: (() => void) | undefined;
 			const connectionId = crypto.randomUUID();
 			let sentChunks = 0;
-			unsubscribe = store.subscribe(path, () => wake?.());
-			heartbeat = setInterval(() => {
-				if (!active) return;
-				if (!sync) {
-					controller.enqueue(encoder.encode(': heartbeat\n\n'));
-					return;
-				}
-				const frame: ConversationSyncChunk = { type: 'sync', connectionId, sentChunks };
+			const enqueueSyncFrame = () => {
+				const frame: ConversationSyncChunk = {
+					type: 'sync',
+					connectionId,
+					sentChunks,
+					sinceOffset: offset,
+				};
 				controller.enqueue(encoder.encode(`event: data\ndata:${JSON.stringify([frame])}\n\n`));
 				controller.enqueue(
 					encoder.encode(
 						`event: control\ndata:${JSON.stringify({ streamNextOffset: currentOffset })}\n\n`,
 					),
 				);
+			};
+			unsubscribe = store.subscribe(path, () => wake?.());
+			// Connection identity must precede any offset-advancing frame, or a
+			// pre-first-sync reconnect could swallow a loss undetectably.
+			if (sync) enqueueSyncFrame();
+			heartbeat = setInterval(() => {
+				if (!active) return;
+				if (!sync) {
+					controller.enqueue(encoder.encode(': heartbeat\n\n'));
+					return;
+				}
+				enqueueSyncFrame();
 			}, SSE_HEARTBEAT_MS);
 			const onAbort = () => {
 				active = false;

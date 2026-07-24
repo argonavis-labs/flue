@@ -10,6 +10,8 @@ import {
 } from '../src/public/observe.ts';
 import type { FlueEventStream } from '../src/public/stream.ts';
 
+const FOLLOW_OFFSET = '0000000000000000_0000000000000001';
+
 function pushStream<T>() {
 	const queue: T[] = [];
 	let notify: (() => void) | undefined;
@@ -56,7 +58,7 @@ function makeSource() {
 	const snapshot = {
 		v: 1,
 		conversationId: 'c1',
-		offset: '0000000000000000_0000000000000001',
+		offset: FOLLOW_OFFSET,
 		messages: [],
 		settlements: [],
 	} as unknown as FlueConversationSnapshot;
@@ -89,11 +91,11 @@ const delta = (batch: number, index = 0): ConversationStreamChunk => ({
 	position: { batch, index },
 });
 
-const sync = (connectionId: string, sentChunks: number): ConversationStreamChunk => ({
-	type: 'sync',
-	connectionId,
-	sentChunks,
-});
+const sync = (
+	connectionId: string,
+	sentChunks: number,
+	sinceOffset = FOLLOW_OFFSET,
+): ConversationStreamChunk => ({ type: 'sync', connectionId, sentChunks, sinceOffset });
 
 describe('createAgentConversationObservation() sync frames', () => {
 	beforeEach(() => {
@@ -157,7 +159,25 @@ describe('createAgentConversationObservation() sync frames', () => {
 		observation.close();
 	});
 
-	it('treats a matching sent count as a no-op and never counts sync frames', async () => {
+	it('rehydrates when the first sync reports a connection that started past the follow offset', async () => {
+		const { source, streams, historyCalls } = makeSource();
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+
+		// A hidden reconnect before any sync: the replacement connection starts
+		// from the advanced offset and truthfully reports zero sent chunks.
+		streams[0]?.push(sync('conn-2', 0, '0000000000000000_0000000000000005'));
+		await flush();
+
+		expect(streams[0]?.cancelled).toBe(true);
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+		expect(historyCalls()).toBe(2);
+		observation.close();
+	});
+
+	it('treats a matching sent count from the follow offset as a no-op and never counts sync frames', async () => {
 		const { source, streams, historyCalls } = makeSource();
 		const observation = createAgentConversationObservation(source, { live: 'sse' });
 		observation.subscribe(() => {});
@@ -167,7 +187,7 @@ describe('createAgentConversationObservation() sync frames', () => {
 		await flush();
 
 		streams[0]?.push(sync('conn-1', 2));
-		streams[0]?.push(sync('conn-1', 2));
+		streams[0]?.push(sync('conn-1', 2, 'ignored-after-first-sync'));
 		await flush();
 
 		expect(streams[0]?.cancelled).toBe(false);
@@ -215,7 +235,7 @@ describe('createAgentConversationObservation() sync frames', () => {
 		observation.close();
 	});
 
-	it('arms the sync watchdog only after the first sync frame', async () => {
+	it('arms the sync watchdog only after the first sync frame ever observed', async () => {
 		const { source, streams, historyCalls } = makeSource();
 		const observation = createAgentConversationObservation(source, { live: 'sse' });
 		observation.subscribe(() => {});
@@ -226,6 +246,29 @@ describe('createAgentConversationObservation() sync frames', () => {
 
 		expect(streams[0]?.cancelled).toBe(false);
 		expect(historyCalls()).toBe(1);
+		observation.close();
+	});
+
+	it('arms a first-sync deadline at stream open once sync support was observed', async () => {
+		const { source, streams, historyCalls } = makeSource();
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+		streams[0]?.push(sync('conn-1', 1));
+		await flush();
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+		expect(historyCalls()).toBe(2);
+
+		// The second stream never yields a sync frame: a from-birth stall that a
+		// masking proxy would keep alive forever. Sync support is negotiated, so
+		// the deadline is already armed.
+		await vi.advanceTimersByTimeAsync(SSE_SYNC_INTERVAL_MS * 3 + 1_000);
+		await flush();
+		expect(streams[1]?.cancelled).toBe(true);
+		await vi.advanceTimersByTimeAsync(2_200);
+		await flush();
+		expect(historyCalls()).toBe(3);
 		observation.close();
 	});
 

@@ -94,6 +94,10 @@ export function createAgentConversationObservation(
 	// conversation reads are exclusive, so live chunks are always strictly after
 	// the freshly materialized snapshot, leaving nothing to dedupe against it.
 	let lastApplied: ConversationChunkPosition | undefined;
+	// Sync support, once observed, is remembered so later streams arm the
+	// watchdog from open — a from-birth stall can then never hide behind a
+	// proxy that keeps the connection alive.
+	let sawSyncFrames = false;
 
 	const publish = (next: AgentConversationObservationSnapshot) => {
 		snapshot = next;
@@ -172,11 +176,22 @@ export function createAgentConversationObservation(
 				failStream(new Error('Agent conversation sync frames stopped; treating the stream as dead.'));
 			}, SSE_SYNC_INTERVAL_MS * 3);
 		};
+		if (sawSyncFrames) armSyncWatchdog();
 		try {
 			for await (const chunk of nextStream) {
 				if (!isCurrent(value) || stream !== nextStream) return;
 				if (chunk.type === 'sync') {
-					if (syncConnectionId !== undefined && chunk.connectionId !== syncConnectionId) {
+					sawSyncFrames = true;
+					if (syncConnectionId === undefined) {
+						// A first sync from past the follow offset means the original
+						// connection died before proving itself — its losses are unknowable.
+						if (chunk.sinceOffset !== offset) {
+							failStream(
+								new Error('Agent conversation stream resumed past its proven prefix; rehydrating.'),
+							);
+							return;
+						}
+					} else if (chunk.connectionId !== syncConnectionId) {
 						failStream(
 							new Error('Agent conversation stream reconnected invisibly; rehydrating.'),
 						);
