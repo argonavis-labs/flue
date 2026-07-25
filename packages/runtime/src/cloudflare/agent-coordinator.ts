@@ -33,7 +33,11 @@ import {
 } from '../runtime/handle-conversation-routes.ts';
 import { createSessionStorageKey } from '../session-identity.ts';
 import type { DeliveredMessage } from '../types.ts';
-import { FLUE_AGENT_ACTIVITY_BEAT_SECONDS, type FlueAgentActivity } from './agent-activity.ts';
+import {
+	FLUE_AGENT_ACTIVITY_BEAT_SECONDS,
+	type FlueAgentActivity,
+	type FlueReconciliationFailure,
+} from './agent-activity.ts';
 import {
 	createSqlAgentExecutionStore,
 	createSqlConversationStores,
@@ -73,6 +77,7 @@ interface CloudflareAgentInstance {
 		callback: (ctx: { stash(snapshot: unknown): void }) => Promise<void>,
 	): Promise<void>;
 	onFlueAgentActivity?(activity: FlueAgentActivity): void;
+	onFlueReconciliationFailure?(failure: FlueReconciliationFailure): void;
 }
 
 interface CloudflareAgentRecoveredFiberContext {
@@ -541,6 +546,11 @@ export class CloudflareAgentCoordinator {
 					},
 					error,
 				);
+				this.reportReconciliationFailure({
+					operation: 'list_attempt_markers',
+					outcome: 'degraded_to_empty_marker_set',
+					error,
+				});
 			}
 			for (const submission of await this.submissions.listRunningSubmissions()) {
 				if (this.activeAttempts.has(this.submissionAttemptLocalKey(submission))) continue;
@@ -584,6 +594,11 @@ export class CloudflareAgentCoordinator {
 				},
 				error,
 			);
+			this.reportReconciliationFailure({
+				operation: 'reconcile',
+				outcome: 'deferred_to_scheduled_wake',
+				error,
+			});
 			return true;
 		}
 		const busy = await this.submissions.hasUnsettledSubmissions();
@@ -609,6 +624,35 @@ export class CloudflareAgentCoordinator {
 			},
 			error,
 		);
+		this.reportReconciliationFailure({
+			operation,
+			outcome: 'deferred_to_scheduled_wake',
+			submissionId: submission.submissionId,
+			attemptId: submission.attemptId,
+			sessionKey: submission.sessionKey,
+			error,
+		});
+	}
+
+	// Surface a swallowed reconciliation failure to the embedding DO so it can
+	// observe (and attribute) the loop the coordinator otherwise only logs and
+	// drops. A throwing host hook must never break reconciliation — mirrors
+	// emitActivity's guard.
+	private reportReconciliationFailure(failure: FlueReconciliationFailure): void {
+		try {
+			this.instance.onFlueReconciliationFailure?.(failure);
+		} catch (error) {
+			console.error(
+				'[flue:submission-reconciliation]',
+				{
+					agentName: this.agentName,
+					instanceId: this.instance.name,
+					operation: 'reconciliation_failure_hook',
+					outcome: 'hook_failed',
+				},
+				error,
+			);
+		}
 	}
 
 	private async reconcileInterruptedSubmission(submission: AgentSubmission): Promise<void> {
