@@ -55,26 +55,28 @@ import {
 	ensureSqlPersistedChunkTable,
 } from './sql-persisted-chunk-store.ts';
 
-// The reconcile load hydrates a batch of pending submissions into memory at
-// once, each holding its reassembled image attachments. MAX_SUBMISSION_IMAGE_DATA_LENGTH
-// caps ONE message, but a burst of image-bearing submissions could still sum past
-// the isolate on load. Bound the batch too: stop hydrating once the cumulative
-// reassembled attachment bytes reach this budget, leaving the rest unsettled for
-// the next submission wake — which the coordinator re-arms while any submission is
-// unsettled, so the deferred rows drain over subsequent ticks rather than OOM on
-// one. 32 MiB keeps the load peak (one message's ~2x reassembly transient over the
-// accumulated batch) well under a 128 MB isolate.
+// A single `parseOperationalRows` call hydrates a batch of pending submissions
+// into memory at once, each holding its reassembled image attachments.
+// MAX_SUBMISSION_IMAGE_DATA_LENGTH caps ONE message, but a burst of image-bearing
+// submissions could still sum past the isolate on load. Bound the batch too: stop
+// admitting rows once the cumulative attachment size would exceed this budget,
+// checked BEFORE hydrating (via a cheap size query) so an over-budget row is never
+// reassembled. The deferred rows stay unsettled and the coordinator re-arms the
+// submission wake while any submission is unsettled, so they drain over subsequent
+// ticks rather than OOM on one load.
+//
+// Scope and margin, stated honestly: this is a per-list-call budget, and one
+// Cloudflare reconcile pass runs three such lists in sequence (unready, running,
+// runnable). A submission is in exactly one of those states and each list's array
+// is unreferenced between the loops (GC-eligible before the next allocation), so
+// the practical peak is one list's worth, not the sum. The dominant term is a
+// single message's ~2x reassembly transient (≤ MAX_SUBMISSION_IMAGE_DATA_LENGTH,
+// which the per-message cap already bounds); 32 MiB of accumulated batch on top of
+// that stays under a 128 MB isolate. The constant guards the Cloudflare DO isolate
+// specifically; the node coordinator shares this store and inherits it harmlessly
+// (it is not isolate-bounded). "Bytes" is `data.length`, a character count
+// (base64, ~1 byte each), matching MAX_IMAGE_DATA_LENGTH.
 const MAX_RECONCILE_ATTACHMENT_BYTES = 32 * 1024 * 1024;
-
-function submissionAttachmentBytes(submission: AgentSubmission): number {
-	const message = submission.input.message;
-	if (message.kind !== 'user' || message.attachments === undefined) return 0;
-	let bytes = 0;
-	for (const attachment of message.attachments) {
-		if (attachment.type === 'image') bytes += attachment.data.length;
-	}
-	return bytes;
-}
 
 export function ensureSqlAgentExecutionTables(sql: SqlStorage): void {
 	migrateFlueSqlSchema(sql, () => {
@@ -542,20 +544,44 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 		);
 	}
 
+	// Total persisted attachment bytes for a submission, summed in SQLite without
+	// materializing the chunk data — so an over-budget row is measured, then
+	// deferred, without ever being read into memory.
+	private pendingAttachmentByteSize(submissionId: string): number {
+		const owner = submissionChunkOwner(submissionId);
+		const row = this.sql
+			.exec(
+				`SELECT COALESCE(SUM(LENGTH(data)), 0) AS bytes
+				 FROM flue_image_chunks
+				 WHERE owner_kind = ? AND owner_id = ? AND owner_part = ?`,
+				owner.kind,
+				owner.id,
+				owner.part,
+			)
+			.toArray()[0];
+		return typeof row?.bytes === 'number' ? row.bytes : 0;
+	}
+
 	private parseOperationalRows(rows: SqlRow[], status: 'queued' | 'active'): AgentSubmission[] {
 		const submissions: AgentSubmission[] = [];
 		let attachmentBytes = 0;
 		for (const row of rows) {
-			// Stop hydrating once this batch's reassembled attachments reach the
-			// reconcile budget; the deferred rows stay unsettled and the
-			// coordinator's submission wake re-arms to pick them up next tick.
-			// Always admit at least one — the per-message cap bounds each
-			// submission's attachments to the budget, so no single one is starved.
-			if (submissions.length > 0 && attachmentBytes >= MAX_RECONCILE_ATTACHMENT_BYTES) break;
+			const rowBytes =
+				typeof row.submission_id === 'string'
+					? this.pendingAttachmentByteSize(row.submission_id)
+					: 0;
+			// Defer once admitting this row would push the batch past the reconcile
+			// budget — checked BEFORE hydrating, so an over-budget row is never
+			// reassembled. The deferred rows stay unsettled and the coordinator's
+			// submission wake re-arms to pick them up next tick. Always admit at
+			// least one — the per-message cap bounds each submission's attachments to
+			// the budget, so no single one is starved.
+			if (submissions.length > 0 && attachmentBytes + rowBytes > MAX_RECONCILE_ATTACHMENT_BYTES) {
+				break;
+			}
 			try {
-				const submission = this.parseSubmission(row);
-				submissions.push(submission);
-				attachmentBytes += submissionAttachmentBytes(submission);
+				submissions.push(this.parseSubmission(row));
+				attachmentBytes += rowBytes;
 			} catch (error) {
 				if (typeof row.sequence !== 'number') throw error;
 				console.error(

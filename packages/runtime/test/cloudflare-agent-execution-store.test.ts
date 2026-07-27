@@ -195,20 +195,17 @@ describe('createSqlAgentExecutionStore()', () => {
 			});
 		}
 		// 4 × 11 MiB = 44 MiB of pending attachments; the 32 MiB reconcile budget
-		// admits three (~33 MiB) and defers the fourth, so one wake never hydrates
-		// the whole set at once.
+		// admits two (~22 MiB — a third would reach ~33 MiB > budget, and the check
+		// is pre-emptive) and defers the rest, so one wake never hydrates the whole
+		// set at once.
 		const first = await store.submissions.listUnreadySubmissions();
-		expect(first.map((submission) => submission.submissionId)).toEqual([
-			'bulk-0',
-			'bulk-1',
-			'bulk-2',
-		]);
-		// Advancing the loaded rows lets the next pass reach the deferred one.
+		expect(first.map((submission) => submission.submissionId)).toEqual(['bulk-0', 'bulk-1']);
+		// Advancing the loaded rows lets the next pass reach the deferred ones.
 		for (const submission of first) {
 			await store.submissions.markSubmissionCanonicalReady(submission.submissionId);
 		}
 		const second = await store.submissions.listUnreadySubmissions();
-		expect(second.map((submission) => submission.submissionId)).toEqual(['bulk-3']);
+		expect(second.map((submission) => submission.submissionId)).toEqual(['bulk-2', 'bulk-3']);
 	});
 
 	it('replays direct submissions with more than ten images exactly', async () => {
