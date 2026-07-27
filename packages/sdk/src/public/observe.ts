@@ -88,6 +88,9 @@ export function createAgentConversationObservation(
 	let stream: FlueEventStream<ConversationStreamChunk> | undefined;
 	let retryTimer: ReturnType<typeof setTimeout> | undefined;
 	let reconnectAttempt = 0;
+	// A 401 can be a pre-resolved auth header that went stale in flight; one
+	// rehydrate per failure episode re-runs the header factory before going fatal.
+	let retriedUnauthorized = false;
 	// Highest chunk position applied to `streamState`. Chunks at or below it are
 	// redeliveries (e.g. an SSE reconnect replaying a batch) and are skipped so
 	// append-style deltas are never double-applied. Reset on every (re)hydrate:
@@ -130,8 +133,12 @@ export function createAgentConversationObservation(
 			return;
 		}
 		if (isFatalStatus(error)) {
-			publish({ ...snapshot, phase: 'error', error });
-			return;
+			const retryableUnauthorized = statusOf(error) === 401 && !retriedUnauthorized;
+			if (!retryableUnauthorized) {
+				publish({ ...snapshot, phase: 'error', error });
+				return;
+			}
+			retriedUnauthorized = true;
 		}
 		publish({ ...snapshot, phase: 'connecting', error });
 		const delay = Math.min(1000 * 2 ** reconnectAttempt++, 30_000);
@@ -247,6 +254,7 @@ export function createAgentConversationObservation(
 			streamState = createConversationStreamState(history);
 			lastApplied = undefined;
 			reconnectAttempt = 0;
+			retriedUnauthorized = false;
 			publish({
 				conversation: streamState,
 				offset: history.offset,

@@ -54,7 +54,7 @@ function pushStream<T>() {
 	};
 }
 
-function makeSource() {
+function makeSource(historyPlan: Array<Error | 'ok'> = []) {
 	const snapshot = {
 		v: 1,
 		conversationId: 'c1',
@@ -66,7 +66,9 @@ function makeSource() {
 	let historyCalls = 0;
 	const source: AgentConversationObservationSource = {
 		async history() {
+			const planned = historyPlan[historyCalls] ?? 'ok';
 			historyCalls++;
+			if (planned !== 'ok') throw planned;
 			return snapshot;
 		},
 		updates() {
@@ -322,5 +324,86 @@ describe('createAgentConversationObservation() sync frames', () => {
 		await flush();
 
 		expect(historyCalls()).toBe(1);
+	});
+});
+
+const statusError = (status: number) => Object.assign(new Error(`http ${status}`), { status });
+
+describe('createAgentConversationObservation() unauthorized recovery', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('rehydrates with fresh credentials after a single 401 instead of stopping', async () => {
+		const { source, historyCalls } = makeSource([statusError(401)]);
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+
+		expect(observation.getSnapshot().phase).toBe('connecting');
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+
+		expect(historyCalls()).toBe(2);
+		expect(observation.getSnapshot().phase).toBe('live');
+		observation.close();
+	});
+
+	it('goes fatal when the fresh-credential rehydrate is rejected with 401 again', async () => {
+		const { source, historyCalls } = makeSource([statusError(401), statusError(401)]);
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+
+		expect(observation.getSnapshot().phase).toBe('error');
+		expect(historyCalls()).toBe(2);
+		await vi.advanceTimersByTimeAsync(120_000);
+		await flush();
+		expect(historyCalls()).toBe(2);
+		observation.close();
+	});
+
+	it('recovers from a later 401 once a hydrate has succeeded in between', async () => {
+		const { source, streams, historyCalls } = makeSource([
+			statusError(401),
+			'ok',
+			statusError(401),
+			'ok',
+		]);
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+		expect(observation.getSnapshot().phase).toBe('live');
+
+		streams[0]?.end();
+		await flush();
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+		await vi.advanceTimersByTimeAsync(2_200);
+		await flush();
+
+		expect(historyCalls()).toBe(4);
+		expect(observation.getSnapshot().phase).toBe('live');
+		observation.close();
+	});
+
+	it('keeps a 403 immediately fatal', async () => {
+		const { source, historyCalls } = makeSource([statusError(403)]);
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+
+		expect(observation.getSnapshot().phase).toBe('error');
+		await vi.advanceTimersByTimeAsync(120_000);
+		await flush();
+		expect(historyCalls()).toBe(1);
+		observation.close();
 	});
 });
