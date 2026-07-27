@@ -173,6 +173,44 @@ describe('createSqlAgentExecutionStore()', () => {
 		).rejects.toThrow('unexpected result');
 	});
 
+	it('bounds a reconcile batch by attachment bytes and drains the deferred rows next pass', async () => {
+		const { sql, transactionSync } = makeFakeSql();
+		const store = createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
+		// 11 MiB each (under the 14 MiB per-image cap). One image differs by its
+		// first byte so images are distinct; the bytes are shared by reference so
+		// the test allocates ~11 MiB, not 44.
+		const tail = 'a'.repeat(11 * 1024 * 1024 - 1);
+		for (let i = 0; i < 4; i++) {
+			await store.submissions.admitDirect({
+				kind: 'direct' as const,
+				submissionId: `bulk-${i}`,
+				agent: 'assistant',
+				id: 'agent-1',
+				acceptedAt: '2026-06-03T00:00:00.000Z',
+				message: {
+					kind: 'user' as const,
+					body: 'x',
+					attachments: [{ type: 'image' as const, data: `${i}${tail}`, mimeType: 'image/png' }],
+				},
+			});
+		}
+		// 4 × 11 MiB = 44 MiB of pending attachments; the 32 MiB reconcile budget
+		// admits three (~33 MiB) and defers the fourth, so one wake never hydrates
+		// the whole set at once.
+		const first = await store.submissions.listUnreadySubmissions();
+		expect(first.map((submission) => submission.submissionId)).toEqual([
+			'bulk-0',
+			'bulk-1',
+			'bulk-2',
+		]);
+		// Advancing the loaded rows lets the next pass reach the deferred one.
+		for (const submission of first) {
+			await store.submissions.markSubmissionCanonicalReady(submission.submissionId);
+		}
+		const second = await store.submissions.listUnreadySubmissions();
+		expect(second.map((submission) => submission.submissionId)).toEqual(['bulk-3']);
+	});
+
 	it('replays direct submissions with more than ten images exactly', async () => {
 		const { sql, transactionSync } = makeFakeSql();
 		const store = createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');

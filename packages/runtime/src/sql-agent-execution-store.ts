@@ -55,6 +55,27 @@ import {
 	ensureSqlPersistedChunkTable,
 } from './sql-persisted-chunk-store.ts';
 
+// The reconcile load hydrates a batch of pending submissions into memory at
+// once, each holding its reassembled image attachments. MAX_SUBMISSION_IMAGE_DATA_LENGTH
+// caps ONE message, but a burst of image-bearing submissions could still sum past
+// the isolate on load. Bound the batch too: stop hydrating once the cumulative
+// reassembled attachment bytes reach this budget, leaving the rest unsettled for
+// the next submission wake — which the coordinator re-arms while any submission is
+// unsettled, so the deferred rows drain over subsequent ticks rather than OOM on
+// one. 32 MiB keeps the load peak (one message's ~2x reassembly transient over the
+// accumulated batch) well under a 128 MB isolate.
+const MAX_RECONCILE_ATTACHMENT_BYTES = 32 * 1024 * 1024;
+
+function submissionAttachmentBytes(submission: AgentSubmission): number {
+	const message = submission.input.message;
+	if (message.kind !== 'user' || message.attachments === undefined) return 0;
+	let bytes = 0;
+	for (const attachment of message.attachments) {
+		if (attachment.type === 'image') bytes += attachment.data.length;
+	}
+	return bytes;
+}
+
 export function ensureSqlAgentExecutionTables(sql: SqlStorage): void {
 	migrateFlueSqlSchema(sql, () => {
 		ensureSubmissionTable(sql);
@@ -523,9 +544,18 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 
 	private parseOperationalRows(rows: SqlRow[], status: 'queued' | 'active'): AgentSubmission[] {
 		const submissions: AgentSubmission[] = [];
+		let attachmentBytes = 0;
 		for (const row of rows) {
+			// Stop hydrating once this batch's reassembled attachments reach the
+			// reconcile budget; the deferred rows stay unsettled and the
+			// coordinator's submission wake re-arms to pick them up next tick.
+			// Always admit at least one — the per-message cap bounds each
+			// submission's attachments to the budget, so no single one is starved.
+			if (submissions.length > 0 && attachmentBytes >= MAX_RECONCILE_ATTACHMENT_BYTES) break;
 			try {
-				submissions.push(this.parseSubmission(row));
+				const submission = this.parseSubmission(row);
+				submissions.push(submission);
+				attachmentBytes += submissionAttachmentBytes(submission);
 			} catch (error) {
 				if (typeof row.sequence !== 'number') throw error;
 				console.error(
