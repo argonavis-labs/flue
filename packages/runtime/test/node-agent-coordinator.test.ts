@@ -608,6 +608,54 @@ describe('NodeAgentCoordinator', () => {
 			expect(submission?.error).toBeUndefined();
 			expect(await reopened.submissions.hasUnsettledSubmissions()).toBe(false);
 		});
+
+		it('initializes the agent once per turn — the materialize commit pass does not initialize', async () => {
+			const dbPath = createTempDbPath();
+			const adapter = sqlite(dbPath);
+			await adapter.migrate?.();
+			const { executionStore, conversationStreamStore, attachmentStore } = await adapter.connect();
+
+			// Persist the submission directly, before any coordinator touches it, so
+			// nothing has materialized or processed it yet.
+			const input = makeDispatchInput({ dispatchId: 'dispatch-initialize-once' });
+			await executionStore.submissions.admitDispatch(input);
+
+			let initializeCount = 0;
+			const provider = createFauxProvider();
+			provider.setResponses([fauxAssistantMessage('Done.')]);
+			const coordinator = createNodeAgentCoordinator({
+				submissions: executionStore.submissions,
+				agents: [
+					{
+						name: 'assistant',
+						definition: defineAgent(() => {
+							initializeCount++;
+							return { model: `${provider.getModel().provider}/${provider.getModel().id}` };
+						}),
+					},
+				],
+				createContext: makeFauxCreateContext(provider),
+				conversationStreamStore,
+				attachmentStore,
+			});
+
+			expect(initializeCount).toBe(0);
+
+			// One reconcile drives the whole turn: the durable materialize (commit)
+			// pass and the process (model-run) pass. The commit pass creates the root
+			// conversation through the writer and must not initialize the agent, so a
+			// full turn initializes exactly once — before this change the materialize
+			// pass initialized too, making this 2.
+			await coordinator.reconcileSubmissions();
+			await coordinator.waitForIdle();
+
+			expect(await executionStore.submissions.getSubmission(input.dispatchId)).toMatchObject({
+				status: 'settled',
+			});
+			expect(initializeCount).toBe(1);
+
+			await coordinator.shutdown();
+		});
 	});
 
 	describe('cancellation', () => {

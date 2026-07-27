@@ -248,16 +248,16 @@ export function createNodeAgentCoordinator(options: {
 		};
 	}
 
-	function materializeSubmissionConversation(
-		input: AgentSubmissionInput,
-		agent: AgentDefinition,
-	): Promise<void> {
+	function materializeSubmissionConversation(input: AgentSubmissionInput): Promise<void> {
 		const path = agentStreamPath(input.agent, input.id);
 		const previous = conversationMaterializations.get(path) ?? Promise.resolve();
 		const materialized = previous.then(async () => {
 			const writer = await getConversationWriter(input);
 			const ctx = makeSubmissionContext(input, writer)(agentSubmissionDispatchId(input));
-			await materializeAgentSubmissionSession(ctx, agent, input, attachmentStore);
+			// With no configured conversation store the writer is absent; fall
+			// back to the context's local runtime, exactly as the harness path did.
+			const resolvedWriter = writer ?? (await ctx.ensureConversationRuntime()).writer;
+			await materializeAgentSubmissionSession(ctx, input, resolvedWriter, attachmentStore);
 		});
 		conversationMaterializations.set(path, materialized);
 		void materialized.then(
@@ -275,15 +275,12 @@ export function createNodeAgentCoordinator(options: {
 		return materialized;
 	}
 
-	async function ensureSubmissionCanonicalReady(
-		submission: AgentSubmission,
-		agent: AgentDefinition,
-	): Promise<AgentSubmission> {
+	async function ensureSubmissionCanonicalReady(submission: AgentSubmission): Promise<AgentSubmission> {
 		if (submission.canonicalReadyAt !== null) return submission;
 		const existing = canonicalPreparations.get(submission.submissionId);
 		if (existing) return existing;
 		const preparing = (async () => {
-			await materializeSubmissionConversation(submission.input, agent);
+			await materializeSubmissionConversation(submission.input);
 			const ready = await submissions.markSubmissionCanonicalReady(submission.submissionId);
 			if (ready) return ready;
 			const current = await submissions.getSubmission(submission.submissionId);
@@ -529,7 +526,7 @@ export function createNodeAgentCoordinator(options: {
 				continue;
 			}
 			try {
-				await materializeSubmissionConversation(submission.input, agent);
+				await materializeSubmissionConversation(submission.input);
 				await submissions.markSubmissionCanonicalReady(submission.submissionId);
 			} catch (error) {
 				console.error(
@@ -639,7 +636,7 @@ export function createNodeAgentCoordinator(options: {
 				}
 				let submission = admission.submission;
 				retainSubmissionActivityLease(submission, activityLease);
-				submission = await ensureSubmissionCanonicalReady(submission, agent);
+				submission = await ensureSubmissionCanonicalReady(submission);
 
 				ensureClaimLoop();
 				wake();
@@ -706,7 +703,7 @@ export function createNodeAgentCoordinator(options: {
 				try {
 					let admitted = await submissions.admitDirect(input);
 					retainSubmissionActivityLease(admitted, activityLease);
-					admitted = await ensureSubmissionCanonicalReady(admitted, agent);
+					admitted = await ensureSubmissionCanonicalReady(admitted);
 					const writer = await getConversationWriter(admitted.input);
 					const offset = writer?.offset ?? '-1';
 					ensureClaimLoop();

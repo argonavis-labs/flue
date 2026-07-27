@@ -222,6 +222,26 @@ describe('defineAgentProfile()', () => {
 		expect(() => defineAgentProfile({ durability: { timeoutMs: -1 } })).toThrow('positive integer');
 	});
 
+	it('accepts valid imageMemory config on a profile', () => {
+		expect(() => defineAgentProfile({ imageMemory: { maxImages: 5 } })).not.toThrow();
+		expect(() => defineAgentProfile({ imageMemory: {} })).not.toThrow();
+	});
+
+	it('rejects imageMemory config with unknown fields', () => {
+		expect(() =>
+			defineAgentProfile({ imageMemory: { maxImages: 5, unknown: true } } as never),
+		).toThrow('unknown field "unknown"');
+	});
+
+	it('rejects imageMemory config with non-positive maxImages', () => {
+		expect(() => defineAgentProfile({ imageMemory: { maxImages: 0 } })).toThrow(
+			'imageMemory.maxImages',
+		);
+		expect(() => defineAgentProfile({ imageMemory: { maxImages: 1.5 } })).toThrow(
+			'positive integer',
+		);
+	});
+
 	it('rejects durability config when declared on a subagent profile', () => {
 		expect(() =>
 			defineAgentProfile({

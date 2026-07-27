@@ -40,7 +40,11 @@ import {
 } from './handle-conversation-routes.ts';
 import { handleStreamHead, handleStreamRead } from './handle-stream-routes.ts';
 import { generateWorkflowRunId } from './ids.ts';
-import { invokeWorkflow, type WorkflowInvocationReceipt, type WorkflowInvokeRequest } from './invoke.ts';
+import {
+	invokeWorkflow,
+	type WorkflowInvocationReceipt,
+	type WorkflowInvokeRequest,
+} from './invoke.ts';
 import type { RunStore, WorkflowRunPointer } from './run-store.ts';
 import type { RuntimeActivityGate } from './runtime-activity-gate.ts';
 
@@ -73,6 +77,15 @@ export interface WorkflowRecord {
 
 interface RuntimeBase {
 	devMode?: boolean;
+	/**
+	 * Emit `ERROR_DETAIL_HEADER` on swallowed defects so an embedding server can
+	 * report them at its own edge. Default `false` — see
+	 * {@link configureErrorRendering}. Declared here rather than set directly
+	 * because `configureFlueRuntime` owns error-rendering config; a consumer
+	 * calling `configureErrorRendering` itself would be overwritten on the next
+	 * runtime configuration.
+	 */
+	errorDetailHeader?: boolean;
 	temporaryLocalExposure?: boolean;
 	agents: AgentRecord[];
 	workflows: WorkflowRecord[];
@@ -85,10 +98,7 @@ interface RuntimeBase {
 export interface NodeRuntime extends RuntimeBase {
 	target: 'node';
 	createWorkflowContext: CreateWorkflowContextFn;
-	createAgentAdmission: (
-		agentName: string,
-		instanceId: string,
-	) => AttachedAgentSubmissionAdmission;
+	createAgentAdmission: (agentName: string, instanceId: string) => AttachedAgentSubmissionAdmission;
 	/**
 	 * Abort all in-flight and queued durable work for an agent instance.
 	 * Resolves `true` when there was unsettled work to abort. Terminal
@@ -235,7 +245,10 @@ let runtimeConfig: FlueRuntime | undefined;
  */
 export function configureFlueRuntime(cfg: FlueRuntime): void {
 	runtimeConfig = cfg;
-	configureErrorRendering({ devMode: cfg.devMode ?? false });
+	configureErrorRendering({
+		devMode: cfg.devMode ?? false,
+		errorDetailHeader: cfg.errorDetailHeader ?? false,
+	});
 }
 
 export function resetFlueRuntimeForTests(): void {
@@ -273,11 +286,7 @@ export function flue(): Hono {
 	);
 	app.all('/workflows/:name', workflowRouteHandler);
 
-	app.post(
-		'/agents/:name/:id',
-		validated('param', AgentRouteParamSchema),
-		agentRouteHandler,
-	);
+	app.post('/agents/:name/:id', validated('param', AgentRouteParamSchema), agentRouteHandler);
 	// Abort all in-flight/queued work for an agent instance. A distinct (longer)
 	// path, so it never collides with the agent prompt/stream routes above.
 	app.all('/agents/:name/:id/abort', abortRouteHandler);
@@ -394,14 +403,10 @@ const workflowRouteHandler: MiddlewareHandler = async (c) => {
 		// One workflow run = one workflow DO instance. The instanceId IS the
 		// runId; the DO it lands on then re-uses that value to seed its run
 		// record via handleWorkflowRequest({ runId: instanceId, ... }).
-		const response = await rt.routeWorkflowRequest(
-			request,
-			c.env,
-			{
-				workflowName: name,
-				instanceId: generateWorkflowRunId(),
-			},
-		);
+		const response = await rt.routeWorkflowRequest(request, c.env, {
+			workflowName: name,
+			instanceId: generateWorkflowRunId(),
+		});
 		if (response) return response;
 		throw new RouteNotFoundError({ method: c.req.method, path: new URL(c.req.url).pathname });
 	});
@@ -613,10 +618,7 @@ const channelRouteHandler: MiddlewareHandler = async (c) => {
 	return response;
 };
 
-function retainActivityLease(
-	response: Response,
-	lease: { release(): void },
-): Response {
+function retainActivityLease(response: Response, lease: { release(): void }): Response {
 	const body = response.body;
 	if (!body) {
 		lease.release();

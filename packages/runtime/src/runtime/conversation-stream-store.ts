@@ -72,6 +72,28 @@ export interface ConversationStreamStore {
 	getMeta(path: string): Promise<ConversationStreamMeta | null>;
 	delete(path: string): Promise<void>;
 	subscribe(path: string, listener: () => void): () => void;
+	/**
+	 * OPTIONAL derived-state checkpoint beside the log (RUN-5218). The snapshot
+	 * is a cache of state derivable from the records — never truth: a store may
+	 * drop it at any time, `delete(path)` must drop it with the stream, and
+	 * readers treat absence, version mismatch, or decode failure as a cache
+	 * miss (full replay). Adapters that do not implement these serve full
+	 * replays; correctness is unaffected.
+	 */
+	saveDerivedSnapshot?(path: string, snapshot: DerivedConversationSnapshot): Promise<void>;
+	loadDerivedSnapshot?(path: string): Promise<DerivedConversationSnapshot | null>;
+}
+
+/** One persisted derived-state checkpoint row, stored beside the log. */
+export interface DerivedConversationSnapshot {
+	/** Codec version of `data`; mismatch ⇒ cache miss. */
+	version: number;
+	/** Stream incarnation the snapshot derives from; a recreated stream must not reuse it. */
+	incarnation: string;
+	/** The last batch offset reduced into the snapshot; tail replay starts after it. */
+	offset: string;
+	/** Serialized reduced state (`encodeReducedState`). */
+	data: string;
 }
 
 const CREATE_STREAMS_TABLE = `
@@ -83,6 +105,15 @@ CREATE TABLE IF NOT EXISTS flue_conversation_streams (
   producer_epoch INTEGER NOT NULL DEFAULT 0,
   next_producer_sequence INTEGER NOT NULL DEFAULT 0,
   incarnation TEXT NOT NULL
+)`;
+
+const CREATE_DERIVED_SNAPSHOTS_TABLE = `
+CREATE TABLE IF NOT EXISTS flue_conversation_derived_snapshots (
+  path TEXT PRIMARY KEY,
+  version INTEGER NOT NULL,
+  incarnation TEXT NOT NULL,
+  offset TEXT NOT NULL,
+  data TEXT NOT NULL
 )`;
 
 const CREATE_BATCHES_TABLE = `
@@ -138,6 +169,7 @@ export function ensureSqlConversationStreamTables(sql: SqlStorage): void {
 	migrateFlueSqlSchema(sql, () => {
 		sql.exec(CREATE_STREAMS_TABLE);
 		sql.exec(CREATE_BATCHES_TABLE);
+		sql.exec(CREATE_DERIVED_SNAPSHOTS_TABLE);
 	});
 }
 
@@ -161,6 +193,7 @@ interface InMemoryConversationStream {
 
 export class InMemoryConversationStreamStore implements ConversationStreamStore {
 	private streams = new Map<string, InMemoryConversationStream>();
+	private snapshots = new Map<string, DerivedConversationSnapshot>();
 	private listeners = new StreamListenerRegistry();
 
 	async createStream(path: string, identity: ConversationStreamIdentity): Promise<void> {
@@ -297,11 +330,21 @@ export class InMemoryConversationStreamStore implements ConversationStreamStore 
 
 	async delete(path: string): Promise<void> {
 		this.streams.delete(path);
+		this.snapshots.delete(path);
 		this.listeners.notify(path);
 	}
 
 	subscribe(path: string, listener: () => void): () => void {
 		return this.listeners.subscribe(path, listener);
+	}
+
+	async saveDerivedSnapshot(path: string, snapshot: DerivedConversationSnapshot): Promise<void> {
+		this.snapshots.set(path, { ...snapshot });
+	}
+
+	async loadDerivedSnapshot(path: string): Promise<DerivedConversationSnapshot | null> {
+		const snapshot = this.snapshots.get(path);
+		return snapshot ? { ...snapshot } : null;
 	}
 
 	private assertSubmissionOwnership(
@@ -523,8 +566,42 @@ export class SqliteConversationStreamStore implements ConversationStreamStore {
 		this.runTransaction(() => {
 			this.sql.exec('DELETE FROM flue_conversation_stream_batches WHERE path = ?', path);
 			this.sql.exec('DELETE FROM flue_conversation_streams WHERE path = ?', path);
+			this.sql.exec('DELETE FROM flue_conversation_derived_snapshots WHERE path = ?', path);
 		});
 		this.listeners.notify(path);
+	}
+
+	async saveDerivedSnapshot(path: string, snapshot: DerivedConversationSnapshot): Promise<void> {
+		this.sql.exec(
+			`INSERT INTO flue_conversation_derived_snapshots (path, version, incarnation, offset, data)
+			 VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT(path) DO UPDATE SET
+			   version = excluded.version,
+			   incarnation = excluded.incarnation,
+			   offset = excluded.offset,
+			   data = excluded.data`,
+			path,
+			snapshot.version,
+			snapshot.incarnation,
+			snapshot.offset,
+			snapshot.data,
+		);
+	}
+
+	async loadDerivedSnapshot(path: string): Promise<DerivedConversationSnapshot | null> {
+		const row = this.sql
+			.exec(
+				'SELECT version, incarnation, offset, data FROM flue_conversation_derived_snapshots WHERE path = ?',
+				path,
+			)
+			.toArray()[0];
+		if (!row) return null;
+		return {
+			version: row.version as number,
+			incarnation: row.incarnation as string,
+			offset: row.offset as string,
+			data: row.data as string,
+		};
 	}
 
 	subscribe(path: string, listener: () => void): () => void {

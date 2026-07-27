@@ -13,6 +13,8 @@ export interface FailedSend {
 	id: string;
 	/** The text the user tried to send. */
 	message: string;
+	/** Client-supplied submission id, when the send carried one. */
+	submissionId?: string;
 	error: Error;
 }
 
@@ -74,7 +76,13 @@ export const emptyAgentState: AgentState = {
 };
 
 export type AgentReducerEvent =
-	| { type: 'local_send_submitted'; localId: string; message: string; images?: DeliveredAttachment[] }
+	| {
+			type: 'local_send_submitted';
+			localId: string;
+			message: string;
+			images?: DeliveredAttachment[];
+			submissionId?: string;
+	  }
 	| { type: 'local_send_admitted'; localId: string; submissionId: string }
 	| { type: 'local_send_failed'; localId: string; error: Error }
 	| {
@@ -94,7 +102,11 @@ export function reduceAgentEvent(state: AgentState, event: AgentReducerEvent): A
 				...state,
 				pendingSends: [
 					...state.pendingSends,
-					{ localId: event.localId, optimistic: optimisticMessage(event) },
+					{
+						localId: event.localId,
+						...(event.submissionId === undefined ? {} : { submissionId: event.submissionId }),
+						optimistic: optimisticMessage(event),
+					},
 				],
 				localSubmissionIds: state.localSubmissionIds.filter((id) => !settledIds.has(id)),
 				// Submitting supersedes any prior failed send: a retry re-sends and
@@ -130,7 +142,12 @@ export function reduceAgentEvent(state: AgentState, event: AgentReducerEvent): A
 							failedOptimistic: [...state.failedOptimistic, failed.optimistic],
 							failedSends: [
 								...state.failedSends,
-								{ id: failed.localId, message: messageText(failed.optimistic), error: event.error },
+								{
+									id: failed.localId,
+									message: messageText(failed.optimistic),
+									...(failed.submissionId === undefined ? {} : { submissionId: failed.submissionId }),
+									error: event.error,
+								},
 							],
 						}
 					: {}),
@@ -195,7 +212,26 @@ function converge(state: AgentState): AgentState {
 		pendingEchoes.push(pending.optimistic);
 	}
 
-	const messages = [...canonical, ...pendingEchoes, ...state.failedOptimistic];
+	// A failed send that the server durably admitted anyway (its reply was
+	// lost) surfaces as canonical later; retract its retained echo and failure
+	// record so the transcript and status self-heal. Correlation runs through
+	// FailedSend.submissionId — echo messages themselves stay unstamped, since
+	// a message-level submissionId is reserved for canonical (server) copies.
+	const confirmedEchoIds = new Set(
+		state.failedSends
+			.filter(
+				(send) =>
+					send.submissionId !== undefined &&
+					(canonicalSubmissionIds.has(send.submissionId) || settledIds.has(send.submissionId)),
+			)
+			.map((send) => send.id),
+	);
+	const failedOptimistic = state.failedOptimistic.filter(
+		(message) => !confirmedEchoIds.has(message.id),
+	);
+	const failedSends = state.failedSends.filter((send) => !confirmedEchoIds.has(send.id));
+
+	const messages = [...canonical, ...pendingEchoes, ...failedOptimistic];
 
 	const ownStreaming = (conversation?.messages ?? []).some(
 		(message) =>
@@ -209,7 +245,7 @@ function converge(state: AgentState): AgentState {
 			settlement.outcome === 'failed' && state.localSubmissionIds.includes(settlement.submissionId),
 	);
 	const activeSubmissionIds = state.activeSubmissionIds.filter((id) => !settledIds.has(id));
-	const hasFailedSend = state.failedSends.length > 0;
+	const hasFailedSend = failedSends.length > 0;
 
 	const status: AgentStatus = failedSettlement
 		? 'error'
@@ -228,12 +264,14 @@ function converge(state: AgentState): AgentState {
 		messages,
 		settlements: conversation?.settlements ?? [],
 		pendingSends,
+		failedOptimistic,
+		failedSends,
 		activeSubmissionIds,
 		status,
 		error: failedSettlement
 			? new Error(settlementError(failedSettlement.error))
 			: status === 'error' && hasFailedSend
-				? state.failedSends[state.failedSends.length - 1]?.error
+				? failedSends[failedSends.length - 1]?.error
 				: undefined,
 	};
 }

@@ -67,8 +67,10 @@ These are the things that aren't obvious from the spec or the example.
   the provider has coarser granularity — that's how the LLM bash tool stops a
   command. Forward `signal` only if the provider has a real cancellation
   primitive (`AbortSignal`, process kill, cancel token); otherwise leave it
-  alone. The runtime does pre/post `signal.aborted` checks at the `SandboxApi`
-  boundary, so you don't need to add them yourself.
+  alone. The runtime owns abort handling at the `SandboxApi` boundary — it
+  checks `signal.aborted` around the call and races the in-flight call against
+  the signal, rejecting the caller on abort even when the provider cannot stop
+  the remote command — so you don't need to add any of that yourself.
 - **Credentials.** If the provider needs secrets at runtime, never invent
   values for them. Let the project's conventions (`AGENTS.md`, an existing
   `.env` / `.dev.vars`, a secret manager, CI vars, etc.) decide where they

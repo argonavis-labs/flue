@@ -190,13 +190,7 @@ export interface SessionEnv {
 			 * bash tool does this when the model emits a `timeout` parameter.
 			 */
 			timeoutMs?: number;
-			/**
-			 * Cancel the in-flight command. Aborting rejects with an
-			 * `AbortError`. Sandbox adapters that wrap a signal-aware SDK observe
-			 * this mid-flight; others see it only before/after the remote
-			 * call returns. Use `timeoutMs` for guaranteed deadline
-			 * enforcement on signal-blind sandbox adapters.
-			 */
+			/** Aborting rejects with an `AbortError` immediately; a signal-blind adapter's command may keep running — `timeoutMs` remains the guaranteed deadline. */
 			signal?: AbortSignal;
 		},
 	): Promise<ShellResult>;
@@ -328,6 +322,23 @@ export interface DurabilityConfig {
 	timeoutMs?: number;
 }
 
+// ─── Image Memory ───────────────────────────────────────────────────────────
+
+export interface ImageMemoryConfig {
+	/**
+	 * Maximum number of the most-recent images whose bytes are materialized in
+	 * memory and sent to the model at once. When a session's visible images
+	 * exceed this, the oldest are evicted to a text placeholder
+	 * (`<image id="..." mimeType="..." evicted />`) and their base64 is never
+	 * loaded into the isolate. Defaults to 3.
+	 *
+	 * This bounds image *count*, not bytes: worst case is `maxImages` times the
+	 * per-image ingress cap (`MAX_IMAGE_DATA_LENGTH`). Lower it for tighter
+	 * memory headroom on constrained isolates.
+	 */
+	maxImages?: number;
+}
+
 // ─── Agent Config (internal, passed to the harness at runtime) ──────────────
 
 /**
@@ -335,8 +346,10 @@ export interface DurabilityConfig {
  *
  * `'full'` (default) prepends the discovered workspace frame — headless
  * preamble, AGENTS.md, skills catalog, date, cwd, directory listing — ahead of
- * the agent's instructions. `'none'` contributes nothing: the instructions are
- * the entire system prompt and the application owns every byte of it.
+ * the agent's instructions. `'none'` contributes nothing and reads nothing
+ * from the session env: the instructions are the entire system prompt, the
+ * application owns every byte of it, and only definition-supplied skills
+ * register (workspace `.agents/skills/` are not discovered).
  */
 export type PromptFrame = 'full' | 'none';
 
@@ -370,6 +383,8 @@ export interface AgentConfig {
 	compaction?: false | CompactionConfig;
 	/** Durability settings resolved from the agent profile. */
 	durability?: DurabilityConfig;
+	/** Image-memory eviction settings resolved from the agent profile. */
+	imageMemory?: ImageMemoryConfig;
 }
 
 // ─── Agent Profile and Runtime Creation ─────────────────────────────────────
@@ -409,6 +424,12 @@ export interface AgentProfile {
 	 * independent durability configuration of its own.
 	 */
 	durability?: DurabilityConfig;
+	/**
+	 * Image-memory eviction. Bounds how many of the most-recent images are held
+	 * in memory and sent to the model at once; older visible images are evicted
+	 * to a text placeholder. Defaults to keeping 3.
+	 */
+	imageMemory?: ImageMemoryConfig;
 }
 
 /** Configuration returned by a {@link defineAgent} initializer. */
@@ -443,6 +464,12 @@ export interface AgentRuntimeConfig {
 	 * recovery attempt limits and submission timeouts.
 	 */
 	durability?: DurabilityConfig;
+	/**
+	 * Image-memory eviction. Bounds how many of the most-recent images are held
+	 * in memory and sent to the model at once; older visible images are evicted
+	 * to a text placeholder. Defaults to keeping 3.
+	 */
+	imageMemory?: ImageMemoryConfig;
 	/** Working directory inside the initialized sandbox. */
 	cwd?: string;
 	/** Sandbox factory used to construct the initialized environment. */
@@ -452,7 +479,9 @@ export interface AgentRuntimeConfig {
 /** Opaque agent initializer created by {@link defineAgent}. */
 export interface AgentDefinition<TEnv = Record<string, any>> {
 	readonly __flueAgentDefinition: true;
-	initialize(context: AgentInitializerContext<TEnv>): AgentRuntimeConfig | Promise<AgentRuntimeConfig>;
+	initialize(
+		context: AgentInitializerContext<TEnv>,
+	): AgentRuntimeConfig | Promise<AgentRuntimeConfig>;
 }
 
 // ─── Flue Event Context ────────────────────────────────────────────────────

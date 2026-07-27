@@ -126,6 +126,12 @@ export interface FlueConversationSnapshot {
 	offset: string;
 	messages: FlueConversationMessage[];
 	settlements: FlueConversationSettlement[];
+	/**
+	 * Present when older history exists before this window: the server bounds
+	 * history responses to a window of the newest entries (RUN-5220). Fetch the
+	 * next older page with `history({ beforeEntry: truncatedBefore })`.
+	 */
+	truncatedBefore?: string;
 }
 
 /** Live materialized conversation maintained by `observe()`. */
@@ -138,4 +144,8 @@ export interface FlueConversationState {
 /** Options for one `client.agents.history()` read. */
 export interface FlueConversationHistoryOptions {
 	signal?: AbortSignal;
+	/** Window size in active-path entries; the server default is 1000 (RUN-5220). */
+	entryLimit?: number;
+	/** Older-page cursor: return history strictly before this entry id. */
+	beforeEntry?: string;
 }

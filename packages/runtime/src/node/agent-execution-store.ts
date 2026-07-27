@@ -10,6 +10,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { PersistenceAdapter } from '../agent-execution-store.ts';
+import { healIncompatibleAgentStore } from '../agent-store-self-heal.ts';
 import {
 	ensureSqlConversationStreamTables,
 	SqliteConversationStreamStore,
@@ -120,7 +121,10 @@ export function sqlite(path?: string): PersistenceAdapter {
 	let state: ReturnType<typeof openDatabase> | undefined;
 
 	function ensureOpen() {
-		if (!state) state = openDatabase(resolvedPath);
+		if (!state) {
+			state = openDatabase(resolvedPath);
+			healIncompatibleAgentStore(state.sql, state.runTransaction);
+		}
 		return state;
 	}
 

@@ -1,4 +1,5 @@
 import {
+	type ConversationSyncChunk,
 	projectAgentConversationBatch,
 	projectAgentConversationSnapshot,
 } from '../conversation-public.ts';
@@ -6,7 +7,7 @@ import {
 	loadReducedConversationPrefix,
 	loadReducedConversationState,
 } from '../conversation-reader.ts';
-import { reduceConversationRecords } from '../conversation-reducer.ts';
+import { applyConversationRecord } from '../conversation-reducer.ts';
 import {
 	AttachmentNotFoundError,
 	InvalidRequestError,
@@ -107,6 +108,15 @@ export async function handleAgentConversationHead(
 	});
 }
 
+/**
+ * Default and ceiling for one history window, in active-path entries
+ * (RUN-5220). Bounds the projection and response of an arbitrarily long
+ * session; older pages ride the `beforeEntry` cursor the response's
+ * `truncatedBefore` hands out.
+ */
+const DEFAULT_HISTORY_ENTRY_LIMIT = 1000;
+const MAX_HISTORY_ENTRY_LIMIT = 10_000;
+
 async function historyResponse(options: {
 	store: ConversationStreamStore;
 	path: string;
@@ -118,13 +128,30 @@ async function historyResponse(options: {
 			new InvalidRequestError({ reason: 'History reads do not accept offset, tail, or live parameters.' }),
 		);
 	}
+	const rawLimit = url.searchParams.get('entryLimit');
+	let entryLimit = DEFAULT_HISTORY_ENTRY_LIMIT;
+	if (rawLimit !== null) {
+		const parsed = Number(rawLimit);
+		if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > MAX_HISTORY_ENTRY_LIMIT) {
+			return errorResponse(
+				new InvalidRequestError({
+					reason: `entryLimit must be an integer between 1 and ${MAX_HISTORY_ENTRY_LIMIT}.`,
+				}),
+			);
+		}
+		entryLimit = parsed;
+	}
+	const beforeEntry = url.searchParams.get('beforeEntry') ?? undefined;
 	const meta = await options.store.getMeta(options.path);
 	if (!meta) return errorResponse(new StreamNotFoundError({ path: options.path }));
 	const state = await loadReducedConversationState({
 		store: options.store,
 		path: options.path,
 	});
-	const snapshot = projectAgentConversationSnapshot(state);
+	const snapshot = projectAgentConversationSnapshot(state, {
+		entryLimit,
+		...(beforeEntry !== undefined ? { beforeEntry } : {}),
+	});
 	if (!snapshot) return errorResponse(new StreamNotFoundError({ path: options.path }));
 	return Response.json(snapshot, {
 		headers: {
@@ -152,7 +179,8 @@ async function updatesResponse(options: {
 	const meta = await options.store.getMeta(options.path);
 	if (!meta) return errorResponse(new StreamNotFoundError({ path: options.path }));
 	if (live === 'sse') {
-		return sseResponse(options.store, options.path, offset, options.request.signal);
+		const sync = url.searchParams.get('sync') === '1';
+		return sseResponse(options.store, options.path, offset, options.request.signal, sync);
 	}
 	let state = await loadReducedConversationPrefix({
 		store: options.store,
@@ -178,12 +206,18 @@ function projectRead(
 	const items: unknown[] = [];
 	let offset = initialState.recordsThroughOffset;
 	for (const batch of read.batches) {
-		const previousState = state;
-		state = reduceConversationRecords(state, batch.records, batch.offset);
+		// The prefix state is private to this request, so records apply in
+		// place — the previous defensive clone per batch was O(entries) map
+		// churn on every projected page (RUN-5220). The projection's
+		// previousState is only a root-selection fallback; the post-batch state
+		// serves both roles (a batch that lacks a root after application lacked
+		// one before it too).
+		for (const record of batch.records) applyConversationRecord(state, record, batch.offset);
+		state.recordsThroughOffset = batch.offset;
 		items.push(
 			...projectAgentConversationBatch({
 				state,
-				previousState,
+				previousState: state,
 				records: batch.records,
 				batchOrdinal: parseOffset(batch.offset),
 			}),
@@ -213,6 +247,7 @@ function sseResponse(
 	path: string,
 	offset: string,
 	signal: AbortSignal,
+	sync: boolean,
 ): Response {
 	const encoder = new TextEncoder();
 	let active = true;
@@ -223,9 +258,33 @@ function sseResponse(
 			let state = await loadReducedConversationPrefix({ store, path, offset });
 			let currentOffset = offset;
 			let wake: (() => void) | undefined;
+			const connectionId = crypto.randomUUID();
+			let sentChunks = 0;
+			const enqueueSyncFrame = () => {
+				const frame: ConversationSyncChunk = {
+					type: 'sync',
+					connectionId,
+					sentChunks,
+					sinceOffset: offset,
+				};
+				controller.enqueue(encoder.encode(`event: data\ndata:${JSON.stringify([frame])}\n\n`));
+				controller.enqueue(
+					encoder.encode(
+						`event: control\ndata:${JSON.stringify({ streamNextOffset: currentOffset })}\n\n`,
+					),
+				);
+			};
 			unsubscribe = store.subscribe(path, () => wake?.());
+			// Connection identity must precede any offset-advancing frame, or a
+			// pre-first-sync reconnect could swallow a loss undetectably.
+			if (sync) enqueueSyncFrame();
 			heartbeat = setInterval(() => {
-				if (active) controller.enqueue(encoder.encode(': heartbeat\n\n'));
+				if (!active) return;
+				if (!sync) {
+					controller.enqueue(encoder.encode(': heartbeat\n\n'));
+					return;
+				}
+				enqueueSyncFrame();
 			}, SSE_HEARTBEAT_MS);
 			const onAbort = () => {
 				active = false;
@@ -241,6 +300,7 @@ function sseResponse(
 						controller.enqueue(
 							encoder.encode(`event: data\ndata:${JSON.stringify(projected.items)}\n\n`),
 						);
+						sentChunks += projected.items.length;
 					}
 					currentOffset = read.nextOffset;
 					const control = {

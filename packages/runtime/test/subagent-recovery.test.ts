@@ -112,9 +112,18 @@ function assistantText(
 function taskOutcomes(
 	conversation: Awaited<ReturnType<ConversationRecordWriter['getConversation']>>,
 ) {
-	return [...(conversation?.toolOutcomes.values() ?? [])].filter(
-		(outcome) => outcome.toolName === 'task',
-	);
+	// Committed outcomes live on the materialized tool-result entries;
+	// `toolOutcomes` holds only outcomes still awaiting their commit (RUN-5210).
+	return [...(conversation?.entries.values() ?? [])].flatMap((entry) => {
+		if (entry.type !== 'message') return [];
+		const message = entry.message as {
+			role?: string;
+			toolName?: string;
+			isError?: boolean;
+			content: Array<{ type: string; text: string }>;
+		};
+		return message.role === 'toolResult' && message.toolName === 'task' ? [message] : [];
+	});
 }
 
 describe('subagent task recovery', () => {

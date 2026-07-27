@@ -6,14 +6,16 @@ import {
 	type PromptUsage as RuntimePromptUsage,
 	type RunRecord as RuntimeRunRecord,
 } from '@flue/runtime';
-import type {
-	AgentConversationSnapshot as RuntimeConversationSnapshot,
-	ConversationStreamChunk as RuntimeConversationChunk,
+import {
+	type AgentConversationSnapshot as RuntimeConversationSnapshot,
+	type ConversationStreamChunk as RuntimeConversationChunk,
+	FLUE_AGENT_ACTIVITY_BEAT_SECONDS as RUNTIME_ACTIVITY_BEAT,
 } from '@flue/runtime/internal';
 // `ConversationStreamChunk` is internal to the SDK (not public API), but the
 // wire-conformance assertions below must still pin it to the runtime shape.
 import type { ConversationStreamChunk as SdkConversationChunk } from '../src/public/conversation-stream.ts';
 import {
+	FLUE_AGENT_ACTIVITY_BEAT_SECONDS as SDK_ACTIVITY_BEAT,
 	type FlueConversationSnapshot,
 	IMAGE_DATA_OMITTED as SDK_IMAGE_DATA_OMITTED,
 	type FlueEvent as SdkFlueEvent,
@@ -95,5 +97,10 @@ void _runBack;
 // string types, so these assignments fail if the values ever diverge.
 const _sentinel: typeof RUNTIME_IMAGE_DATA_OMITTED = SDK_IMAGE_DATA_OMITTED;
 const _sentinelBack: typeof SDK_IMAGE_DATA_OMITTED = RUNTIME_IMAGE_DATA_OMITTED;
+
+// The SDK's copy of the activity beat cadence must stay pinned to the
+// runtime's; clients derive staleness leases from it.
+const _beat: typeof RUNTIME_ACTIVITY_BEAT = SDK_ACTIVITY_BEAT;
+const _beatBack: typeof SDK_ACTIVITY_BEAT = RUNTIME_ACTIVITY_BEAT;
 void _sentinel;
 void _sentinelBack;

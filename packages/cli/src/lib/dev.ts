@@ -34,6 +34,8 @@ export interface DevOptions {
 	root: string;
 	sourceRoot: string;
 	version: string;
+	/** See `UserFlueConfig.errorDetailHeader`. Seeds the generated runtime. */
+	errorDetailHeader?: boolean;
 	/**
 	 * Where the build artifacts are written. Defaults to `<root>/dist`.
 	 * See {@link BuildOptions.output} for details.
@@ -125,6 +127,7 @@ export async function dev(options: DevOptions): Promise<void> {
 		log: 'silent',
 		configFile: options.configFile,
 		envFile: fs.existsSync(envFile) ? envFile : undefined,
+		errorDetailHeader: options.errorDetailHeader,
 	};
 
 	if (options.target === 'cloudflare') {

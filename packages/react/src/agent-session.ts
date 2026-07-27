@@ -14,6 +14,26 @@ import {
 
 export interface SendMessageOptions {
 	images?: DeliveredAttachment[];
+	/** Client-minted idempotency key, threaded to `agents.send` (see `AgentPromptOptions`). */
+	submissionId?: string;
+}
+
+export interface CreateFlueAgentStoreOptions {
+	client: FlueClient;
+	name: string;
+	id: string;
+	live?: ConversationLiveMode;
+}
+
+export type FlueAgentStoreSnapshot = AgentSnapshot;
+
+export interface FlueAgentStore {
+	getSnapshot(): FlueAgentStoreSnapshot;
+	refresh(): void;
+	sendMessage(message: string, options?: SendMessageOptions): Promise<void>;
+	start(): void;
+	stop(): void;
+	subscribe(listener: () => void): () => void;
 }
 
 export class AgentSession {
@@ -60,7 +80,13 @@ export class AgentSession {
 
 	async sendMessage(message: string, options: SendMessageOptions = {}): Promise<void> {
 		const localId = `local:${this.name}:${this.id}:${++this.localId}`;
-		this.dispatch({ type: 'local_send_submitted', localId, message, images: options.images });
+		this.dispatch({
+			type: 'local_send_submitted',
+			localId,
+			message,
+			images: options.images,
+			...(options.submissionId === undefined ? {} : { submissionId: options.submissionId }),
+		});
 		try {
 			const receipt = await this.client.agents.send(this.name, this.id, {
 				message: {
@@ -68,6 +94,7 @@ export class AgentSession {
 					body: message,
 					...(options.images?.length ? { attachments: options.images } : {}),
 				},
+				...(options.submissionId === undefined ? {} : { submissionId: options.submissionId }),
 			});
 			this.dispatch({ type: 'local_send_admitted', localId, submissionId: receipt.submissionId });
 			if (this.observation?.getSnapshot().phase === 'absent') this.observation.refresh();
@@ -78,13 +105,17 @@ export class AgentSession {
 		}
 	}
 
-	dispose(): void {
+	stop(): void {
 		if (!this.active) return;
 		this.active = false;
 		this.unsubscribeObservation?.();
 		this.unsubscribeObservation = undefined;
 		this.observation?.close();
 		this.observation = undefined;
+	}
+
+	dispose(): void {
+		this.stop();
 	}
 
 	private applyObservation(): void {
@@ -109,6 +140,10 @@ export class AgentSession {
 		this.snapshot = publicSnapshot(this.state);
 		for (const listener of this.listeners) listener();
 	}
+}
+
+export function createFlueAgentStore(options: CreateFlueAgentStoreOptions): FlueAgentStore {
+	return new AgentSession(options.client, options.name, options.id, options.live ?? 'sse');
 }
 
 function publicSnapshot(state: AgentState): AgentSnapshot {

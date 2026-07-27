@@ -40,26 +40,34 @@ export { createSqlConversationStores } from './cloudflare/agent-execution-store.
 // Conversation wire types projected onto the HTTP `history`/`updates` views.
 // Exposed here only so the SDK can pin its public projection types to the
 // runtime's emitted shapes via a compile-time assignability test.
-export type {
-	AgentConversationSnapshot,
-	ConversationStreamChunk,
-} from './conversation-public.ts';
-export { RuntimeUnavailableError, toHttpResponse } from './errors.ts';
-export type { InstrumentationOwner } from './instrumentation.ts';
+export type { AgentConversationSnapshot, ConversationStreamChunk } from './conversation-public.ts';
 export {
-	createInstrumentationOwner,
-	runWithInstrumentationOwner,
-} from './instrumentation.ts';
+	encodeErrorDetail,
+	ERROR_DETAIL_HEADER,
+	RuntimeUnavailableError,
+	toHttpResponse,
+} from './errors.ts';
+export type { InstrumentationOwner } from './instrumentation.ts';
+export { createInstrumentationOwner, runWithInstrumentationOwner } from './instrumentation.ts';
 export { createNodeAgentCoordinator, createNodeDispatchQueue } from './node/agent-coordinator.ts';
 export { InMemoryRunStore } from './node/run-store.ts';
 export type { AgentSubmissionInput } from './runtime/agent-submissions.ts';
 export type { AttachmentStore } from './runtime/attachment-store.ts';
 export { InMemoryAttachmentStore } from './runtime/attachment-store.ts';
-export type { ConversationStreamStore } from './runtime/conversation-stream-store.ts';
+export type {
+	ConversationStreamStore,
+	DerivedConversationSnapshot,
+} from './runtime/conversation-stream-store.ts';
 export {
 	InMemoryConversationStreamStore,
 	SqliteConversationStreamStore,
 } from './runtime/conversation-stream-store.ts';
+export { loadReducedConversationState } from './conversation-reader.ts';
+export {
+	decodeReducedState,
+	encodeReducedState,
+	SNAPSHOT_VERSION,
+} from './conversation-snapshot.ts';
 export type { AgentInteractionStart } from './runtime/dev-lifecycle-logger.ts';
 export { installDevLifecycleLogger } from './runtime/dev-lifecycle-logger.ts';
 export type { DispatchInput, DispatchQueue } from './runtime/dispatch-queue.ts';
@@ -128,10 +136,7 @@ export type {
 	RunStore,
 	WorkflowRunPointer,
 } from './runtime/run-store.ts';
-export type {
-	RuntimeActivityGate,
-	RuntimeActivityLease,
-} from './runtime/runtime-activity-gate.ts';
+export type { RuntimeActivityGate, RuntimeActivityLease } from './runtime/runtime-activity-gate.ts';
 export { createRuntimeActivityGate } from './runtime/runtime-activity-gate.ts';
 
 export { bashFactoryToSessionEnv } from './sandbox.ts';
@@ -187,3 +192,12 @@ export {
 	type AgentConversationSignalInput,
 	appendAgentConversationSignal,
 } from './cloudflare/app-signals.ts';
+export { ensureAgentConversation } from './cloudflare/app-conversation.ts';
+export {
+	FLUE_AGENT_ACTIVITY_BEAT_SECONDS,
+	type FlueAgentActivity,
+	type FlueReconciliationFailure,
+	agentQueueBusy,
+	agentSubmissionAttemptCount,
+} from './cloudflare/agent-activity.ts';
+export type { AgentSubmissionSettlement } from './runtime/agent-submissions.ts';

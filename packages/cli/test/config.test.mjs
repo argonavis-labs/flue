@@ -26,6 +26,27 @@ process.on('exit', () => {
 });
 
 describe('resolveConfig()', () => {
+	describe('errorDetailHeader', () => {
+		// `merged` is assembled field by field, so a new option that is added to
+		// the schema but not to that literal validates fine and is then silently
+		// dropped — the setting appears to work and does nothing.
+		it('carries the flag from flue.config.ts through to the resolved config', async () => {
+			const root = createFixtureRoot();
+			fs.writeFileSync(
+				path.join(root, 'flue.config.ts'),
+				"export default { target: 'node', errorDetailHeader: true };\n",
+			);
+			const { flueConfig } = await resolveConfig({ cwd: root, inline: {} });
+			assert.equal(flueConfig.errorDetailHeader, true);
+		});
+
+		it('defaults to false when the config does not set it', async () => {
+			const root = createFixtureRoot();
+			const { flueConfig } = await resolveConfig({ cwd: root, inline: { target: 'node' } });
+			assert.equal(flueConfig.errorDetailHeader, false);
+		});
+	});
+
 	describe('source-layout selection', () => {
 		it('resolves sourceRoot to the project root when neither .flue/ nor src/ exists', async () => {
 			const root = createFixtureRoot();

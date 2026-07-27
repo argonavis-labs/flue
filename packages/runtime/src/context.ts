@@ -180,29 +180,25 @@ function composeSystemPrompt(
 	return parts.join('\n');
 }
 
-/**
- * Discover AGENTS.md, local skills, and directory listing from the session's cwd.
- *
- * Under `promptFrame: 'none'` the framework contributes nothing to the system
- * prompt — no headless preamble, AGENTS.md, skills catalog, date, cwd, or
- * directory listing. The profile's instructions are the entire prompt and the
- * application owns every byte of it, including advertising skills. Skills are
- * still discovered and registered so `activate_skill` keeps working.
- */
+// Under `promptFrame: 'none'` nothing is read from the env — a workspace read
+// would cold-boot the sandbox before the first model request; only definition skills register.
 export async function discoverSessionContext(
 	env: SessionEnv,
 	instructions?: string,
 	definitionSkills: readonly Skill[] = [],
 	promptFrame: PromptFrame = 'full',
 ): Promise<{ systemPrompt: string; skills: Record<string, Skill> }> {
+	if (promptFrame === 'none') {
+		return {
+			systemPrompt: instructions ?? '',
+			skills: mergeSkillCatalog(definitionSkills, {}),
+		};
+	}
+
 	const cwd = env.cwd;
 
 	const agentsMd = await readAgentsMd(env, cwd);
 	const skills = mergeSkillCatalog(definitionSkills, await discoverLocalSkills(env, cwd));
-
-	if (promptFrame === 'none') {
-		return { systemPrompt: instructions ?? '', skills };
-	}
 
 	let directoryListing: string[] | undefined;
 	try {

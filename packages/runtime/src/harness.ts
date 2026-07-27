@@ -241,6 +241,7 @@ export class Harness implements FlueHarness {
 			model: taskModel,
 			thinkingLevel: taskAgent?.thinkingLevel ?? this.config.thinkingLevel,
 			compaction: taskAgent?.compaction ?? this.config.compaction,
+			imageMemory: taskAgent?.imageMemory ?? this.config.imageMemory,
 		};
 		const harnessScope = this.scopeName ? `${this.name}:${this.scopeName}` : this.name;
 		// Reattach (recovery) reuses the existing child conversation: its
