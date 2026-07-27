@@ -1,8 +1,24 @@
+import { SubmissionAttachmentsTooLargeError } from './errors.ts';
 import type { AgentSubmissionInput } from './runtime/agent-submissions.ts';
-import { MAX_IMAGE_DATA_LENGTH } from './runtime/schemas.ts';
+import { MAX_IMAGE_DATA_LENGTH, MAX_SUBMISSION_IMAGE_DATA_LENGTH } from './runtime/schemas.ts';
 import type { PromptImage } from './types.ts';
 
-export { MAX_IMAGE_DATA_LENGTH };
+export { MAX_IMAGE_DATA_LENGTH, MAX_SUBMISSION_IMAGE_DATA_LENGTH };
+
+/**
+ * Reject a message whose image attachments SUM past the per-message limit, so an
+ * oversized submission is never persisted. It is reassembled whole on every
+ * recovery wake, so an unbounded sum OOM-loops the durable object (RUN-5754), not
+ * just fails once. Separate from `MAX_IMAGE_DATA_LENGTH`, which caps one image.
+ */
+function assertSubmissionImagesTotalWithinLimit(totalDataLength: number): void {
+	if (totalDataLength > MAX_SUBMISSION_IMAGE_DATA_LENGTH) {
+		throw new SubmissionAttachmentsTooLargeError({
+			totalBytes: totalDataLength,
+			limitBytes: MAX_SUBMISSION_IMAGE_DATA_LENGTH,
+		});
+	}
+}
 export const IMAGE_DATA_CHUNK_LENGTH = 256 * 1024;
 
 const markerPrefix = '__flue_image_chunks__:';
@@ -28,11 +44,14 @@ export interface ExtractedImages<T> {
  * `extractImageBlocks` remains as a persistence-layer invariant.
  */
 export function assertImagesWithinLimit(images: readonly PromptImage[] | undefined): void {
+	let total = 0;
 	for (const image of images ?? []) {
 		if (image.data.length > MAX_IMAGE_DATA_LENGTH) {
 			throw new Error(`[flue] Image data exceeds the ${MAX_IMAGE_DATA_LENGTH} character limit.`);
 		}
+		total += image.data.length;
 	}
+	assertSubmissionImagesTotalWithinLimit(total);
 }
 
 /**
@@ -86,6 +105,15 @@ function extractImageArray(
 }
 
 function extractImageBlocks(blocks: unknown[]): ExtractedImages<unknown[]> {
+	// Reject an oversized total before chunking, so the rejected submission never
+	// builds (and holds) its chunk array. This is the universal choke point every
+	// persisted submission passes through, covering paths that skip the
+	// entry-point `assertImagesWithinLimit` (e.g. dispatch submissions).
+	let total = 0;
+	for (const block of blocks) {
+		if (isImageBlock(block)) total += block.data.length;
+	}
+	assertSubmissionImagesTotalWithinLimit(total);
 	const chunks: PersistedImageChunk[] = [];
 	let imageIndex = 0;
 	const value = blocks.map((block) => {

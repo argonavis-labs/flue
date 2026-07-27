@@ -404,6 +404,26 @@ export class AttachmentNotFoundError extends FlueHttpError {
 	}
 }
 
+export class SubmissionAttachmentsTooLargeError extends FlueHttpError {
+	constructor({ totalBytes, limitBytes }: { totalBytes: number; limitBytes: number }) {
+		const limitMb = Math.floor(limitBytes / (1024 * 1024));
+		super({
+			type: 'submission_attachments_too_large',
+			message: `The message's image attachments are too large.`,
+			details:
+				`The combined size of a single message's image attachments exceeds the ${limitMb} MB limit. ` +
+				`Send fewer or smaller images.`,
+			// A submission's attachments are reassembled whole on every recovery
+			// wake, so an oversized message would OOM-loop the durable object rather
+			// than failing once. The cap is per-message-total, separate from the
+			// per-image limit.
+			dev: `Total attachment data was ${totalBytes} bytes; the per-message limit is ${limitBytes} (MAX_SUBMISSION_IMAGE_DATA_LENGTH).`,
+			status: 413,
+			meta: { totalBytes, limitBytes },
+		});
+	}
+}
+
 export class RunStoreUnavailableError extends FlueHttpError {
 	constructor() {
 		super({

@@ -37,6 +37,7 @@ export {
 	SkillNotRegisteredError,
 	SubagentNotDeclaredError,
 	SubmissionAbortedError,
+	SubmissionAttachmentsTooLargeError,
 	SubmissionInterruptedError,
 	SubmissionRetryExhaustedError,
 	SubmissionTimeoutError,
