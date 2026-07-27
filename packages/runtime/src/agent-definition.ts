@@ -37,6 +37,7 @@ const AgentProfileSchema = v.strictObject(
 		compaction: v.optional(v.union([v.literal(false), v.looseObject({})])),
 		durability: v.optional(v.looseObject({})),
 		imageMemory: v.optional(v.looseObject({})),
+		taskTool: v.optional(v.boolean()),
 	},
 	(issue) =>
 		issue.expected === 'never'
@@ -125,6 +126,7 @@ export function resolveAgentProfile(options: AgentRuntimeConfig | undefined): Ag
 		compaction: hasOwn(options, 'compaction') ? options?.compaction : profile?.compaction,
 		durability: hasOwn(options, 'durability') ? options?.durability : profile?.durability,
 		imageMemory: hasOwn(options, 'imageMemory') ? options?.imageMemory : profile?.imageMemory,
+		taskTool: hasOwn(options, 'taskTool') ? options?.taskTool : profile?.taskTool,
 	};
 }
 

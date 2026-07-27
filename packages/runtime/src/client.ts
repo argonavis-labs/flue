@@ -318,6 +318,7 @@ export async function initializeRootHarness(
 		compaction: definition.compaction ?? config.agentConfig.compaction,
 		durability: definition.durability,
 		imageMemory: definition.imageMemory ?? config.agentConfig.imageMemory,
+		taskTool: definition.taskTool ?? config.agentConfig.taskTool,
 	};
 	if (!config.conversationWriter || !config.attachmentStore) {
 		throw new Error('[flue] Canonical conversation runtime is not configured.');

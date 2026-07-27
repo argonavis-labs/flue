@@ -385,6 +385,12 @@ export interface AgentConfig {
 	durability?: DurabilityConfig;
 	/** Image-memory eviction settings resolved from the agent profile. */
 	imageMemory?: ImageMemoryConfig;
+	/**
+	 * Whether to expose the framework `task` tool to the model. `false` removes
+	 * the model-facing delegation tool while keeping programmatic `session.task()`
+	 * available. Defaults to enabled when undefined.
+	 */
+	taskTool?: boolean;
 }
 
 // ─── Agent Profile and Runtime Creation ─────────────────────────────────────
@@ -430,6 +436,12 @@ export interface AgentProfile {
 	 * to a text placeholder. Defaults to keeping 3.
 	 */
 	imageMemory?: ImageMemoryConfig;
+	/**
+	 * Whether to expose the framework `task` tool to the model. `false` removes
+	 * the model-facing delegation tool while keeping programmatic `session.task()`
+	 * available. Defaults to enabled when undefined.
+	 */
+	taskTool?: boolean;
 }
 
 /** Configuration returned by a {@link defineAgent} initializer. */
@@ -470,6 +482,12 @@ export interface AgentRuntimeConfig {
 	 * to a text placeholder. Defaults to keeping 3.
 	 */
 	imageMemory?: ImageMemoryConfig;
+	/**
+	 * Whether to expose the framework `task` tool to the model. `false` removes
+	 * the model-facing delegation tool while keeping programmatic `session.task()`
+	 * available. Defaults to enabled when undefined.
+	 */
+	taskTool?: boolean;
 	/** Working directory inside the initialized sandbox. */
 	cwd?: string;
 	/** Sandbox factory used to construct the initialized environment. */
