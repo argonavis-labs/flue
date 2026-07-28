@@ -187,6 +187,9 @@ export function createAgentConversationObservation(
 		try {
 			for await (const chunk of nextStream) {
 				if (!isCurrent(value) || stream !== nextStream) return;
+				// A delivered event proves the updates request authenticated; re-arming on
+				// history success alone would loop a persistent updates-401 forever.
+				retriedUnauthorized = false;
 				if (chunk.type === 'sync') {
 					sawSyncFrames = true;
 					if (syncConnectionId === undefined) {
@@ -254,7 +257,6 @@ export function createAgentConversationObservation(
 			streamState = createConversationStreamState(history);
 			lastApplied = undefined;
 			reconnectAttempt = 0;
-			retriedUnauthorized = false;
 			publish({
 				conversation: streamState,
 				offset: history.offset,
