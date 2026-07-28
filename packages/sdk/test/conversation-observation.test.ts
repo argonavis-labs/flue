@@ -368,6 +368,23 @@ describe('createAgentConversationObservation() unauthorized recovery', () => {
 		observation.close();
 	});
 
+	it('refresh() revives a fatally-stopped observation', async () => {
+		const { source, historyCalls } = makeSource([statusError(401), statusError(401), 'ok']);
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+		expect(observation.getSnapshot().phase).toBe('error');
+
+		observation.refresh();
+		await flush();
+
+		expect(historyCalls()).toBe(3);
+		expect(observation.getSnapshot().phase).toBe('live');
+		observation.close();
+	});
+
 	it('recovers from a later 401 once a hydrate has succeeded in between', async () => {
 		const { source, streams, historyCalls } = makeSource([
 			statusError(401),
