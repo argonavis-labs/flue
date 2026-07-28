@@ -289,6 +289,7 @@ export function createAgentConversationObservation(
 			}
 		});
 		reconnectAttempt = 0;
+		retriedUnauthorized = false;
 		const value = generation;
 		queueMicrotask(() => void hydrate(value));
 	};
