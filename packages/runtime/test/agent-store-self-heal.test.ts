@@ -157,6 +157,30 @@ describe('healIncompatibleAgentStore()', () => {
 		expect(submissionCount(db)).toBe(0);
 	});
 
+	// A consumer that persists a submission sequence elsewhere (a read cursor,
+	// a watermark) must re-base it when a heal runs, or its comparisons silently
+	// stop advancing until the sequence climbs back past the stored value.
+	it('restarts the submission sequence at 1 after an operational-only heal', () => {
+		const { db, sql, transactionSync } = seedStoreStampedAt('4');
+		const sequenceOf = (submissionId: string) =>
+			(
+				db
+					.prepare('SELECT sequence FROM flue_agent_submissions WHERE submission_id = ?')
+					.get(submissionId) as { sequence: number } | undefined
+			)?.sequence;
+		expect(sequenceOf('sub-1')).toBe(1);
+
+		healIncompatibleAgentStore(sql, transactionSync);
+		createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
+		db.prepare(
+			`INSERT INTO flue_agent_submissions
+			 (submission_id, session_key, kind, payload, status, accepted_at)
+			 VALUES ('sub-2', 'session-1', 'dispatch', '{}', 'queued', 1)`,
+		).run();
+
+		expect(sequenceOf('sub-2')).toBe(1);
+	});
+
 	it('leaves the store unchanged and surfaces a schema-version rejection when the transition is not operational-only', () => {
 		const { db, sql, transactionSync } = seedStoreStampedAt('3');
 
