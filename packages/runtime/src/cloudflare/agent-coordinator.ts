@@ -5,11 +5,6 @@ import type {
 	AgentSubmissionStore,
 } from '../agent-execution-store.ts';
 import { healIncompatibleAgentStore } from '../agent-store-self-heal.ts';
-import type {
-	LatestCompletedSubmission,
-	SqlAgentExecutionStore,
-	SqlAgentSubmissionStore,
-} from '../sql-agent-execution-store.ts';
 import type { FlueContextInternal } from '../client.ts';
 import { ConversationRecordWriter } from '../conversation-writer.ts';
 import { SubmissionAbortedError } from '../errors.ts';
@@ -37,6 +32,10 @@ import {
 	handleAgentConversationRead,
 } from '../runtime/handle-conversation-routes.ts';
 import { createSessionStorageKey } from '../session-identity.ts';
+import {
+	type LatestCompletedSubmission,
+	readLatestCompletedSubmission,
+} from '../sql-agent-execution-store.ts';
 import type { DeliveredMessage } from '../types.ts';
 import {
 	FLUE_AGENT_ACTIVITY_BEAT_SECONDS,
@@ -92,7 +91,9 @@ interface CloudflareAgentRecoveredFiberContext {
 
 interface CloudflareAgentPreparedCoordinator {
 	readonly agentName: string;
-	readonly executionStore: SqlAgentExecutionStore;
+	readonly executionStore: AgentExecutionStore;
+	/** Kept beside the store so the completed-turn query can read the DO's SQLite directly. */
+	readonly sql: SqlStorage | undefined;
 	readonly conversationStreamStore: ConversationStreamStore;
 	readonly attachmentStore: AttachmentStore;
 }
@@ -163,6 +164,7 @@ export function createCloudflareAgentRuntime(
 			return {
 				agentName,
 				executionStore,
+				sql: storage.sql,
 				...conversationStores,
 			};
 		},
@@ -326,11 +328,11 @@ export class CloudflareAgentCoordinator {
 		return this.prepared.agentName;
 	}
 
-	private get executionStore(): SqlAgentExecutionStore {
+	private get executionStore(): AgentExecutionStore {
 		return this.prepared.executionStore;
 	}
 
-	private get submissions(): SqlAgentSubmissionStore {
+	private get submissions(): AgentSubmissionStore {
 		return this.executionStore.submissions;
 	}
 
@@ -349,8 +351,9 @@ export class CloudflareAgentCoordinator {
 	}
 
 	/** See {@link agentLatestCompletedSubmission}: durable completed-turn read for the embedding application. */
-	latestCompletedSubmission(): Promise<LatestCompletedSubmission | undefined> {
-		return this.submissions.latestCompletedSubmission();
+	async latestCompletedSubmission(): Promise<LatestCompletedSubmission | undefined> {
+		const sql = this.prepared.sql;
+		return sql ? readLatestCompletedSubmission(sql) : undefined;
 	}
 
 	private emitActivity(activity: FlueAgentActivity): void {
@@ -431,10 +434,12 @@ export class CloudflareAgentCoordinator {
 			void creation.then(
 				(writer) => {
 					if (!writer.failed) this.conversationWriter = writer;
-					if (this.conversationWriterCreation === creation) this.conversationWriterCreation = undefined;
+					if (this.conversationWriterCreation === creation)
+						this.conversationWriterCreation = undefined;
 				},
 				() => {
-					if (this.conversationWriterCreation === creation) this.conversationWriterCreation = undefined;
+					if (this.conversationWriterCreation === creation)
+						this.conversationWriterCreation = undefined;
 				},
 			);
 		}
@@ -456,10 +461,7 @@ export class CloudflareAgentCoordinator {
 		});
 	}
 
-	private createDurableContext(
-		request: Request,
-		dispatchId?: string,
-	): FlueContextInternal {
+	private createDurableContext(request: Request, dispatchId?: string): FlueContextInternal {
 		const ctx = this.createContext(request, undefined, dispatchId);
 		ctx.setConversationWriter?.(this.conversationWriter);
 		ctx.setAttachmentStore?.(this.prepared.attachmentStore);
@@ -505,7 +507,11 @@ export class CloudflareAgentCoordinator {
 				const agent = this.options.agents.find(
 					(record) => record.name === submission.input.agent,
 				)?.definition;
-				if (!agent || submission.input.agent !== this.agentName || submission.input.id !== this.instance.name) {
+				if (
+					!agent ||
+					submission.input.agent !== this.agentName ||
+					submission.input.id !== this.instance.name
+				) {
 					console.error('[flue:submission-reconciliation]', {
 						agentName: this.agentName,
 						instanceId: this.instance.name,
@@ -525,13 +531,16 @@ export class CloudflareAgentCoordinator {
 			}
 			for (const settlement of await this.submissions.listPendingSubmissionSettlements()) {
 				const submission = await this.submissions.getSubmission(settlement.submissionId);
-				if (!submission || this.activeAttempts.has(this.submissionAttemptLocalKey(submission))) continue;
+				if (!submission || this.activeAttempts.has(this.submissionAttemptLocalKey(submission)))
+					continue;
 				const writer = await this.ensureConversationWriter();
 				const attempt = { submissionId: settlement.submissionId, attemptId: settlement.attemptId };
 				const canonical = await writer.getRecord(settlement.recordId);
 				if (!canonical) await writer.append([settlement.record], { submission: attempt });
 				else if (JSON.stringify(canonical) !== JSON.stringify(settlement.record)) {
-					throw new Error('[flue] Pending settlement does not match its canonical record. Clear incompatible beta persistence.');
+					throw new Error(
+						'[flue] Pending settlement does not match its canonical record. Clear incompatible beta persistence.',
+					);
 				}
 				await this.submissions.finalizeSubmissionSettlement(attempt, settlement.recordId);
 			}
@@ -901,7 +910,8 @@ export class CloudflareAgentCoordinator {
 		if (admission.submission.canonicalReadyAt === null) {
 			await this.materializeSubmissionConversation(createDispatchAgentSubmissionInput(input));
 			const ready = await this.submissions.markSubmissionCanonicalReady(input.dispatchId);
-			if (!ready) throw new Error('[flue] Dispatch admission disappeared before canonical readiness.');
+			if (!ready)
+				throw new Error('[flue] Dispatch admission disappeared before canonical readiness.');
 		}
 		await this.armSubmissionWake();
 		await this.reconcileSubmissions({ driverAlreadyArmed: true });

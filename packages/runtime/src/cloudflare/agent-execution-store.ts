@@ -1,8 +1,8 @@
+import type { AgentExecutionStore } from '../agent-execution-store.ts';
 import { SqliteConversationStreamStore } from '../runtime/conversation-stream-store.ts';
 import {
 	createSqlAgentExecutionStoreFromSql,
 	ensureSqlAgentExecutionTables,
-	type SqlAgentExecutionStore,
 } from '../sql-agent-execution-store.ts';
 import { ensureSqlAttachmentTable, SqliteAttachmentStore } from '../sql-attachment-store.ts';
 import type { SqlStorage } from '../sql-storage.ts';
@@ -26,7 +26,7 @@ export function createSqlConversationStores(storage: DurableObjectStorage) {
 export function createSqlAgentExecutionStore(
 	storage: DurableObjectStorage | undefined,
 	className: string,
-): SqlAgentExecutionStore {
+): AgentExecutionStore {
 	const sql = storage?.sql;
 	const transactionSync = storage?.transactionSync;
 	if (!sql || typeof sql.exec !== 'function' || typeof transactionSync !== 'function') {
