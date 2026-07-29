@@ -197,6 +197,8 @@ export {
 	FLUE_AGENT_ACTIVITY_BEAT_SECONDS,
 	type FlueAgentActivity,
 	type FlueReconciliationFailure,
+	type LatestCompletedSubmission,
+	agentLatestCompletedSubmission,
 	agentQueueBusy,
 	agentSubmissionAttemptCount,
 } from './cloudflare/agent-activity.ts';

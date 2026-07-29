@@ -5,6 +5,11 @@ import type {
 	AgentSubmissionStore,
 } from '../agent-execution-store.ts';
 import { healIncompatibleAgentStore } from '../agent-store-self-heal.ts';
+import type {
+	LatestCompletedSubmission,
+	SqlAgentExecutionStore,
+	SqlAgentSubmissionStore,
+} from '../sql-agent-execution-store.ts';
 import type { FlueContextInternal } from '../client.ts';
 import { ConversationRecordWriter } from '../conversation-writer.ts';
 import { SubmissionAbortedError } from '../errors.ts';
@@ -87,7 +92,7 @@ interface CloudflareAgentRecoveredFiberContext {
 
 interface CloudflareAgentPreparedCoordinator {
 	readonly agentName: string;
-	readonly executionStore: AgentExecutionStore;
+	readonly executionStore: SqlAgentExecutionStore;
 	readonly conversationStreamStore: ConversationStreamStore;
 	readonly attachmentStore: AttachmentStore;
 }
@@ -321,11 +326,11 @@ export class CloudflareAgentCoordinator {
 		return this.prepared.agentName;
 	}
 
-	private get executionStore(): AgentExecutionStore {
+	private get executionStore(): SqlAgentExecutionStore {
 		return this.prepared.executionStore;
 	}
 
-	private get submissions(): AgentSubmissionStore {
+	private get submissions(): SqlAgentSubmissionStore {
 		return this.executionStore.submissions;
 	}
 
@@ -341,6 +346,11 @@ export class CloudflareAgentCoordinator {
 	/** See {@link agentSubmissionAttemptCount}: attempt-counter read for the embedding application. */
 	async submissionAttemptCount(submissionId: string): Promise<number | undefined> {
 		return (await this.submissions.getSubmission(submissionId))?.attemptCount;
+	}
+
+	/** See {@link agentLatestCompletedSubmission}: durable completed-turn read for the embedding application. */
+	latestCompletedSubmission(): Promise<LatestCompletedSubmission | undefined> {
+		return this.submissions.latestCompletedSubmission();
 	}
 
 	private emitActivity(activity: FlueAgentActivity): void {
