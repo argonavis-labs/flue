@@ -493,6 +493,19 @@ export class ConversationRecordInvariantError extends FlueError {
 	}
 }
 
+export class PersistedRowInvariantError extends FlueError {
+	constructor({ table, reason }: { table: string; reason: string }) {
+		super({
+			type: 'persisted_row_invariant',
+			message: 'A persisted execution row does not match its declared column shape.',
+			details: 'The row was written by an incompatible writer or corrupted in place.',
+			dev: reason,
+			meta: { table, reason },
+		});
+		this.name = 'PersistedRowInvariantError';
+	}
+}
+
 export class ConversationStreamStoreError extends FlueError {
 	constructor({ operation, path, reason }: { operation: string; path: string; reason: string }) {
 		super({
