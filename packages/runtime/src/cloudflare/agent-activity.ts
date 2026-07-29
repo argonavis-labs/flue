@@ -1,6 +1,9 @@
 /** Queue-level turn activity, reported to an optional duck-typed `onFlueAgentActivity` instance method on the agent's DO class. At-least-once; timestamps come from the DO's clock. */
 import type { AgentSubmissionSettlement } from '../runtime/agent-submissions.ts';
+import type { LatestCompletedSubmission } from '../sql-agent-execution-store.ts';
 import { resolveAttachedCoordinator } from './app-signals.ts';
+
+export type { LatestCompletedSubmission };
 
 /** Working-heartbeat cadence in seconds; consumers derive staleness leases from this, never hardcode it. */
 export const FLUE_AGENT_ACTIVITY_BEAT_SECONDS = 30;
@@ -42,6 +45,13 @@ export type FlueReconciliationFailure = {
 /** True while the instance's submission queue has unsettled work. */
 export async function agentQueueBusy(instance: object): Promise<boolean> {
 	return resolveAttachedCoordinator(instance).queueBusy();
+}
+
+/** The greatest durably settled completed submission; undefined when the instance has none. */
+export async function agentLatestCompletedSubmission(
+	instance: object,
+): Promise<LatestCompletedSubmission | undefined> {
+	return resolveAttachedCoordinator(instance).latestCompletedSubmission();
 }
 
 /** The submission's attempt counter (1 on first claim, +1 per recovery re-drive); undefined when unknown. */

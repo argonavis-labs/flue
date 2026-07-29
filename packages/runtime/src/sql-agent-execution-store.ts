@@ -36,6 +36,7 @@ import {
 	DURABILITY_DEFAULT_TIMEOUT_MS,
 	LEASE_DURATION_MS,
 } from './agent-execution-store.ts';
+import { PersistedRowInvariantError } from './errors.ts';
 import type { SqlStorage } from './sql-storage.ts';
 
 type SqlRow = Record<string, unknown>;
@@ -83,6 +84,43 @@ export function ensureSqlAgentExecutionTables(sql: SqlStorage): void {
 		ensureSubmissionTable(sql);
 		ensureSqlPersistedChunkTable(sql);
 	});
+}
+
+/** The greatest durably settled completed submission. */
+export interface LatestCompletedSubmission {
+	readonly sequence: number;
+	readonly submissionId: string;
+}
+
+/** A query, not a store method: {@link AgentSubmissionStore} is one contract for every backend and only the Cloudflare coordinator needs this read. */
+export function readLatestCompletedSubmission(
+	sql: SqlStorage,
+): LatestCompletedSubmission | undefined {
+	// A direct submission proves completion with its settlement record; a dispatch
+	// row has none and is complete exactly when `error` is null.
+	const row = sql
+		.exec(
+			`SELECT sequence, submission_id
+			 FROM flue_agent_submissions
+			 WHERE status = 'settled'
+			   AND ((kind = 'direct'
+			         AND settlement_record_json IS NOT NULL
+			         AND json_extract(settlement_record_json, '$.outcome') = 'completed')
+			        OR (kind = 'dispatch'
+			            AND settlement_record_json IS NULL
+			            AND error IS NULL))
+			 ORDER BY sequence DESC
+			 LIMIT 1`,
+		)
+		.toArray()[0];
+	if (!row) return undefined;
+	if (typeof row.sequence !== 'number' || typeof row.submission_id !== 'string') {
+		throw new PersistedRowInvariantError({
+			table: 'flue_agent_submissions',
+			reason: 'A settled submission row has a non-numeric sequence or a non-string submission_id.',
+		});
+	}
+	return { sequence: row.sequence, submissionId: row.submission_id };
 }
 
 /**
@@ -423,7 +461,10 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 
 	async reserveSubmissionSettlement(
 		attempt: SubmissionAttemptRef,
-		settlement: { recordId: string; record: import('./conversation-records.ts').SubmissionSettledRecord },
+		settlement: {
+			recordId: string;
+			record: import('./conversation-records.ts').SubmissionSettledRecord;
+		},
 	): Promise<SubmissionSettlementObligation | null> {
 		if (settlement.record.id !== settlement.recordId) return null;
 		const recordJson = JSON.stringify(settlement.record);
@@ -458,7 +499,6 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 			return existing ? parseSettlementObligation(existing) : null;
 		});
 	}
-
 
 	async finalizeSubmissionSettlement(
 		attempt: SubmissionAttemptRef,
@@ -704,7 +744,10 @@ function parseSubmission(
 		throw new Error('[flue] Persisted agent submission row is malformed.');
 	}
 	const parsedPayload = JSON.parse(row.payload);
-	const input = hydratePersistedSubmissionAttachments(parsedPayload as AgentSubmissionInput, chunks);
+	const input = hydratePersistedSubmissionAttachments(
+		parsedPayload as AgentSubmissionInput,
+		chunks,
+	);
 	if (
 		!isSubmissionPayload(input, {
 			kind: row.kind as string,
