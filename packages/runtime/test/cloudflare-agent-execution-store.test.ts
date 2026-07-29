@@ -316,3 +316,96 @@ describe('createSqlAgentExecutionStore()', () => {
 		);
 	});
 });
+
+describe('latestCompletedSubmission()', () => {
+	// Each terminal shape is seeded directly: a direct row keeps the settlement
+	// record its reserve wrote, while a dispatch row never has one.
+	function seedSettledRow(
+		db: DatabaseSync,
+		row: {
+			submissionId: string;
+			kind: 'direct' | 'dispatch';
+			error?: string;
+			record?: { outcome: 'completed' | 'failed' | 'aborted' };
+		},
+	) {
+		db.prepare(
+			`INSERT INTO flue_agent_submissions
+			 (submission_id, session_key, kind, payload, status, accepted_at, settled_at,
+			  error, settlement_record_json)
+			 VALUES (?, 'agents/assistant/agent-1', ?, '{}', 'settled', 1, 2, ?, ?)`,
+		).run(
+			row.submissionId,
+			row.kind,
+			row.error ?? null,
+			row.record ? JSON.stringify(row.record) : null,
+		);
+	}
+
+	it('returns undefined when no completed submission exists', async () => {
+		const { sql, transactionSync } = makeFakeSql();
+		const store = createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
+
+		expect(await store.submissions.latestCompletedSubmission()).toBeUndefined();
+	});
+
+	it('returns the greatest completed direct submission via its settlement record', async () => {
+		const { db, sql, transactionSync } = makeFakeSql();
+		const store = createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
+		seedSettledRow(db, { submissionId: 's-1', kind: 'direct', record: { outcome: 'completed' } });
+		seedSettledRow(db, { submissionId: 's-2', kind: 'direct', record: { outcome: 'completed' } });
+
+		expect(await store.submissions.latestCompletedSubmission()).toEqual({
+			sequence: 2,
+			submissionId: 's-2',
+		});
+	});
+
+	it('a completed submission followed by a failed one still returns the completed cursor', async () => {
+		const { db, sql, transactionSync } = makeFakeSql();
+		const store = createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
+		seedSettledRow(db, { submissionId: 's-1', kind: 'direct', record: { outcome: 'completed' } });
+		seedSettledRow(db, { submissionId: 's-2', kind: 'direct', record: { outcome: 'failed' } });
+		seedSettledRow(db, { submissionId: 's-3', kind: 'direct', record: { outcome: 'aborted' } });
+
+		expect(await store.submissions.latestCompletedSubmission()).toEqual({
+			sequence: 1,
+			submissionId: 's-1',
+		});
+	});
+
+	it('counts a dispatch row with a null error as completed', async () => {
+		const { db, sql, transactionSync } = makeFakeSql();
+		const store = createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
+		seedSettledRow(db, { submissionId: 'd-1', kind: 'dispatch' });
+
+		expect(await store.submissions.latestCompletedSubmission()).toEqual({
+			sequence: 1,
+			submissionId: 'd-1',
+		});
+	});
+
+	it('a failed dispatch row neither returns nor masks an earlier completed cursor', async () => {
+		const { db, sql, transactionSync } = makeFakeSql();
+		const store = createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
+		seedSettledRow(db, { submissionId: 's-1', kind: 'direct', record: { outcome: 'completed' } });
+		seedSettledRow(db, { submissionId: 'd-2', kind: 'dispatch', error: 'boom' });
+
+		expect(await store.submissions.latestCompletedSubmission()).toEqual({
+			sequence: 1,
+			submissionId: 's-1',
+		});
+	});
+
+	it('ignores unsettled rows', async () => {
+		const { db, sql, transactionSync } = makeFakeSql();
+		const store = createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
+		db.prepare(
+			`INSERT INTO flue_agent_submissions
+			 (submission_id, session_key, kind, payload, status, accepted_at)
+			 VALUES ('r-1', 'agents/assistant/agent-1', 'direct', '{}', 'running', 1)`,
+		).run();
+
+		expect(await store.submissions.latestCompletedSubmission()).toBeUndefined();
+	});
+});

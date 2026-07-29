@@ -85,6 +85,21 @@ export function ensureSqlAgentExecutionTables(sql: SqlStorage): void {
 	});
 }
 
+/** The greatest durably settled completed submission. */
+export interface LatestCompletedSubmission {
+	readonly sequence: number;
+	readonly submissionId: string;
+}
+
+/** Kept off {@link AgentSubmissionStore} so SQL-only reads cost the other backends nothing. */
+export interface SqlAgentSubmissionStore extends AgentSubmissionStore {
+	latestCompletedSubmission(): Promise<LatestCompletedSubmission | undefined>;
+}
+
+export interface SqlAgentExecutionStore extends AgentExecutionStore {
+	readonly submissions: SqlAgentSubmissionStore;
+}
+
 /**
  * Initialize an {@link AgentExecutionStore} from raw SQL primitives.
  * Used by both Cloudflare (DO SQLite) and Node (`node:sqlite`).
@@ -95,13 +110,13 @@ export function ensureSqlAgentExecutionTables(sql: SqlStorage): void {
 export function createSqlAgentExecutionStoreFromSql(
 	sql: SqlStorage,
 	runTransaction: <T>(closure: () => T) => T,
-): AgentExecutionStore {
+): SqlAgentExecutionStore {
 	return {
 		submissions: new AgentSubmissionStoreImpl(sql, runTransaction),
 	};
 }
 
-class AgentSubmissionStoreImpl implements AgentSubmissionStore {
+class AgentSubmissionStoreImpl implements SqlAgentSubmissionStore {
 	constructor(
 		private sql: SqlStorage,
 		private transactionSync: <T>(closure: () => T) => T,
@@ -192,6 +207,29 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 				)
 				.toArray().length > 0
 		);
+	}
+
+	async latestCompletedSubmission(): Promise<LatestCompletedSubmission | undefined> {
+		// The two kinds record their outcome differently: a direct submission
+		// reserves a settlement record, a dispatch submission only nulls `error`
+		// on success (`failSubmission` writes one for both failed and aborted).
+		const row = this.sql
+			.exec(
+				`SELECT sequence, submission_id
+				 FROM flue_agent_submissions
+				 WHERE status = 'settled'
+				   AND ((settlement_record_json IS NOT NULL
+				         AND json_extract(settlement_record_json, '$.outcome') = 'completed')
+				        OR (settlement_record_json IS NULL AND error IS NULL))
+				 ORDER BY sequence DESC
+				 LIMIT 1`,
+			)
+			.toArray()[0];
+		if (!row) return undefined;
+		if (typeof row.sequence !== 'number' || typeof row.submission_id !== 'string') {
+			throw new Error('[flue] Persisted settled submission row is malformed.');
+		}
+		return { sequence: row.sequence, submissionId: row.submission_id };
 	}
 
 	async listUnreadySubmissions(): Promise<AgentSubmission[]> {
