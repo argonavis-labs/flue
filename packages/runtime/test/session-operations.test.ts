@@ -201,6 +201,49 @@ describe('session.prompt()', () => {
 		}
 	});
 
+	it('does not execute a partial tool call when a missing finish reason is retried', async () => {
+		vi.useFakeTimers();
+		try {
+			const provider = createProvider([{ id: 'reviewer' }]);
+			provider.setResponses([
+				fauxAssistantMessage(fauxToolCall('lookup', { query: 'flue' }), {
+					stopReason: 'error',
+					errorMessage: 'Stream ended without finish_reason',
+				}),
+				fauxAssistantMessage('Recovered without running the partial call.'),
+			]);
+			let toolRuns = 0;
+			const lookup = defineTool({
+				name: 'lookup',
+				description: 'Look up a value.',
+				input: v.object({ query: v.string() }),
+				run: async () => {
+					toolRuns += 1;
+					return 'Found the requested value.';
+				},
+			});
+			const ctx = createContext(provider);
+			const harness = await ctx.initializeRootHarness(
+				defineAgent(() => ({
+					model: `${provider.getModel().provider}/reviewer`,
+					tools: [lookup],
+				})),
+			);
+			const session = await harness.session();
+
+			const response = session.prompt('Review this workspace.');
+			await vi.advanceTimersByTimeAsync(2_000);
+
+			await expect(response).resolves.toMatchObject({
+				text: 'Recovered without running the partial call.',
+			});
+			expect(provider.state.callCount).toBe(2);
+			expect(toolRuns).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('rejects when transient model failures exhaust the retry budget', async () => {
 		vi.useFakeTimers();
 		try {
