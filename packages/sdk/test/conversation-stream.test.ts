@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { FlueConversationSnapshot } from '../src/public/conversation.ts';
 import {
-	type ConversationStreamChunk,
-	ConversationStreamError,
 	applyConversationChunk,
 	assertConversationStreamChunk,
+	type ConversationStreamChunk,
+	ConversationStreamError,
 	createConversationStreamState,
 } from '../src/public/conversation-stream.ts';
 
@@ -94,7 +94,7 @@ describe('applyConversationChunk()', () => {
 		expect(conversation.messages[0]?.parts[0]).toEqual({ type: 'text', text: 'hello', state: 'done' });
 	});
 
-	it('carries the message-started timestamp onto metadata and preserves it through deltas and completion', () => {
+	it('preserves start and completion metadata when an assistant message streams', () => {
 		const conversation = reduce([
 			{ type: 'message-started', conversationId: 'c1', messageId: 'a1', timestamp: '2026-06-25T00:00:02.000Z' },
 			{ type: 'message-delta', conversationId: 'c1', messageId: 'a1', kind: 'text', delta: 'hi' },
@@ -102,6 +102,7 @@ describe('applyConversationChunk()', () => {
 				type: 'message-completed',
 				conversationId: 'c1',
 				messageId: 'a1',
+				responseModel: 'moonshotai/kimi-k3',
 				usage: {
 					input: 1,
 					output: 1,
@@ -114,6 +115,7 @@ describe('applyConversationChunk()', () => {
 		]);
 		expect(conversation.messages[0]?.metadata).toEqual({
 			timestamp: '2026-06-25T00:00:02.000Z',
+			responseModel: 'moonshotai/kimi-k3',
 			usage: {
 				input: 1,
 				output: 1,

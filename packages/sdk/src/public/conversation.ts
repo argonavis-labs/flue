@@ -103,6 +103,8 @@ export interface FlueConversationMessage {
 		timestamp?: string;
 		usage?: PromptUsage;
 		model?: { provider: string; id: string };
+		/** Provider-reported model that served a routed request, when available. */
+		responseModel?: string;
 	};
 }
 

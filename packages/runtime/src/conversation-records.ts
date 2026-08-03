@@ -92,7 +92,7 @@ interface SignalRecord extends ConversationRecordEnvelope {
 
 type AssistantModelInfo = Omit<
 	AssistantMessage,
-	'role' | 'content' | 'stopReason' | 'errorMessage' | 'timestamp' | 'usage'
+	'role' | 'content' | 'stopReason' | 'errorMessage' | 'timestamp' | 'usage' | 'responseModel'
 >;
 
 export interface AssistantMessageStartedRecord extends ConversationRecordEnvelope {
@@ -167,6 +167,8 @@ interface AssistantMessageCompletedRecord extends ConversationRecordEnvelope {
 	messageId: string;
 	stopReason: AssistantMessage['stopReason'];
 	usage: AssistantMessage['usage'];
+	/** Provider-reported model that served a routed request, when available. */
+	responseModel?: string;
 	error?: string;
 }
 

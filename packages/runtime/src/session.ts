@@ -717,7 +717,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 						this.canonicalAssistant = { messageId, parentId, blocks: new Map() };
 						this.canonicalToolRequestMessageId = undefined;
 						this.canonicalToolResultParentId = undefined;
-						const { role: _role, content: _content, stopReason: _stopReason, errorMessage: _errorMessage, timestamp: _timestamp, usage: _usage, ...modelInfo } = event.message;
+						const { role: _role, content: _content, stopReason: _stopReason, errorMessage: _errorMessage, timestamp: _timestamp, usage: _usage, responseModel: _responseModel, ...modelInfo } = event.message;
 						await this.appendCanonical([{
 							...this.canonicalEnvelope('assistant_message_started'),
 							type: 'assistant_message_started',
@@ -828,6 +828,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 								...this.canonicalEnvelope('assistant_message_completed'), type: 'assistant_message_completed',
 								messageId: canonical.messageId, stopReason: event.message.stopReason,
 								usage: event.message.usage,
+								...(event.message.responseModel !== undefined
+									? { responseModel: event.message.responseModel }
+									: {}),
 								...(event.message.errorMessage ? { error: event.message.errorMessage } : {}),
 							}]);
 							this.canonicalToolRequestMessageId = event.message.content.some(

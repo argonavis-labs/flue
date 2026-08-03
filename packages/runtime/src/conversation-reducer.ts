@@ -518,6 +518,7 @@ export function applyConversationRecord(
 				.map(materializeAssistantBlock);
 			const message = {
 				...inProgress.modelInfo,
+				...(record.responseModel !== undefined ? { responseModel: record.responseModel } : {}),
 				role: 'assistant',
 				content,
 				stopReason: record.stopReason,

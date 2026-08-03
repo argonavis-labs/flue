@@ -98,6 +98,8 @@ export interface ConversationUiMessage {
 		timestamp?: string;
 		usage?: PromptUsage;
 		model?: { provider: string; id: string };
+		/** Provider-reported model that served a routed request, when available. */
+		responseModel?: string;
 	};
 }
 
@@ -396,6 +398,7 @@ function projectCompletedMessage(entry: ReducedMessageEntry): ConversationUiMess
 			timestamp: entry.timestamp,
 			usage: message.usage,
 			model: { provider: message.provider, id: message.model },
+			...(message.responseModel !== undefined ? { responseModel: message.responseModel } : {}),
 		},
 	};
 }

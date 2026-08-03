@@ -86,7 +86,7 @@ export type ConversationStreamChunk =
 	  }
 	| { type: 'tool-output'; conversationId: string; toolCallId: string; output: unknown; durationMs?: number; position: ConversationChunkPosition }
 	| { type: 'tool-output-error'; conversationId: string; toolCallId: string; errorText: string; durationMs?: number; position: ConversationChunkPosition }
-	| { type: 'message-completed'; conversationId: string; messageId: string; usage?: PromptUsage; position: ConversationChunkPosition }
+	| { type: 'message-completed'; conversationId: string; messageId: string; usage?: PromptUsage; responseModel?: string; position: ConversationChunkPosition }
 	| {
 			type: 'submission-settled';
 			conversationId: string;
@@ -229,7 +229,7 @@ export function applyConversationChunk(
 				...(chunk.durationMs !== undefined ? { durationMs: chunk.durationMs } : {}),
 			}));
 		case 'message-completed':
-			return completeMessage(state, chunk.messageId, chunk.usage);
+			return completeMessage(state, chunk.messageId, chunk.usage, chunk.responseModel);
 		case 'submission-settled':
 			return applySettlement(state, chunk);
 		default: {
@@ -360,18 +360,28 @@ function completeMessage(
 	state: FlueConversationState,
 	messageId: string,
 	usage: PromptUsage | undefined,
+	responseModel: string | undefined,
 ): FlueConversationState {
 	return mutateMessages(state, (messages) => {
 		const index = messages.findIndex((message) => message.id === messageId);
 		if (index < 0) return messages;
 		const message = messages[index] as FlueConversationMessage;
 		const next = [...messages];
+		const hasCompletionMetadata = usage !== undefined || responseModel !== undefined;
 		next[index] = {
 			...message,
 			parts: message.parts.map((part) =>
 				part.type === 'text' || part.type === 'reasoning' ? { ...part, state: 'done' } : part,
 			),
-			...(usage ? { metadata: { ...message.metadata, usage } } : {}),
+			...(hasCompletionMetadata
+				? {
+						metadata: {
+							...message.metadata,
+							...(usage !== undefined ? { usage } : {}),
+							...(responseModel !== undefined ? { responseModel } : {}),
+						},
+					}
+				: {}),
 		};
 		return next;
 	});

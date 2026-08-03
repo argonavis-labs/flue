@@ -1,8 +1,8 @@
 import {
-	classifySignal,
 	type ConversationUiMessage,
 	type ConversationUiSnapshot,
 	type ConversationUiWindow,
+	classifySignal,
 	projectConversationUi,
 } from './conversation-projections.ts';
 import type {
@@ -71,7 +71,7 @@ type ConversationStreamChunkBody =
 	  }
 	| { type: 'tool-output'; conversationId: string; toolCallId: string; output: unknown; durationMs?: number }
 	| { type: 'tool-output-error'; conversationId: string; toolCallId: string; errorText: string; durationMs?: number }
-	| { type: 'message-completed'; conversationId: string; messageId: string; usage?: PromptUsage }
+	| { type: 'message-completed'; conversationId: string; messageId: string; usage?: PromptUsage; responseModel?: string }
 	| {
 			type: 'submission-settled';
 			conversationId: string;
@@ -284,6 +284,7 @@ function encodeRecord(
 					conversationId,
 					messageId: record.messageId,
 					...(record.usage ? { usage: record.usage as PromptUsage } : {}),
+					...(record.responseModel !== undefined ? { responseModel: record.responseModel } : {}),
 				},
 			];
 		case 'tool_results_committed':

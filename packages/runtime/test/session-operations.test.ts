@@ -154,6 +154,46 @@ describe('session.prompt()', () => {
 		);
 	});
 
+	it('projects the provider-resolved model when a routed prompt completes', async () => {
+		const provider = createProvider([{ id: 'auto' }]);
+		provider.setResponses([
+			{
+				...fauxAssistantMessage('Routed response.'),
+				responseModel: 'moonshotai/kimi-k3',
+			},
+		]);
+		const store = new InMemoryConversationStreamStore();
+		const writer = await ConversationRecordWriter.create({
+			store,
+			path: 'agents/assistant/resolved-model-instance',
+			identity: { agentName: 'assistant', instanceId: 'resolved-model-instance' },
+			producerId: 'producer-1',
+		});
+		const ctx = createFlueContext({
+			id: 'resolved-model-instance',
+			env: {},
+			agentConfig: { resolveModel: () => provider.getModel('auto') },
+			createDefaultEnv: async () => createNoopSessionEnv(),
+			conversationWriter: writer,
+		});
+		const harness = await ctx.initializeRootHarness(
+			defineAgent(() => ({ model: `${provider.getModel().provider}/auto` })),
+		);
+		const session = await harness.session();
+
+		await session.prompt('Route this request.');
+
+		const conversation = await writer.getConversation(session.conversationId);
+		if (!conversation) throw new Error('Expected conversation.');
+		const assistant = projectConversationUi(conversation, writer.offset).messages.find(
+			(message) => message.role === 'assistant',
+		);
+		expect(assistant?.metadata).toMatchObject({
+			model: { provider: provider.getModel().provider, id: 'auto' },
+			responseModel: 'moonshotai/kimi-k3',
+		});
+	});
+
 	it('returns the recovered response when a model turn fails transiently', async () => {
 		vi.useFakeTimers();
 		try {

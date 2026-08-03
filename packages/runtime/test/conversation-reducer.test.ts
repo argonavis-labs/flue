@@ -7,6 +7,7 @@ import {
 	projectConversationModelContextEntries,
 	projectConversationUi,
 } from '../src/conversation-projections.ts';
+import { projectAgentConversationBatch } from '../src/conversation-public.ts';
 import type { ConversationRecord } from '../src/conversation-records.ts';
 import {
 	applyConversationRecord,
@@ -115,6 +116,7 @@ function canonicalConversation(): ConversationRecord[] {
 			messageId: 'entry_assistant',
 			stopReason: 'stop',
 			usage,
+			responseModel: 'moonshotai/kimi-k3',
 		},
 	];
 }
@@ -571,7 +573,36 @@ describe('reduceConversationRecords()', () => {
 			timestamp: '2026-06-25T00:00:02.000Z',
 			usage,
 			model: { provider: 'test', id: 'test-model' },
+			responseModel: 'moonshotai/kimi-k3',
 		});
+	});
+
+	it('projects the resolved model when an assistant completion record arrives', () => {
+		const records = canonicalConversation();
+		const previousState = reduceConversationRecords(
+			createReducedInstanceState(),
+			records.slice(0, -1),
+			'7',
+		);
+		const state = reduceConversationRecords(createReducedInstanceState(), records, '8');
+
+		expect(
+			projectAgentConversationBatch({
+				state,
+				previousState,
+				records: records.slice(-1),
+				batchOrdinal: 8,
+			}),
+		).toEqual([
+			{
+				type: 'message-completed',
+				conversationId: 'conv_01',
+				messageId: 'entry_assistant',
+				usage,
+				responseModel: 'moonshotai/kimi-k3',
+				position: { batch: 8, index: 0 },
+			},
+		]);
 	});
 
 	it('projects an in-progress assistant shell even before its first delta so post-hydration deltas attach', () => {
