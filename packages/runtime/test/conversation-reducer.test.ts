@@ -7,6 +7,7 @@ import {
 	projectConversationModelContextEntries,
 	projectConversationUi,
 } from '../src/conversation-projections.ts';
+import { projectAgentConversationBatch } from '../src/conversation-public.ts';
 import type { ConversationRecord } from '../src/conversation-records.ts';
 import {
 	applyConversationRecord,
@@ -524,6 +525,86 @@ describe('reduceConversationRecords()', () => {
 			messageId: 'entry_assistant',
 		});
 		expect(buildConversationContext(conversation)).toHaveLength(1);
+	});
+
+	it('rejects a new exclusive assistant stream when another assistant stream is in progress', () => {
+		const records = canonicalConversation();
+		const state = reduceConversationRecords(createReducedInstanceState(), [
+			required(records[0]),
+			required(records[1]),
+			required(records[2]),
+		]);
+
+		expect(() =>
+			applyConversationRecord(state, {
+				...scope,
+				id: 'record_second_assistant_start',
+				type: 'assistant_message_started',
+				timestamp: '2026-06-25T00:00:02.100Z',
+				messageId: 'entry_second_assistant',
+				parentId: 'entry_user',
+				modelInfo: { api: 'test', provider: 'test', model: 'test-model' },
+				exclusive: true,
+			}),
+		).toThrowError(expect.objectContaining({
+			type: 'conversation_record_invariant',
+			meta: expect.objectContaining({
+				reason: 'Cannot start an assistant message while another assistant message is in progress.',
+			}),
+		}));
+	});
+
+	it('discards a legacy assistant stream when recovery finds it buried behind the active leaf', () => {
+		const records = canonicalConversation();
+		const state = reduceConversationRecords(createReducedInstanceState(), [
+			required(records[0]),
+			required(records[1]),
+			required(records[2]),
+			{
+				...scope,
+				id: 'record_second_assistant_start',
+				type: 'assistant_message_started',
+				timestamp: '2026-06-25T00:00:02.100Z',
+				messageId: 'entry_second_assistant',
+				parentId: 'entry_user',
+				modelInfo: { api: 'test', provider: 'test', model: 'test-model' },
+			},
+			{
+				...scope,
+				id: 'record_second_assistant_complete',
+				type: 'assistant_message_completed',
+				timestamp: '2026-06-25T00:00:02.200Z',
+				messageId: 'entry_second_assistant',
+				stopReason: 'error',
+				usage,
+				error: 'The stream failed.',
+			},
+		]);
+
+		const recovery: ConversationRecord = {
+			...scope,
+			id: 'record_orphan_discarded',
+			type: 'assistant_message_completed',
+			timestamp: '2026-06-25T00:00:02.300Z',
+			messageId: 'entry_assistant',
+			stopReason: 'aborted',
+			usage,
+			error: 'Stream interrupted before completion.',
+			discardIfOrphaned: true,
+		};
+		const repaired = reduceConversationRecords(state, [recovery], '7');
+
+		const conversation = required(repaired.conversations.get('conv_01'));
+		expect(conversation.activeLeafId).toBe('entry_second_assistant');
+		expect(conversation.inProgressMessages).toHaveLength(0);
+		expect(conversation.entries.has('entry_assistant')).toBe(false);
+		expect(conversation.entries.has('entry_second_assistant')).toBe(true);
+		expect(projectAgentConversationBatch({
+			state: repaired,
+			previousState: state,
+			records: [recovery],
+			batchOrdinal: 7,
+		})).toEqual([]);
 	});
 
 	it('projects one complete UI snapshot through the physical catch-up offset', () => {
