@@ -100,6 +100,12 @@ export interface AssistantMessageStartedRecord extends ConversationRecordEnvelop
 	messageId: string;
 	parentId: string | null;
 	modelInfo: AssistantModelInfo;
+	/**
+	 * New writers assert that a conversation has no other live assistant stream.
+	 * Optional so records written before this invariant was enforced still replay
+	 * and can be repaired.
+	 */
+	exclusive?: true;
 }
 
 interface AssistantTextStartedRecord extends ConversationRecordEnvelope {
@@ -168,6 +174,11 @@ interface AssistantMessageCompletedRecord extends ConversationRecordEnvelope {
 	stopReason: AssistantMessage['stopReason'];
 	usage: AssistantMessage['usage'];
 	error?: string;
+	/**
+	 * Recovery completions may discard a stream whose parent is already behind
+	 * the active leaf. Leaf-parented streams still materialize normally.
+	 */
+	discardIfOrphaned?: true;
 }
 
 interface ToolOutcomeRecord extends ConversationRecordEnvelope {

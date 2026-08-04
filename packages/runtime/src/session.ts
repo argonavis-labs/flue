@@ -594,6 +594,38 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		await Promise.all(this.pendingCanonicalWrites);
 	}
 
+	private async completeCanonicalAssistant(options: {
+		stopReason: AssistantMessage['stopReason'];
+		usage: AssistantMessage['usage'];
+		error?: string;
+	}): Promise<string | undefined> {
+		const canonical = this.canonicalAssistant;
+		if (!canonical) return undefined;
+		await this.flushCanonical();
+		for (const block of canonical.blocks.values()) {
+			if (block.completed) continue;
+			await this.appendCanonical([block.type === 'text'
+				? {
+						...this.canonicalEnvelope('assistant_text_completed'), type: 'assistant_text_completed',
+						messageId: canonical.messageId, blockId: block.id, deltaCount: block.deltaCount,
+					}
+				: {
+						...this.canonicalEnvelope('assistant_reasoning_completed'), type: 'assistant_reasoning_completed',
+						messageId: canonical.messageId, blockId: block.id, deltaCount: block.deltaCount,
+					}]);
+			block.completed = true;
+		}
+		await this.appendCanonical([{
+			...this.canonicalEnvelope('assistant_message_completed'), type: 'assistant_message_completed',
+			messageId: canonical.messageId,
+			stopReason: options.stopReason,
+			usage: options.usage,
+			...(options.error ? { error: options.error } : {}),
+		}]);
+		this.canonicalAssistant = undefined;
+		return canonical.messageId;
+	}
+
 	private modelRequestInfo(model: Model<any> | undefined, options?: SimpleStreamOptions): ModelRequestInfo {
 		if (!model) throw new Error('[flue] Missing configured model for turn telemetry.');
 		const providerTelemetry = getProviderTelemetry(model.provider);
@@ -735,6 +767,11 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					const turnId = this.activeTurnId ?? generateTurnId();
 					this.activeTurnId = turnId;
 					if (event.message.role === 'assistant') {
+						await this.completeCanonicalAssistant({
+							stopReason: 'aborted',
+							usage: zeroProviderUsage(),
+							error: 'Assistant stream was superseded before completion.',
+						});
 						const messageId = generateConversationEntryId();
 						const parentId = await this.conversationWriter.getConversationLeaf(this.conversationId) ?? null;
 						this.canonicalAssistant = { messageId, parentId, blocks: new Map() };
@@ -747,6 +784,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 							messageId,
 							parentId,
 							modelInfo,
+							exclusive: true,
 						}]);
 					}
 					this.emit({ type: 'message_start', message: event.message, turnId });
@@ -831,34 +869,17 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					const turnId = this.activeTurnId ?? generateTurnId();
 					this.activeTurnId = turnId;
 					if (event.message.role === 'assistant') {
-						const canonical = this.canonicalAssistant;
-						if (canonical) {
-							await this.flushCanonical();
-							for (const block of canonical.blocks.values()) {
-								if (block.completed) continue;
-								await this.appendCanonical([block.type === 'text'
-									? {
-										...this.canonicalEnvelope('assistant_text_completed'), type: 'assistant_text_completed',
-										messageId: canonical.messageId, blockId: block.id, deltaCount: block.deltaCount,
-									}
-									: {
-										...this.canonicalEnvelope('assistant_reasoning_completed'), type: 'assistant_reasoning_completed',
-										messageId: canonical.messageId, blockId: block.id, deltaCount: block.deltaCount,
-									}]);
-								block.completed = true;
-							}
-							await this.appendCanonical([{
-								...this.canonicalEnvelope('assistant_message_completed'), type: 'assistant_message_completed',
-								messageId: canonical.messageId, stopReason: event.message.stopReason,
-								usage: event.message.usage,
-								...(event.message.errorMessage ? { error: event.message.errorMessage } : {}),
-							}]);
+						const messageId = await this.completeCanonicalAssistant({
+							stopReason: event.message.stopReason,
+							usage: event.message.usage,
+							...(event.message.errorMessage ? { error: event.message.errorMessage } : {}),
+						});
+						if (messageId) {
 							this.canonicalToolRequestMessageId = event.message.content.some(
 								(content) => content.type === 'toolCall',
 							)
-								? canonical.messageId
+								? messageId
 								: undefined;
-							this.canonicalAssistant = undefined;
 						}
 						const request = this.modelRequests.get(turnId) ?? this.modelRequestInfo(this.agentLoop.state.model);
 						this.emitTurn(turnId, 'agent', event.message, request);
@@ -1343,6 +1364,14 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				const conversation = await this.conversationWriter.getConversation(this.conversationId);
 				inProgress = conversation ? findLeafInProgressPartial(conversation) : undefined;
 			}
+			if (inProgress) {
+				const conversation = await this.conversationWriter.getConversation(this.conversationId);
+				if (conversation && inProgress.parentId !== conversation.activeLeafId) {
+					await this.appendCanonical(this.materializeInProgressStreamRecords(inProgress));
+					await this.rebuildCanonicalContext();
+					return false;
+				}
+			}
 			if (!inProgress) {
 				const conversation = await this.conversationWriter.getConversation(this.conversationId);
 				// Stamp-strict on purpose: this findLast scans the whole path, so a
@@ -1462,6 +1491,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			stopReason: 'aborted',
 			usage: zeroProviderUsage(),
 			error: 'Stream interrupted before completion.',
+			discardIfOrphaned: true,
 		});
 		return records;
 	}
@@ -1480,9 +1510,8 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	 * Both shapes are settleable by construction: `tool_results_committed` is
 	 * all-or-nothing, so a partial batch is always uncommitted and its toolUse
 	 * assistant is still the active leaf (nothing can follow it until commit),
-	 * which satisfies the commit-parent invariant; and the two shapes are
-	 * mutually exclusive per turn (a next-turn stream can only start after the
-	 * batch commits).
+	 * which satisfies the commit-parent invariant. Legacy streams already buried
+	 * behind the active leaf are discarded instead of advancing or rewinding it.
 	 *
 	 * `scope.submissionId` restricts settlement to state stamped with that
 	 * submission — the terminal-settlement path settles only the submission
@@ -1498,14 +1527,13 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		let conversation = await this.conversationWriter.getConversation(this.conversationId);
 		if (!conversation) return [];
 
-		// Ghost stream: an in-progress assistant at the active leaf that no
-		// recovery materialized (the terminal paths never run
-		// `recoverInterruptedStream`). Complete it as aborted so it stops
-		// projecting as still-streaming.
-		const inProgress = [...conversation.inProgressMessages.values()].find(
-			(message) => message.parentId === conversation?.activeLeafId,
+		// Settle every abandoned stream. A leaf-parented stream materializes as an
+		// aborted entry; a stream already buried behind the leaf is discarded by
+		// the recovery completion without rewinding or advancing the graph.
+		const inProgressMessages = [...conversation.inProgressMessages.values()].filter((message) =>
+			owns(message.submissionId)
 		);
-		if (inProgress && owns(inProgress.submissionId)) {
+		for (const inProgress of inProgressMessages) {
 			await this.appendCanonical(this.materializeInProgressStreamRecords(inProgress));
 			conversation = await this.requireConversation();
 		}
@@ -1515,7 +1543,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		);
 		const partial = findTrailingPartialToolBatch(messages);
 		if (!partial || conversation.activeLeafId !== partial.entryId) {
-			if (inProgress) await this.rebuildCanonicalContext();
+			if (inProgressMessages.length > 0) await this.rebuildCanonicalContext();
 			return [];
 		}
 		const batchEntry = conversation.entries.get(partial.entryId);
@@ -2651,6 +2679,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					messageId: assistantMessageId,
 					parentId: userMessageId,
 					modelInfo: { api: 'flue-shell', provider: 'flue', model: '' },
+					exclusive: true,
 				},
 				{
 					...this.canonicalEnvelope('assistant_tool_call'),
@@ -3577,6 +3606,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				activePackagedSkills: args.activePackagedSkills,
 			},
 			async ({ resolvedModel }) => {
+				// Direct prompt/skill calls do not pass through the persisted-submission
+				// input path, so repair any state abandoned by their previous driver here.
+				await this.settleDanglingConversationState('any');
 				const beforeLeafId = await this.conversationWriter.getConversationLeaf(this.conversationId);
 				const messageId = generateConversationEntryId();
 				const refs = await this.persistCanonicalAttachments(

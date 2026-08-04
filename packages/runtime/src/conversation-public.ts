@@ -1,8 +1,8 @@
 import {
-	classifySignal,
 	type ConversationUiMessage,
 	type ConversationUiSnapshot,
 	type ConversationUiWindow,
+	classifySignal,
 	projectConversationUi,
 } from './conversation-projections.ts';
 import type {
@@ -278,6 +278,12 @@ function encodeRecord(
 		case 'assistant_tool_call':
 			return [{ type: 'tool-input', conversationId, messageId: record.messageId, toolCallId: record.toolCallId, toolName: record.name, input: record.arguments }];
 		case 'assistant_message_completed':
+			if (
+				record.discardIfOrphaned &&
+				!state.conversations.get(record.conversationId)?.entries.has(record.messageId)
+			) {
+				return [];
+			}
 			return [
 				{
 					type: 'message-completed',
