@@ -345,6 +345,32 @@ describe('custom tools', () => {
 		}
 	});
 
+	it('does not start another model turn when a custom tool terminates', async () => {
+		const provider = createProvider();
+		const nextTurn = vi.fn(() => fauxAssistantMessage('This model turn must not run.'));
+		provider.setResponses([
+			fauxAssistantMessage(fauxToolCall('schedule_wake', {}), { stopReason: 'toolUse' }),
+			nextTurn,
+		]);
+		const harness = await createContext(provider).initializeRootHarness(
+			defineAgent(() => ({
+				model: `${provider.getModel().provider}/${provider.getModel().id}`,
+				tools: [
+					defineTool({
+						name: 'schedule_wake',
+						description: 'Schedule a later wake.',
+						terminate: true,
+						run: async () => ({ scheduled: true }),
+					}),
+				],
+			})),
+		);
+
+		await (await harness.session()).prompt('Wait before continuing.');
+
+		expect(nextTurn).not.toHaveBeenCalled();
+	});
+
 	it('emits a start without args and skips execution interception when validation fails', async () => {
 		const provider = createProvider();
 		provider.setResponses([

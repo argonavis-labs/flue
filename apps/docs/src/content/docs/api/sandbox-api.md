@@ -77,7 +77,7 @@ export interface SandboxApi {
 }
 ```
 
-`timeoutMs` is the primary cancellation contract. Every adapter should honor it by forwarding to the provider SDK's native timeout option. `signal` is optional: adapters whose provider SDK supports mid-flight cancellation should forward it; others may ignore it.
+`timeoutMs` is the primary cancellation contract. Every adapter should honor it by forwarding to the provider SDK's native timeout option. `signal` is optional: adapters whose provider SDK supports mid-flight cancellation should forward it; others may ignore it. Either way, an abort rejects the caller immediately — on a signal-blind adapter the remote command may keep running after the rejection.
 
 ### `SandboxFactory`
 
@@ -161,7 +161,7 @@ Delete a file or directory. Implement `options.recursive` and `options.force` ex
 
 Run a shell command. Honor `options.cwd`, `options.env`, and `options.timeoutMs`. The `timeoutMs` hint is measured in milliseconds. Forward it to the provider SDK's native timeout option, converting units when the provider uses something other than milliseconds. Implementations MAY round `timeoutMs` UP to their coarsest supported granularity, never down: a provider that only accepts whole seconds should use `Math.ceil(options.timeoutMs / 1000)` so the enforced deadline is never shorter than the requested one. If the provider SDK does not expose a native timeout option, translate the hint into `AbortSignal.timeout(options.timeoutMs)` and pass that signal to an SDK that accepts one, or as a last resort race the call against a timer and reject. Make a best-effort attempt to honor `timeoutMs`: it is how the model-facing bash tool stops a command and retries. Returning an exit-code-124 result with timeout details in `stderr` matches the convention used by other adapters and `timeout(1)`.
 
-If the provider SDK also supports an `AbortSignal`, forward `options.signal` for true mid-flight cancellation. If it cannot observe a signal, ignore that option. The `createSandboxSessionEnv` wrapper performs pre- and post-operation `signal.aborted` checks. Do not fake mid-flight signal cancellation with `Promise.race`: the underlying remote process would keep running.
+If the provider SDK also supports an `AbortSignal`, forward `options.signal` for true mid-flight cancellation — that is the only way the remote process itself stops on abort. If it cannot observe a signal, ignore that option; do not fake cancellation inside the adapter with `Promise.race`, because a race cannot stop the underlying remote process. The `createSandboxSessionEnv` wrapper owns abort semantics for every adapter: it performs pre- and post-operation `signal.aborted` checks and races the in-flight call against the signal, so an abort rejects the caller immediately even on a signal-blind adapter, while that adapter's remote command may keep running to completion in the background.
 
 The Daytonan adapter demonstrates the rounding rule: Daytona's `executeCommand` accepts whole seconds, so it forwards `Math.ceil(options.timeoutMs / 1000)`.
 

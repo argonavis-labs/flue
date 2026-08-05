@@ -251,6 +251,7 @@ export function createFlueClient(options: CreateFlueClientOptions): FlueClient {
 								{
 									url: http.url(`/agents/${encodeURIComponent(name)}/${encodeURIComponent(id)}`, {
 										view: 'updates',
+										...(updateOptions.live === 'sse' ? { sync: '1' } : {}),
 									}),
 									fetch: http.fetchWithHeaders.bind(http),
 								},

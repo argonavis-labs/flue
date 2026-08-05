@@ -267,6 +267,7 @@ export async function reconcileInterruptedSubmission(
 		acquire(attempt: SubmissionAttemptRef): Promise<void>;
 		release(attempt: SubmissionAttemptRef): Promise<void>;
 	},
+	onSettled?: (settlement: AgentSubmissionSettlement) => void,
 ): Promise<AgentSubmission | undefined> {
 	const { input } = submission;
 	const attempt = submissionAttemptRef(submission);
@@ -296,6 +297,7 @@ export async function reconcileInterruptedSubmission(
 		} else {
 			await submissions.completeSubmission(attempt);
 		}
+		onSettled?.(settlementSummary(submission, 'completed'));
 		return undefined;
 	}
 
@@ -316,6 +318,7 @@ export async function reconcileInterruptedSubmission(
 			abortCtx,
 			conversationWriter,
 		);
+		onSettled?.(settlementSummary(submission, 'aborted', new SubmissionAbortedError()));
 		return undefined;
 	}
 
@@ -346,6 +349,7 @@ export async function reconcileInterruptedSubmission(
 						}),
 			createContext,
 			conversationWriter,
+			onSettled,
 		);
 		return undefined;
 	}
@@ -361,6 +365,7 @@ export async function reconcileInterruptedSubmission(
 			() => new SubmissionTimeoutError(),
 			createContext,
 			conversationWriter,
+			onSettled,
 		);
 		return undefined;
 	}
@@ -476,6 +481,7 @@ export async function reconcileInterruptedSubmission(
 			}),
 		createContext,
 		conversationWriter,
+		onSettled,
 	);
 	return undefined;
 }
@@ -522,11 +528,31 @@ export interface ProcessSubmissionOptions {
 	 * `true` to suppress normal settlement.
 	 */
 	isShutdownAbort?: (error: unknown) => boolean;
-	/**
-	 * Called in the finally block after settlement. Used by the Cloudflare
-	 * coordinator to trigger post-settlement reconciliation.
-	 */
-	onSettled?: () => void;
+	/** Called in the finally block; `settlement` absent when processing exited without settling (shutdown abort). */
+	onSettled?: (settlement?: AgentSubmissionSettlement) => void;
+}
+
+/** Queue-level summary of one settled submission, for activity consumers. */
+export interface AgentSubmissionSettlement {
+	readonly submissionId: string;
+	readonly outcome: 'completed' | 'failed' | 'aborted';
+	readonly attemptCount: number;
+	readonly error?: string;
+}
+
+function settlementSummary(
+	submission: AgentSubmission,
+	outcome: AgentSubmissionSettlement['outcome'],
+	error?: unknown,
+): AgentSubmissionSettlement {
+	return {
+		submissionId: submission.submissionId,
+		outcome,
+		attemptCount: submission.attemptCount,
+		...(outcome === 'completed'
+			? {}
+			: { error: error instanceof Error ? error.message : String(error ?? 'unknown') }),
+	};
 }
 
 /**
@@ -608,6 +634,7 @@ export async function processSubmission(opts: ProcessSubmissionOptions): Promise
 			return handle;
 		})(ctx);
 
+	let settlement: AgentSubmissionSettlement | undefined;
 	try {
 		// Pre-execution abort: a queued submission that was abort-flagged is still
 		// claimed (creating an attempt) so settlement is uniform and
@@ -622,6 +649,7 @@ export async function processSubmission(opts: ProcessSubmissionOptions): Promise
 				ctx,
 				opts.conversationWriter,
 			);
+			settlement = settlementSummary(submission, 'aborted', new SubmissionAbortedError());
 			return;
 		}
 		try {
@@ -661,6 +689,7 @@ export async function processSubmission(opts: ProcessSubmissionOptions): Promise
 					ctx,
 					opts.conversationWriter,
 				);
+				settlement = settlementSummary(submission, 'aborted', new SubmissionAbortedError());
 				return;
 			}
 			if (submission.kind === 'direct') {
@@ -675,6 +704,7 @@ export async function processSubmission(opts: ProcessSubmissionOptions): Promise
 			} else {
 				await submissions.failSubmission(attempt, error);
 			}
+			settlement = settlementSummary(submission, 'failed', error);
 			throw error;
 		}
 		if (submission.kind === 'direct') {
@@ -689,8 +719,9 @@ export async function processSubmission(opts: ProcessSubmissionOptions): Promise
 		} else {
 			await submissions.completeSubmission(attempt);
 		}
+		settlement = settlementSummary(submission, 'completed');
 	} finally {
-		opts.onSettled?.();
+		opts.onSettled?.(settlement);
 	}
 }
 
@@ -705,6 +736,7 @@ async function failInterruptedSubmission(
 	createError: (interruptedTools?: ReadonlyArray<InterruptedToolCallRef>) => Error,
 	createContext: (dispatchId: string | undefined) => FlueContextInternal,
 	conversationWriter?: ConversationRecordWriter,
+	onSettled?: (settlement: AgentSubmissionSettlement) => void,
 ): Promise<void> {
 	const { input } = submission;
 	const dispatchId = agentSubmissionDispatchId(input);
@@ -747,6 +779,7 @@ async function failInterruptedSubmission(
 	} else {
 		await submissions.failSubmission(attempt, error);
 	}
+	onSettled?.(settlementSummary(submission, 'failed', error));
 }
 
 /**
@@ -867,13 +900,15 @@ async function settleDirectSubmission(
 			{ submissionId: attempt.submissionId, recordId: eventKey },
 		);
 	}
+	// Finalize before publishing so subscriber-time queue reads are honest; a
+	// crash before publish is safe — the repair loop finalizes without publishing.
+	await submissions.finalizeSubmissionSettlement(attempt, eventKey);
 	ctx.publishEvent(event);
 	try {
 		await ctx.flushEventCallbacks();
 	} catch (callbackError) {
 		console.error('[flue:subscriber] Terminal event subscriber failed:', callbackError);
 	}
-	await submissions.finalizeSubmissionSettlement(attempt, eventKey);
 }
 
 function decodeBase64(value: string): Uint8Array {

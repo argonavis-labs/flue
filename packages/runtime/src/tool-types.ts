@@ -27,6 +27,12 @@ export interface ToolDefinition<
 	readonly description: string;
 	readonly input: TInput;
 	readonly output: TOutput;
+	/**
+	 * Stop the agent loop after the current tool batch completes successfully.
+	 * The tool result remains part of the conversation, but is not sent back to
+	 * the model for another turn.
+	 */
+	readonly terminate?: boolean;
 	run(context: ToolContext<TInput>): ToolRunResult<TOutput> | Promise<ToolRunResult<TOutput>>;
 }
 

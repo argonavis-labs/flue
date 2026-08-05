@@ -42,6 +42,10 @@ describe('isRetryableModelError()', () => {
 		expect(isRetryableModelError(assistantError('PROVIDER FINISH_REASON: ERROR'))).toBe(true);
 	});
 
+	it('treats a stream ending without a finish reason as retryable', () => {
+		expect(isRetryableModelError(assistantError('Stream ended without finish_reason'))).toBe(true);
+	});
+
 	it('keeps qualified finish reasons terminal', () => {
 		expect(isRetryableModelError(assistantError('Provider finish_reason: error_quota'))).toBe(
 			false,

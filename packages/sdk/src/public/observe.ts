@@ -5,6 +5,7 @@ import {
 	type ConversationChunkPosition,
 	type ConversationStreamChunk,
 	createConversationStreamState,
+	SSE_SYNC_INTERVAL_MS,
 } from './conversation-stream.ts';
 import type { FlueEventStream } from './stream.ts';
 
@@ -87,12 +88,19 @@ export function createAgentConversationObservation(
 	let stream: FlueEventStream<ConversationStreamChunk> | undefined;
 	let retryTimer: ReturnType<typeof setTimeout> | undefined;
 	let reconnectAttempt = 0;
+	// A 401 can be a pre-resolved auth header that went stale in flight; one
+	// rehydrate per failure episode re-runs the header factory before going fatal.
+	let retriedUnauthorized = false;
 	// Highest chunk position applied to `streamState`. Chunks at or below it are
 	// redeliveries (e.g. an SSE reconnect replaying a batch) and are skipped so
 	// append-style deltas are never double-applied. Reset on every (re)hydrate:
 	// conversation reads are exclusive, so live chunks are always strictly after
 	// the freshly materialized snapshot, leaving nothing to dedupe against it.
 	let lastApplied: ConversationChunkPosition | undefined;
+	// Sync support, once observed, is remembered so later streams arm the
+	// watchdog from open — a from-birth stall can then never hide behind a
+	// proxy that keeps the connection alive.
+	let sawSyncFrames = false;
 
 	const publish = (next: AgentConversationObservationSnapshot) => {
 		snapshot = next;
@@ -125,8 +133,12 @@ export function createAgentConversationObservation(
 			return;
 		}
 		if (isFatalStatus(error)) {
-			publish({ ...snapshot, phase: 'error', error });
-			return;
+			const retryableUnauthorized = statusOf(error) === 401 && !retriedUnauthorized;
+			if (!retryableUnauthorized) {
+				publish({ ...snapshot, phase: 'error', error });
+				return;
+			}
+			retriedUnauthorized = true;
 		}
 		publish({ ...snapshot, phase: 'connecting', error });
 		const delay = Math.min(1000 * 2 ** reconnectAttempt++, 30_000);
@@ -153,9 +165,59 @@ export function createAgentConversationObservation(
 			return;
 		}
 		stream = nextStream;
+		// Sync-frame continuity state, scoped to this stream: the nonce proves the
+		// transport stayed on one server connection, and the watchdog arms only
+		// after the first sync frame so an old runtime never trips it.
+		let syncConnectionId: string | undefined;
+		let receivedChunks = 0;
+		let syncWatchdog: ReturnType<typeof setTimeout> | undefined;
+		const failStream = (error: Error) => {
+			stream = undefined;
+			nextStream.cancel();
+			scheduleRetry(value, error);
+		};
+		const armSyncWatchdog = () => {
+			if (syncWatchdog) clearTimeout(syncWatchdog);
+			syncWatchdog = setTimeout(() => {
+				if (!isCurrent(value) || stream !== nextStream) return;
+				failStream(new Error('Agent conversation sync frames stopped; treating the stream as dead.'));
+			}, SSE_SYNC_INTERVAL_MS * 3);
+		};
+		if (sawSyncFrames) armSyncWatchdog();
 		try {
 			for await (const chunk of nextStream) {
 				if (!isCurrent(value) || stream !== nextStream) return;
+				// A delivered event proves the updates request authenticated; re-arming on
+				// history success alone would loop a persistent updates-401 forever.
+				retriedUnauthorized = false;
+				if (chunk.type === 'sync') {
+					sawSyncFrames = true;
+					if (syncConnectionId === undefined) {
+						// A first sync from past the follow offset means the original
+						// connection died before proving itself — its losses are unknowable.
+						if (chunk.sinceOffset !== offset) {
+							failStream(
+								new Error('Agent conversation stream resumed past its proven prefix; rehydrating.'),
+							);
+							return;
+						}
+					} else if (chunk.connectionId !== syncConnectionId) {
+						failStream(
+							new Error('Agent conversation stream reconnected invisibly; rehydrating.'),
+						);
+						return;
+					}
+					syncConnectionId = chunk.connectionId;
+					armSyncWatchdog();
+					if (chunk.sentChunks !== receivedChunks) {
+						failStream(new Error('Agent conversation chunks were lost in transit; rehydrating.'));
+						return;
+					}
+					continue;
+				}
+				// Counted pre-dedup: within one nonce no replay is possible — a transport
+				// reconnect's replayed data always follows a fresh-nonce open-sync.
+				receivedChunks++;
 				if (!streamState) throw new Error('Agent conversation updates require materialized state.');
 				// Drop redelivered chunks (at-least-once transports replay the
 				// in-flight batch on reconnect). Positions are monotonic but not
@@ -181,6 +243,8 @@ export function createAgentConversationObservation(
 			if (!isCurrent(value) || stream !== nextStream) return;
 			stream = undefined;
 			scheduleRetry(value, toError(error));
+		} finally {
+			if (syncWatchdog) clearTimeout(syncWatchdog);
 		}
 	};
 
@@ -225,6 +289,7 @@ export function createAgentConversationObservation(
 			}
 		});
 		reconnectAttempt = 0;
+		retriedUnauthorized = false;
 		const value = generation;
 		queueMicrotask(() => void hydrate(value));
 	};

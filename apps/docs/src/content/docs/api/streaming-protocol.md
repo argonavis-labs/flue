@@ -64,6 +64,23 @@ SSE responses contain:
 
 - `event: data` frames with a JSON array of conversation chunks or workflow events;
 - `event: control` frames with `streamNextOffset` and optional `upToDate`; workflow event streams may also include `streamClosed`;
-- heartbeat comments on idle connections.
+- heartbeat comments on idle connections, unless the client opted into sync frames.
 
 Track `streamNextOffset` from control frames to resume after a disconnect.
+
+### Sync frames (`sync=1`)
+
+Agent conversation SSE reads accept a `sync=1` query parameter. When present, the server emits a sync frame — a real data+control frame pair whose data frame carries exactly one chunk — immediately at connection open, before any conversation data, and again on every 15-second heartbeat tick in place of the comment:
+
+```json
+{ "type": "sync", "connectionId": "…", "sentChunks": 3, "sinceOffset": "…" }
+```
+
+`connectionId` is a nonce minted per SSE connection. `sentChunks` is the cumulative count of conversation chunks sent on that connection, so a consumer can prove the entire delivered prefix — a maximum position would miss an interior loss once a later chunk arrives. `sinceOffset` is the offset the connection started serving from; because the open frame precedes every offset-advancing frame, connection identity is established before any advancement must be trusted. Unlike every projected chunk, a sync chunk carries no `position` and no `conversationId`.
+
+The SDK's `observe()` uses sync frames as its continuity contract; each of these forces a fresh history rehydrate:
+
+- a `sentChunks` that disagrees with the chunks received on the connection — loss anywhere in the prefix;
+- a changed `connectionId` — an invisible transport reconnect;
+- a first sync whose `sinceOffset` differs from the read's request offset — a replacement connection that resumed past the proven prefix, so the original connection's losses are unknowable;
+- three missed sync intervals — a dead or stalled stream. The watchdog arms after the first sync frame observed, and from stream open once sync support has ever been observed, so either side of a version skew sees the pre-sync wire unchanged while a from-birth stall cannot hide behind a keep-alive proxy.

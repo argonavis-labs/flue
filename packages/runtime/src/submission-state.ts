@@ -295,10 +295,11 @@ export function findTrailingPartialToolBatch(
 export function isRetryableModelError(message: AssistantMessage): boolean {
 	if (message.stopReason !== 'error' || !message.errorMessage) return false;
 	// A provider that dies mid-generation surfaces as a bare
-	// "Provider finish_reason: error" — transient upstream failure, so it earns
-	// the same backoff retries as a 5xx. The lookahead keeps qualified reasons
+	// "Provider finish_reason: error" or "Stream ended without finish_reason".
+	// Both are transient upstream failures, so they earn the same backoff
+	// retries as a 5xx. The lookahead keeps qualified provider reasons
 	// (`error_quota`, `error-content-filter`, …) terminal.
-	return /overloaded|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|network.?error|connection.?(?:reset|refused|lost)|socket hang up|fetch failed|timed? out|timeout|terminated|provider finish_reason:\s*error(?![-\w])/i.test(
+	return /overloaded|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|network.?error|connection.?(?:reset|refused|lost)|socket hang up|fetch failed|timed? out|timeout|terminated|stream ended without finish_reason|provider finish_reason:\s*error(?![-\w])/i.test(
 		message.errorMessage,
 	);
 }

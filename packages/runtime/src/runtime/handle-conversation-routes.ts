@@ -1,4 +1,5 @@
 import {
+	type ConversationSyncChunk,
 	projectAgentConversationBatch,
 	projectAgentConversationSnapshot,
 } from '../conversation-public.ts';
@@ -178,7 +179,8 @@ async function updatesResponse(options: {
 	const meta = await options.store.getMeta(options.path);
 	if (!meta) return errorResponse(new StreamNotFoundError({ path: options.path }));
 	if (live === 'sse') {
-		return sseResponse(options.store, options.path, offset, options.request.signal);
+		const sync = url.searchParams.get('sync') === '1';
+		return sseResponse(options.store, options.path, offset, options.request.signal, sync);
 	}
 	let state = await loadReducedConversationPrefix({
 		store: options.store,
@@ -245,6 +247,7 @@ function sseResponse(
 	path: string,
 	offset: string,
 	signal: AbortSignal,
+	sync: boolean,
 ): Response {
 	const encoder = new TextEncoder();
 	let active = true;
@@ -255,9 +258,33 @@ function sseResponse(
 			let state = await loadReducedConversationPrefix({ store, path, offset });
 			let currentOffset = offset;
 			let wake: (() => void) | undefined;
+			const connectionId = crypto.randomUUID();
+			let sentChunks = 0;
+			const enqueueSyncFrame = () => {
+				const frame: ConversationSyncChunk = {
+					type: 'sync',
+					connectionId,
+					sentChunks,
+					sinceOffset: offset,
+				};
+				controller.enqueue(encoder.encode(`event: data\ndata:${JSON.stringify([frame])}\n\n`));
+				controller.enqueue(
+					encoder.encode(
+						`event: control\ndata:${JSON.stringify({ streamNextOffset: currentOffset })}\n\n`,
+					),
+				);
+			};
 			unsubscribe = store.subscribe(path, () => wake?.());
+			// Connection identity must precede any offset-advancing frame, or a
+			// pre-first-sync reconnect could swallow a loss undetectably.
+			if (sync) enqueueSyncFrame();
 			heartbeat = setInterval(() => {
-				if (active) controller.enqueue(encoder.encode(': heartbeat\n\n'));
+				if (!active) return;
+				if (!sync) {
+					controller.enqueue(encoder.encode(': heartbeat\n\n'));
+					return;
+				}
+				enqueueSyncFrame();
 			}, SSE_HEARTBEAT_MS);
 			const onAbort = () => {
 				active = false;
@@ -273,6 +300,7 @@ function sseResponse(
 						controller.enqueue(
 							encoder.encode(`event: data\ndata:${JSON.stringify(projected.items)}\n\n`),
 						);
+						sentChunks += projected.items.length;
 					}
 					currentOffset = read.nextOffset;
 					const control = {

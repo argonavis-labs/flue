@@ -4,6 +4,15 @@ import type { DeliveredMessage } from '../types.ts';
 
 export const MAX_IMAGE_DATA_LENGTH = 14 * 1024 * 1024;
 
+// Total across ALL of a single message's image attachments. `MAX_IMAGE_DATA_LENGTH`
+// caps one image; this caps the sum, because a submission is persisted as chunks
+// and reassembled WHOLE on every recovery wake (`hydratePersistedSubmissionAttachments`).
+// That reassembly holds the rows plus the joined strings at once (~2× the total),
+// so an unbounded sum lets one submission OOM the durable-object isolate on wake —
+// a permanent OOM loop, not a one-time failure. 32 MiB keeps the peak well under a
+// 128 MB isolate while still admitting a couple of full-size images.
+export const MAX_SUBMISSION_IMAGE_DATA_LENGTH = 32 * 1024 * 1024;
+
 /** Attachment shape for a `DeliveredMessage`'s `attachments`. */
 const DeliveredAttachmentSchema = v.object({
 	type: v.literal('image'),

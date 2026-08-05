@@ -190,13 +190,7 @@ export interface SessionEnv {
 			 * bash tool does this when the model emits a `timeout` parameter.
 			 */
 			timeoutMs?: number;
-			/**
-			 * Cancel the in-flight command. Aborting rejects with an
-			 * `AbortError`. Sandbox adapters that wrap a signal-aware SDK observe
-			 * this mid-flight; others see it only before/after the remote
-			 * call returns. Use `timeoutMs` for guaranteed deadline
-			 * enforcement on signal-blind sandbox adapters.
-			 */
+			/** Aborting rejects with an `AbortError` immediately; a signal-blind adapter's command may keep running — `timeoutMs` remains the guaranteed deadline. */
 			signal?: AbortSignal;
 		},
 	): Promise<ShellResult>;
@@ -485,7 +479,9 @@ export interface AgentRuntimeConfig {
 /** Opaque agent initializer created by {@link defineAgent}. */
 export interface AgentDefinition<TEnv = Record<string, any>> {
 	readonly __flueAgentDefinition: true;
-	initialize(context: AgentInitializerContext<TEnv>): AgentRuntimeConfig | Promise<AgentRuntimeConfig>;
+	initialize(
+		context: AgentInitializerContext<TEnv>,
+	): AgentRuntimeConfig | Promise<AgentRuntimeConfig>;
 }
 
 // ─── Flue Event Context ────────────────────────────────────────────────────
