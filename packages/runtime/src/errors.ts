@@ -751,6 +751,19 @@ export class DelegationDepthExceededError extends FlueError {
 	}
 }
 
+export class TaskTimeoutError extends FlueError {
+	constructor({ timeoutMs, taskId }: { timeoutMs: number; taskId?: string }) {
+		super({
+			type: 'task_timeout',
+			message: `The delegated task timed out after ${timeoutMs / 1000} seconds.`,
+			details: 'The child agent did not finish within the allowed time.',
+			dev: '',
+			meta: { ...(taskId ? { taskId } : {}) },
+		});
+		this.name = 'TaskTimeoutError';
+	}
+}
+
 export class SubagentNotDeclaredError extends FlueError {
 	constructor({ subagent, available }: { subagent: string; available: readonly string[] }) {
 		super({

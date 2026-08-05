@@ -83,6 +83,7 @@ import {
 	SkillNotRegisteredError,
 	SubagentNotDeclaredError,
 	SubmissionTimeoutError,
+	TaskTimeoutError,
 	ToolNameConflictError,
 } from './errors.ts';
 import {
@@ -166,6 +167,14 @@ import { emptyUsage, fromProviderUsage } from './usage.ts';
 const MAX_DELEGATION_DEPTH = 4;
 const MAX_TRANSIENT_MODEL_RETRIES = 3;
 const TRANSIENT_MODEL_RETRY_BASE_DELAY_MS = 2_000;
+const DELEGATED_TASK_TIMEOUT_MS = 120_000;
+
+function isTaskTimeoutAbort(error: unknown): boolean {
+	if (!(error instanceof DOMException) || error.name !== 'AbortError') return false;
+	const cause = (error as DOMException & { cause?: unknown }).cause;
+	if (cause instanceof DOMException && cause.name === 'TimeoutError') return true;
+	return error.message === `The delegated task timed out after ${DELEGATED_TASK_TIMEOUT_MS / 1000} seconds.`;
+}
 
 type TurnInputMessage = Extract<FlueEvent, { type: 'turn_request' }>['request']['input']['messages'][number];
 type TurnInputTool = NonNullable<
@@ -2297,6 +2306,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		const taskAgent = options?.agent ? this.resolveDeclaredSubagent(options.agent) : undefined;
 		let child: Session | undefined;
 		let abortListener: (() => void) | undefined;
+		let taskTimeoutId: ReturnType<typeof setTimeout> | undefined;
 
 		const taskStartMs = Date.now();
 
@@ -2345,6 +2355,17 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			}
 
 			const schema = options?.result;
+			const taskTimeoutController = new AbortController();
+			taskTimeoutId = setTimeout(
+				() =>
+					taskTimeoutController.abort(
+						new DOMException(
+							`The delegated task timed out after ${DELEGATED_TASK_TIMEOUT_MS / 1000} seconds.`,
+							'TimeoutError',
+						),
+					),
+				DELEGATED_TASK_TIMEOUT_MS,
+			);
 			const childOptions: PromptOptions<v.GenericSchema | undefined> = {
 				model:
 					options?.model ?? (taskAgent?.model !== undefined ? undefined : options?.inheritedModel),
@@ -2353,7 +2374,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					(taskAgent?.thinkingLevel !== undefined ? undefined : options?.inheritedThinkingLevel),
 				tools: options?.tools,
 				images: options?.images,
-				signal,
+				signal: signal
+					? AbortSignal.any([signal, taskTimeoutController.signal])
+					: taskTimeoutController.signal,
 			};
 			if (schema) childOptions.result = schema;
 
@@ -2389,18 +2412,20 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			}, { agentOutput: child.agentInvocationOutput(output) });
 			return taskResult;
 		} catch (error) {
+			const taskError = isTaskTimeoutAbort(error) ? new TaskTimeoutError({ timeoutMs: DELEGATED_TASK_TIMEOUT_MS, taskId }) : error;
 			this.emit({
 				type: 'task',
 				taskId,
 				agent: taskAgent?.name,
 				isError: true,
-				result: getErrorMessage(error),
+				result: getErrorMessage(taskError),
 				durationMs: durationSince(taskStartMs),
 				parentSession: this.name,
 				...(child ? { session: child.name, conversationId: child.conversationId } : {}),
-			}, { errorInfo: classifyError(error) });
-			throw error;
+			}, { errorInfo: classifyError(taskError) });
+			throw taskError;
 		} finally {
+			if (taskTimeoutId !== undefined) clearTimeout(taskTimeoutId);
 			if (signal && abortListener) signal.removeEventListener('abort', abortListener);
 			if (child) {
 				await child.close();
