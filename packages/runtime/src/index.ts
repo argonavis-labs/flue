@@ -53,6 +53,7 @@ export {
 	WorkflowAdmissionUnavailableError,
 	WorkflowInputSerializationError,
 	WorkflowInputUnexpectedError,
+	TaskTimeoutError,
 	WorkflowInvocationNotConfiguredError,
 	WorkflowNotDiscoveredError,
 } from './errors.ts';
