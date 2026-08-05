@@ -7,6 +7,7 @@ import {
 	FLUE_AGENT_ACTIVITY_BEAT_SECONDS,
 	type FlueAgentActivity,
 	type FlueReconciliationFailure,
+	agentLatestCompletedSubmission,
 	agentQueueBusy,
 	agentSubmissionAttemptCount,
 } from '../src/cloudflare/agent-activity.ts';
@@ -1079,6 +1080,25 @@ describe('agent activity hook', () => {
 		expect(await agentQueueBusy(instance)).toBe(false);
 		expect(await agentSubmissionAttemptCount(instance, 'dispatch-1')).toBe(1);
 		expect(await agentSubmissionAttemptCount(instance, 'missing')).toBeUndefined();
+	});
+
+	it('reads the latest completed submission through the coordinator', async () => {
+		const { storage } = makeFakeSql();
+		const runtime = makeProcessingRuntime();
+		const instance = makeInstance(storage);
+		const executionStore = prepare(runtime, instance);
+
+		expect(await agentLatestCompletedSubmission(instance)).toBeUndefined();
+
+		await executionStore.submissions.admitDispatch(dispatchInput());
+		instance.runFiber = async (_name, callback) => callback({ stash() {} });
+		await runtime.onStart(instance, () => {});
+		await settledQuiescence(executionStore, ['dispatch-1']);
+
+		expect(await agentLatestCompletedSubmission(instance)).toEqual({
+			sequence: 1,
+			submissionId: 'dispatch-1',
+		});
 	});
 });
 

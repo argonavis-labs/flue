@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createFlueClient } from '../src/client.ts';
 import type { FlueConversationSnapshot } from '../src/public/conversation.ts';
 import {
 	SSE_SYNC_INTERVAL_MS,
@@ -17,6 +18,7 @@ function pushStream<T>() {
 	let notify: (() => void) | undefined;
 	let ended = false;
 	let cancelled = false;
+	let failure: Error | undefined;
 	const stream: FlueEventStream<T> = {
 		cancel() {
 			cancelled = true;
@@ -28,6 +30,7 @@ function pushStream<T>() {
 			return {
 				async next(): Promise<IteratorResult<T>> {
 					while (true) {
+						if (failure) throw failure;
 						if (queue.length > 0) return { value: queue.shift() as T, done: false };
 						if (ended) return { value: undefined as T, done: true };
 						await new Promise<void>((resolve) => {
@@ -48,13 +51,17 @@ function pushStream<T>() {
 			ended = true;
 			notify?.();
 		},
+		fail(error: Error) {
+			failure = error;
+			notify?.();
+		},
 		get cancelled() {
 			return cancelled;
 		},
 	};
 }
 
-function makeSource() {
+function makeSource(historyPlan: Array<Error | 'ok'> = [], updatesPlan: Array<Error | 'ok'> = []) {
 	const snapshot = {
 		v: 1,
 		conversationId: 'c1',
@@ -64,18 +71,24 @@ function makeSource() {
 	} as unknown as FlueConversationSnapshot;
 	const streams: ReturnType<typeof pushStream<ConversationStreamChunk>>[] = [];
 	let historyCalls = 0;
+	let updatesCalls = 0;
 	const source: AgentConversationObservationSource = {
 		async history() {
+			const planned = historyPlan[historyCalls] ?? 'ok';
 			historyCalls++;
+			if (planned !== 'ok') throw planned;
 			return snapshot;
 		},
 		updates() {
+			const planned = updatesPlan[updatesCalls] ?? 'ok';
+			updatesCalls++;
 			const next = pushStream<ConversationStreamChunk>();
+			if (planned !== 'ok') next.fail(planned);
 			streams.push(next);
 			return next.stream;
 		},
 	};
-	return { source, streams, historyCalls: () => historyCalls };
+	return { source, streams, historyCalls: () => historyCalls, updatesCalls: () => updatesCalls };
 }
 
 async function flush() {
@@ -322,5 +335,216 @@ describe('createAgentConversationObservation() sync frames', () => {
 		await flush();
 
 		expect(historyCalls()).toBe(1);
+	});
+});
+
+const statusError = (status: number) => Object.assign(new Error(`http ${status}`), { status });
+
+describe('createAgentConversationObservation() unauthorized recovery', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('rehydrates once when history is rejected with a single stale 401', async () => {
+		const { source, historyCalls } = makeSource([statusError(401)]);
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+
+		expect(observation.getSnapshot().phase).toBe('connecting');
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+
+		expect(historyCalls()).toBe(2);
+		expect(observation.getSnapshot().phase).toBe('live');
+		observation.close();
+	});
+
+	it('rehydrates once when the updates stream is rejected with a single stale 401', async () => {
+		const { source, streams, historyCalls, updatesCalls } = makeSource([], [statusError(401)]);
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+
+		expect(historyCalls()).toBe(2);
+		expect(updatesCalls()).toBe(2);
+		streams[1]?.push(delta(1));
+		await flush();
+		expect(observation.getSnapshot().phase).toBe('live');
+		observation.close();
+	});
+
+	it('goes fatal when the updates stream keeps rejecting 401 after the rehydrate', async () => {
+		const { source, historyCalls, updatesCalls } = makeSource(
+			[],
+			[statusError(401), statusError(401)],
+		);
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+
+		expect(observation.getSnapshot().phase).toBe('error');
+		expect(historyCalls()).toBe(2);
+		expect(updatesCalls()).toBe(2);
+		await vi.advanceTimersByTimeAsync(120_000);
+		await flush();
+		expect(historyCalls()).toBe(2);
+		expect(updatesCalls()).toBe(2);
+		observation.close();
+	});
+
+	it('goes fatal when the fresh-credential rehydrate is rejected with 401 again', async () => {
+		const { source, historyCalls } = makeSource([statusError(401), statusError(401)]);
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+
+		expect(observation.getSnapshot().phase).toBe('error');
+		expect(historyCalls()).toBe(2);
+		await vi.advanceTimersByTimeAsync(120_000);
+		await flush();
+		expect(historyCalls()).toBe(2);
+		observation.close();
+	});
+
+	it('rehydrates once more when the first request after refresh() hits a stale 401', async () => {
+		const { source, historyCalls } = makeSource([
+			statusError(401),
+			statusError(401),
+			statusError(401),
+			'ok',
+		]);
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+		expect(observation.getSnapshot().phase).toBe('error');
+
+		observation.refresh();
+		await flush();
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+
+		expect(historyCalls()).toBe(4);
+		expect(observation.getSnapshot().phase).toBe('live');
+		observation.close();
+	});
+
+	it('restarts hydration when refresh() is called after a fatal stop', async () => {
+		const { source, historyCalls } = makeSource([statusError(401), statusError(401), 'ok']);
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+		expect(observation.getSnapshot().phase).toBe('error');
+
+		observation.refresh();
+		await flush();
+
+		expect(historyCalls()).toBe(3);
+		expect(observation.getSnapshot().phase).toBe('live');
+		observation.close();
+	});
+
+	it('rehydrates again when a later 401 arrives after the stream has delivered', async () => {
+		const { source, streams, historyCalls, updatesCalls } = makeSource([statusError(401)]);
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+		expect(observation.getSnapshot().phase).toBe('live');
+
+		streams[0]?.push(delta(1));
+		await flush();
+		streams[0]?.fail(statusError(401));
+		await flush();
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+
+		expect(historyCalls()).toBe(3);
+		expect(updatesCalls()).toBe(2);
+		streams[1]?.push(delta(2));
+		await flush();
+		expect(observation.getSnapshot().phase).toBe('live');
+		observation.close();
+	});
+
+	it('goes fatal immediately when history is rejected with 403', async () => {
+		const { source, historyCalls } = makeSource([statusError(403)]);
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+
+		expect(observation.getSnapshot().phase).toBe('error');
+		await vi.advanceTimersByTimeAsync(120_000);
+		await flush();
+		expect(historyCalls()).toBe(1);
+		observation.close();
+	});
+});
+
+describe('client.agents.observe() credential re-resolution', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('carries a newly resolved authorization header when retrying a stale 401', async () => {
+		const snapshot = {
+			v: 1,
+			conversationId: 'c1',
+			offset: FOLLOW_OFFSET,
+			messages: [],
+			settlements: [],
+		};
+		let minted = 0;
+		const historyAuth: Array<string | null> = [];
+		let historyRequests = 0;
+		const fetchImpl: typeof fetch = (input, init) => {
+			const url = String(input);
+			if (url.includes('view=history')) {
+				historyRequests++;
+				historyAuth.push(new Headers(init?.headers).get('authorization'));
+				if (historyRequests === 1) {
+					return Promise.resolve(new Response('unauthorized', { status: 401 }));
+				}
+				return Promise.resolve(
+					new Response(JSON.stringify(snapshot), {
+						status: 200,
+						headers: { 'content-type': 'application/json' },
+					}),
+				);
+			}
+			return new Promise<Response>(() => {});
+		};
+		const client = createFlueClient({
+			baseUrl: 'https://flue.test/agent',
+			fetch: fetchImpl,
+			headers: async () => ({ authorization: `Bearer token-${++minted}` }),
+		});
+
+		const observation = client.agents.observe('assistant', 'i1', { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+
+		expect(historyAuth).toEqual(['Bearer token-1', 'Bearer token-2']);
+		expect(observation.getSnapshot().phase).toBe('live');
+		observation.close();
 	});
 });

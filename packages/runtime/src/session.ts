@@ -1904,6 +1904,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 								},
 							],
 							details: { customTool: toolDef.name },
+							...(toolDef.terminate ? { terminate: true } : {}),
 						}),
 						result: toolResultText,
 					};
@@ -1924,6 +1925,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 								},
 							],
 							details: { customTool: toolDef.name, output },
+							...(toolDef.terminate ? { terminate: true } : {}),
 						};
 					},
 					result: (value) => (value.details as { output?: unknown }).output,

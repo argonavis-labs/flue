@@ -32,6 +32,7 @@ export function defineTool<
 	description: string;
 	input?: TInput;
 	output?: TOutput;
+	terminate?: boolean;
 	run: ToolDefinition<TInput, TOutput>['run'];
 }): ToolDefinition<TInput, TOutput> {
 	assertToolDefinition(options, 'defineTool()');
@@ -40,6 +41,7 @@ export function defineTool<
 		description: options.description,
 		input: options.input as TInput,
 		output: options.output as TOutput,
+		...(options.terminate ? { terminate: true } : {}),
 		run: options.run,
 	});
 }
@@ -66,6 +68,9 @@ export function assertToolDefinition(
 	}
 	if (tool.output !== undefined && !isValibotSchema(tool.output)) {
 		throw new Error(`[flue] ${label} output must be a Valibot schema.`);
+	}
+	if (tool.terminate !== undefined && typeof tool.terminate !== 'boolean') {
+		throw new Error(`[flue] ${label} terminate must be a boolean.`);
 	}
 	if (typeof tool.run !== 'function') {
 		throw new Error(`[flue] ${label} run must be a function.`);

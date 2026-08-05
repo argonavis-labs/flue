@@ -36,6 +36,7 @@ import {
 	DURABILITY_DEFAULT_TIMEOUT_MS,
 	LEASE_DURATION_MS,
 } from './agent-execution-store.ts';
+import { PersistedRowInvariantError } from './errors.ts';
 import type { SqlStorage } from './sql-storage.ts';
 
 type SqlRow = Record<string, unknown>;
@@ -55,11 +56,71 @@ import {
 	ensureSqlPersistedChunkTable,
 } from './sql-persisted-chunk-store.ts';
 
+// A single `parseOperationalRows` call hydrates a batch of pending submissions
+// into memory at once, each holding its reassembled image attachments.
+// MAX_SUBMISSION_IMAGE_DATA_LENGTH caps ONE message, but a burst of image-bearing
+// submissions could still sum past the isolate on load. Bound the batch too: stop
+// admitting rows once the cumulative attachment size would exceed this budget,
+// checked BEFORE hydrating (via a cheap size query) so an over-budget row is never
+// reassembled. The deferred rows stay unsettled and the coordinator re-arms the
+// submission wake while any submission is unsettled, so they drain over subsequent
+// ticks rather than OOM on one load.
+//
+// Scope and margin, stated honestly: this is a per-list-call budget, and one
+// Cloudflare reconcile pass runs three such lists in sequence (unready, running,
+// runnable). A submission is in exactly one of those states and each list's array
+// is unreferenced between the loops (GC-eligible before the next allocation), so
+// the practical peak is one list's worth, not the sum. The dominant term is a
+// single message's ~2x reassembly transient (≤ MAX_SUBMISSION_IMAGE_DATA_LENGTH,
+// which the per-message cap already bounds); 32 MiB of accumulated batch on top of
+// that stays under a 128 MB isolate. The constant guards the Cloudflare DO isolate
+// specifically; the node coordinator shares this store and inherits it harmlessly
+// (it is not isolate-bounded). "Bytes" is `data.length`, a character count
+// (base64, ~1 byte each), matching MAX_IMAGE_DATA_LENGTH.
+const MAX_RECONCILE_ATTACHMENT_BYTES = 32 * 1024 * 1024;
+
 export function ensureSqlAgentExecutionTables(sql: SqlStorage): void {
 	migrateFlueSqlSchema(sql, () => {
 		ensureSubmissionTable(sql);
 		ensureSqlPersistedChunkTable(sql);
 	});
+}
+
+/** The greatest durably settled completed submission. */
+export interface LatestCompletedSubmission {
+	readonly sequence: number;
+	readonly submissionId: string;
+}
+
+/** A query, not a store method: {@link AgentSubmissionStore} is one contract for every backend and only the Cloudflare coordinator needs this read. */
+export function readLatestCompletedSubmission(
+	sql: SqlStorage,
+): LatestCompletedSubmission | undefined {
+	// A direct submission proves completion with its settlement record; a dispatch
+	// row has none and is complete exactly when `error` is null.
+	const row = sql
+		.exec(
+			`SELECT sequence, submission_id
+			 FROM flue_agent_submissions
+			 WHERE status = 'settled'
+			   AND ((kind = 'direct'
+			         AND settlement_record_json IS NOT NULL
+			         AND json_extract(settlement_record_json, '$.outcome') = 'completed')
+			        OR (kind = 'dispatch'
+			            AND settlement_record_json IS NULL
+			            AND error IS NULL))
+			 ORDER BY sequence DESC
+			 LIMIT 1`,
+		)
+		.toArray()[0];
+	if (!row) return undefined;
+	if (typeof row.sequence !== 'number' || typeof row.submission_id !== 'string') {
+		throw new PersistedRowInvariantError({
+			table: 'flue_agent_submissions',
+			reason: 'A settled submission row has a non-numeric sequence or a non-string submission_id.',
+		});
+	}
+	return { sequence: row.sequence, submissionId: row.submission_id };
 }
 
 /**
@@ -400,7 +461,10 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 
 	async reserveSubmissionSettlement(
 		attempt: SubmissionAttemptRef,
-		settlement: { recordId: string; record: import('./conversation-records.ts').SubmissionSettledRecord },
+		settlement: {
+			recordId: string;
+			record: import('./conversation-records.ts').SubmissionSettledRecord;
+		},
 	): Promise<SubmissionSettlementObligation | null> {
 		if (settlement.record.id !== settlement.recordId) return null;
 		const recordJson = JSON.stringify(settlement.record);
@@ -435,7 +499,6 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 			return existing ? parseSettlementObligation(existing) : null;
 		});
 	}
-
 
 	async finalizeSubmissionSettlement(
 		attempt: SubmissionAttemptRef,
@@ -521,11 +584,44 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 		);
 	}
 
+	// Total persisted attachment bytes for a submission, summed in SQLite without
+	// materializing the chunk data — so an over-budget row is measured, then
+	// deferred, without ever being read into memory.
+	private pendingAttachmentByteSize(submissionId: string): number {
+		const owner = submissionChunkOwner(submissionId);
+		const row = this.sql
+			.exec(
+				`SELECT COALESCE(SUM(LENGTH(data)), 0) AS bytes
+				 FROM flue_image_chunks
+				 WHERE owner_kind = ? AND owner_id = ? AND owner_part = ?`,
+				owner.kind,
+				owner.id,
+				owner.part,
+			)
+			.toArray()[0];
+		return typeof row?.bytes === 'number' ? row.bytes : 0;
+	}
+
 	private parseOperationalRows(rows: SqlRow[], status: 'queued' | 'active'): AgentSubmission[] {
 		const submissions: AgentSubmission[] = [];
+		let attachmentBytes = 0;
 		for (const row of rows) {
+			const rowBytes =
+				typeof row.submission_id === 'string'
+					? this.pendingAttachmentByteSize(row.submission_id)
+					: 0;
+			// Defer once admitting this row would push the batch past the reconcile
+			// budget — checked BEFORE hydrating, so an over-budget row is never
+			// reassembled. The deferred rows stay unsettled and the coordinator's
+			// submission wake re-arms to pick them up next tick. Always admit at
+			// least one — the per-message cap bounds each submission's attachments to
+			// the budget, so no single one is starved.
+			if (submissions.length > 0 && attachmentBytes + rowBytes > MAX_RECONCILE_ATTACHMENT_BYTES) {
+				break;
+			}
 			try {
 				submissions.push(this.parseSubmission(row));
+				attachmentBytes += rowBytes;
 			} catch (error) {
 				if (typeof row.sequence !== 'number') throw error;
 				console.error(
@@ -648,7 +744,10 @@ function parseSubmission(
 		throw new Error('[flue] Persisted agent submission row is malformed.');
 	}
 	const parsedPayload = JSON.parse(row.payload);
-	const input = hydratePersistedSubmissionAttachments(parsedPayload as AgentSubmissionInput, chunks);
+	const input = hydratePersistedSubmissionAttachments(
+		parsedPayload as AgentSubmissionInput,
+		chunks,
+	);
 	if (
 		!isSubmissionPayload(input, {
 			kind: row.kind as string,
