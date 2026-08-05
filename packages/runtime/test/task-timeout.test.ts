@@ -8,6 +8,7 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defineAgent } from '../src/index.ts';
 import { createFlueContext } from '../src/internal.ts';
+import { TaskTimeoutError } from '../src/errors.ts';
 import type { SessionEnv } from '../src/types.ts';
 import { createNoopSessionEnv } from './fixtures/session-env.ts';
 
@@ -82,7 +83,6 @@ describe('delegated task timeout', () => {
 				role: 'toolResult',
 				toolName: 'task',
 				isError: true,
-				content: [{ type: 'text', text: 'The delegated task timed out after 120 seconds.' }],
 			});
 		} finally {
 			vi.useRealTimers();
@@ -117,8 +117,11 @@ describe('delegated task timeout', () => {
 			const response = session.task('Do slow work.');
 			await vi.advanceTimersByTimeAsync(120_000);
 
-			await expect(response).rejects.toMatchObject({
-				message: 'The delegated task timed out after 120 seconds.',
+			const error = await response.catch((e) => e);
+			expect(error).toBeInstanceOf(TaskTimeoutError);
+			expect(error).toMatchObject({
+				type: 'task_timeout',
+				meta: { timeoutMs: 120_000 },
 			});
 		} finally {
 			vi.useRealTimers();

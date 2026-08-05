@@ -758,7 +758,7 @@ export class TaskTimeoutError extends FlueError {
 			message: `The delegated task timed out after ${timeoutMs / 1000} seconds.`,
 			details: 'The child agent did not finish within the allowed time.',
 			dev: '',
-			meta: { ...(taskId ? { taskId } : {}) },
+			meta: { timeoutMs, ...(taskId ? { taskId } : {}) },
 		});
 		this.name = 'TaskTimeoutError';
 	}
