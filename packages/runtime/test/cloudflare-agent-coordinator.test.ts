@@ -367,6 +367,47 @@ describe('createCloudflareAgentRuntime()', () => {
 		});
 	});
 
+	it('settles an aborted running attempt despite its fresh attempt marker', async () => {
+		const { storage } = makeFakeSql();
+		const recovery = makeRecoveryContext({ inspection: 'absent' });
+		const runtime = makeRuntime({
+			createdAgent: {} as never,
+			createContext: () => recovery.ctx,
+		});
+		const instance = makeInstance(storage);
+		const executionStore = prepare(runtime, instance);
+		await executionStore.submissions.admitDispatch(dispatchInput());
+		await executionStore.submissions.markSubmissionCanonicalReady('dispatch-1');
+		await executionStore.submissions.claimSubmission({
+			submissionId: 'dispatch-1',
+			attemptId: 'attempt-1',
+			ownerId: 'test-owner',
+			leaseExpiresAt: Date.now() + 30_000,
+		});
+		await executionStore.submissions.insertAttemptMarker({
+			submissionId: 'dispatch-1',
+			attemptId: 'attempt-1',
+		});
+
+		const response = await runtime.onRequest(
+			instance,
+			new Request('https://flue.invalid/agents/assistant/agent-1/abort', { method: 'POST' }),
+		);
+
+		expect(await response?.json()).toEqual({ aborted: true });
+		expect(await executionStore.submissions.getSubmission('dispatch-1')).toMatchObject({
+			status: 'settled',
+			abortRequestedAt: expect.any(Number),
+		});
+		expect(recovery.terminalRecords).toEqual([
+			expect.objectContaining({
+				submissionId: 'dispatch-1',
+				kind: 'dispatch',
+				reason: 'aborted',
+			}),
+		]);
+	});
+
 	it('registers the replacement attempt marker when recovery runs', async () => {
 		const { storage } = makeFakeSql();
 		let executionStore: AgentExecutionStore | undefined;
