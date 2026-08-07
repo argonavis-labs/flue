@@ -545,7 +545,8 @@ export class CloudflareAgentCoordinator {
 				await this.submissions.finalizeSubmissionSettlement(attempt, settlement.recordId);
 			}
 			// The marker scan is advisory: a fresh marker suppresses
-			// re-reconciling an attempt that may still be running. If the scan
+			// re-reconciling an attempt that may still be running unless durable
+			// recovery or abort intent requires this isolate to settle it. If the scan
 			// itself fails, degrade to an empty marker set instead of aborting —
 			// a hard failure here would permanently block claiming and hang
 			// attached callers, while double-processing is bounded by the claim
@@ -575,7 +576,8 @@ export class CloudflareAgentCoordinator {
 				if (this.activeAttempts.has(this.submissionAttemptLocalKey(submission))) continue;
 				if (
 					attemptMarkers.has(submissionAttemptMarkerKey(submission)) &&
-					submission.recoveryRequestedAt === undefined
+					submission.recoveryRequestedAt === undefined &&
+					submission.abortRequestedAt === undefined
 				)
 					continue;
 				try {
