@@ -2134,8 +2134,12 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		)
 			? createPackagedSkillReadTool(packagedSkills)
 			: undefined;
-		const frameworkTools = (taskTool: AgentTool<any>) => [
-			taskTool,
+		const taskTool =
+			this.config.taskTool !== false
+				? createTaskTool(runTask, this.config.subagents ?? {})
+				: undefined;
+		const frameworkTools = [
+			...(taskTool ? [taskTool] : []),
 			...(activateSkillTool ? [activateSkillTool] : []),
 			...(packagedRead ? [packagedRead] : []),
 		];
@@ -2170,10 +2174,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			}
 			return [
 				{ source: 'adapter', tools: adapterTools },
-				{
-					source: 'framework',
-					tools: frameworkTools(createTaskTool(runTask, this.config.subagents ?? {})),
-				},
+				{ source: 'framework', tools: frameworkTools },
 			];
 		}
 
@@ -2183,10 +2184,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		});
 		return [
 			{ source: 'builtin', tools: builtinTools },
-			{
-				source: 'framework',
-				tools: frameworkTools(createTaskTool(runTask, this.config.subagents ?? {})),
-			},
+			{ source: 'framework', tools: frameworkTools },
 		];
 	}
 
