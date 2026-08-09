@@ -408,6 +408,87 @@ describe('createCloudflareAgentRuntime()', () => {
 		]);
 	});
 
+	it('aborts an active attempt after its coordinator is reattached', async () => {
+		const { storage } = makeFakeSql();
+		let rejectOperation!: (reason?: unknown) => void;
+		let resolveOperationStarted!: () => void;
+		const operationStarted = new Promise<void>((resolve) => {
+			resolveOperationStarted = resolve;
+		});
+		const terminalRecords: AgentSubmissionInterruption[] = [];
+		const operation = Object.assign(
+			new Promise<void>((_resolve, reject) => {
+				rejectOperation = reject;
+			}),
+			{
+				abort(reason?: unknown) {
+					rejectOperation(reason);
+				},
+			},
+		);
+		const runtime = makeRuntime({
+			createdAgent: {} as never,
+			createContext: () =>
+				({
+					async initializeRootHarness() {
+						return {
+							async session() {
+								return {
+									processSubmissionInput() {
+										resolveOperationStarted();
+										return operation;
+									},
+									async recordSubmissionTerminal(input: AgentSubmissionInterruption) {
+										terminalRecords.push(input);
+										return [];
+									},
+								};
+							},
+						};
+					},
+					createEvent(event: unknown) {
+						return event;
+					},
+					publishEvent() {},
+					emitEvent(event: unknown) {
+						return event;
+					},
+					async flushEventCallbacks() {},
+					subscribeEvent() {
+						return () => {};
+					},
+				}) as unknown as FlueContextInternal,
+		});
+		const instance = makeInstance(storage);
+		instance.runFiber = async (_name, callback) => callback({ stash() {} });
+		const executionStore = prepare(runtime, instance);
+		await executionStore.submissions.admitDispatch(dispatchInput());
+
+		await runtime.onStart(instance, () => {});
+		await operationStarted;
+		prepare(runtime, instance);
+
+		const response = await runtime.onRequest(
+			instance,
+			new Request('https://flue.invalid/agents/assistant/agent-1/abort', { method: 'POST' }),
+		);
+
+		expect(await response?.json()).toEqual({ aborted: true });
+		await vi.waitFor(async () => {
+			expect(await executionStore.submissions.getSubmission('dispatch-1')).toMatchObject({
+				status: 'settled',
+				abortRequestedAt: expect.any(Number),
+			});
+		});
+		expect(terminalRecords).toEqual([
+			expect.objectContaining({
+				submissionId: 'dispatch-1',
+				kind: 'dispatch',
+				reason: 'aborted',
+			}),
+		]);
+	});
+
 	it('registers the replacement attempt marker when recovery runs', async () => {
 		const { storage } = makeFakeSql();
 		let executionStore: AgentExecutionStore | undefined;

@@ -143,7 +143,10 @@ export function createCloudflareAgentRuntime(
 	options: CloudflareAgentRuntimeOptions,
 ): CloudflareAgentRuntime {
 	const coordinators = new WeakMap<CloudflareAgentInstance, CloudflareAgentCoordinator>();
-	const activeAttempts = new Set<string>();
+	// Coordinator objects can be replaced while their Fiber remains live in this
+	// isolate. Keep each attempt and its controller together at runtime scope so
+	// a replacement coordinator can still cancel it.
+	const activeAttempts = new Map<string, AbortController>();
 
 	const getCoordinator = (instance: CloudflareAgentInstance): CloudflareAgentCoordinator => {
 		const coordinator = coordinators.get(instance);
@@ -200,22 +203,12 @@ export class CloudflareAgentCoordinator {
 		private readonly instance: CloudflareAgentInstance,
 		private readonly prepared: CloudflareAgentPreparedCoordinator,
 		private readonly options: CloudflareAgentRuntimeOptions,
-		private readonly activeAttempts: Set<string>,
+		private readonly activeAttempts: Map<string, AbortController>,
 	) {}
 
 	private conversationWriter: ConversationRecordWriter | undefined;
 	private conversationWriterCreation: Promise<ConversationRecordWriter> | undefined;
 	private conversationMaterialization: Promise<void> = Promise.resolve();
-	/**
-	 * Abort controllers for in-flight attempt fibers in this isolate, keyed by
-	 * submissionId, so an incoming cancel request can abort the running attempt.
-	 * The DO is single-threaded but interleaves at `await` points, so a cancel
-	 * request can set the controller while the fiber is suspended on provider
-	 * I/O. If the isolate is evicted the controller is gone and the abort
-	 * falls back to the durable `abortRequestedAt` + reconcile path.
-	 */
-	private activeControllers = new Map<string, AbortController>();
-
 	// In-isolate memory only: an idle edge fired after eviction simply omits `last`.
 	private lastSettlement: AgentSubmissionSettlement | undefined;
 
@@ -705,9 +698,8 @@ export class CloudflareAgentCoordinator {
 		const attemptKey = this.submissionAttemptLocalKey(submission);
 		if (this.activeAttempts.has(attemptKey)) return;
 		this.assertAgentsDurabilityApi('runFiber');
-		this.activeAttempts.add(attemptKey);
 		const controller = new AbortController();
-		this.activeControllers.set(submission.submissionId, controller);
+		this.activeAttempts.set(attemptKey, controller);
 		let running: Promise<void>;
 		try {
 			// Flue's own durable evidence that this attempt started; deleted at
@@ -724,8 +716,9 @@ export class CloudflareAgentCoordinator {
 				);
 			});
 		} catch (error) {
-			this.activeAttempts.delete(attemptKey);
-			this.activeControllers.delete(submission.submissionId);
+			if (this.activeAttempts.get(attemptKey) === controller) {
+				this.activeAttempts.delete(attemptKey);
+			}
 			await this.deleteAttemptMarkerSafely(attempt);
 			throw error;
 		}
@@ -744,8 +737,9 @@ export class CloudflareAgentCoordinator {
 				);
 			})
 			.finally(() => {
-				this.activeAttempts.delete(attemptKey);
-				this.activeControllers.delete(submission.submissionId);
+				if (this.activeAttempts.get(attemptKey) === controller) {
+					this.activeAttempts.delete(attemptKey);
+				}
 				void this.deleteAttemptMarkerSafely(attempt);
 			});
 	}
@@ -766,7 +760,11 @@ export class CloudflareAgentCoordinator {
 		// check once claimed; an evicted running attempt is driven by the durable
 		// flag through reconciliation below.
 		for (const submissionId of affected) {
-			this.activeControllers.get(submissionId)?.abort(new SubmissionAbortedError());
+			const submission = await this.submissions.getSubmission(submissionId);
+			if (submission?.status !== 'running' || !submission.attemptId) continue;
+			this.activeAttempts
+				.get(this.submissionAttemptLocalKey(submission))
+				?.abort(new SubmissionAbortedError());
 		}
 		await this.armSubmissionWake({ idempotent: false });
 		await this.reconcileSubmissions({ driverAlreadyArmed: true });
