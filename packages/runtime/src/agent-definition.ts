@@ -36,6 +36,7 @@ const AgentProfileSchema = v.strictObject(
 		promptFrame: v.optional(v.picklist(['full', 'none'])),
 		compaction: v.optional(v.union([v.literal(false), v.looseObject({})])),
 		durability: v.optional(v.looseObject({})),
+		taskTimeoutMs: v.optional(v.number()),
 		imageMemory: v.optional(v.looseObject({})),
 	},
 	(issue) =>
@@ -124,6 +125,9 @@ export function resolveAgentProfile(options: AgentRuntimeConfig | undefined): Ag
 		promptFrame: hasOwn(options, 'promptFrame') ? options?.promptFrame : profile?.promptFrame,
 		compaction: hasOwn(options, 'compaction') ? options?.compaction : profile?.compaction,
 		durability: hasOwn(options, 'durability') ? options?.durability : profile?.durability,
+		taskTimeoutMs: hasOwn(options, 'taskTimeoutMs')
+			? options?.taskTimeoutMs
+			: profile?.taskTimeoutMs,
 		imageMemory: hasOwn(options, 'imageMemory') ? options?.imageMemory : profile?.imageMemory,
 	};
 }
@@ -194,6 +198,7 @@ function assertAgentProfile(
 	assertThinkingLevel(definition.thinkingLevel, label);
 	assertCompaction(definition.compaction, label);
 	assertDurability(definition.durability, label);
+	assertPositiveInteger(definition.taskTimeoutMs, `${label} taskTimeoutMs`);
 	assertImageMemory(definition.imageMemory, label);
 	assertTools(definition.tools, label);
 	assertActions(definition.actions, label);

@@ -12,12 +12,22 @@ const BASE64_READ_LINE_LENGTH = 76;
 const PACKAGED_SKILLS_ROOT = '/.flue/packaged-skills/';
 export const READ_SKILL_RESOURCE_TOOL_NAME = 'read_skill_resource';
 
+/**
+ * Final fallback cap for a model-invoked `task` call. A task always has a
+ * cap: one hung child (a spawn that never settles, a sick sandbox, a stalled
+ * model call) must never hold the parent turn open until the submission's
+ * durability timeout (one hour by default) terminalizes the whole turn.
+ */
+export const DEFAULT_TASK_TIMEOUT_MS = 15 * 60_000;
+
 export interface TaskToolParams {
 	prompt: string;
 	description?: string;
 	agent?: string;
 	cwd?: string;
 	attachments?: Array<{ id: string }>;
+	/** Wall-clock cap in seconds. Overrides the configured and built-in defaults. */
+	timeout?: number;
 }
 
 export interface TaskToolResultDetails {
@@ -34,6 +44,9 @@ export interface CreateToolsOptions {
 		signal?: AbortSignal,
 	) => Promise<AgentToolResult<TaskToolResultDetails>>;
 	subagents?: Record<string, AgentProfile>;
+	/** Default cap in milliseconds for a model-invoked `task` call. A per-call
+	 * `timeout` or a selected profile's `taskTimeoutMs` takes precedence. */
+	taskTimeoutMs?: number;
 	packagedSkills?: Record<string, PackagedSkillDirectory>;
 }
 
@@ -46,7 +59,13 @@ export function createTools(env: SessionEnv, options?: CreateToolsOptions): Agen
 		createGrepTool(env),
 		createGlobTool(env),
 	];
-	if (options?.task) tools.push(createTaskTool(options.task, options.subagents ?? {}));
+	if (options?.task) {
+		tools.push(
+			createTaskTool(options.task, options.subagents ?? {}, {
+				timeoutMs: options.taskTimeoutMs,
+			}),
+		);
+	}
 	return tools;
 }
 
@@ -280,6 +299,12 @@ const TaskParams = Type.Object({
 			{ description: 'Images from this conversation to include in the child agent prompt' },
 		),
 	),
+	timeout: Type.Optional(
+		Type.Number({
+			description:
+				'Timeout in seconds. The task is aborted when exceeded and this call fails with a timeout error. Overrides the configured default.',
+		}),
+	),
 });
 
 /** Build Flue's framework-owned `task` tool. */
@@ -290,6 +315,7 @@ export function createTaskTool(
 		toolCallId?: string,
 	) => Promise<AgentToolResult<TaskToolResultDetails>>,
 	subagents: Record<string, AgentProfile>,
+	defaults?: { timeoutMs?: number },
 ): AgentTool<typeof TaskParams> {
 	const agentEntries = Object.entries(subagents);
 	const agentDescription =
@@ -308,12 +334,66 @@ export function createTaskTool(
 			'Delegate a focused task to a detached child agent with its own context. ' +
 			'Use this for independent research, file exploration, or parallel work. ' +
 			'Pass attachment IDs shown in the conversation to include those images. ' +
-			'The task returns only its final answer to this conversation.' +
+			'The task returns only its final answer to this conversation. ' +
+			'Set timeout (seconds) generously above the expected runtime; a task that exceeds it is aborted and its partial work is lost. ' +
+			`Without a timeout, a default cap of ${DEFAULT_TASK_TIMEOUT_MS / 1000} seconds applies.` +
 			agentDescription,
 		parameters: TaskParams,
 		async execute(toolCallId: string, params: Static<typeof TaskParams>, signal?: AbortSignal) {
 			throwIfAborted(signal);
-			return runTask(params, signal, toolCallId);
+			// Resolution order: the model's per-call value, then the selected
+			// profile's cap, then the session default, then the built-in
+			// default. Each is a cap on this one delegated call; a task is
+			// never uncapped.
+			const profileDefault =
+				typeof params.agent === 'string' ? subagents[params.agent]?.taskTimeoutMs : undefined;
+			const timeoutMs =
+				typeof params.timeout === 'number'
+					? params.timeout * 1000
+					: (profileDefault ?? defaults?.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS);
+
+			// Same two-layer convention as the bash tool above (the model-facing
+			// parameter stays in seconds and is converted to milliseconds here):
+			//
+			//   1. Compose an AbortSignal.timeout into `signal`. The task runner
+			//      aborts the child session when the merged signal fires, so a
+			//      healthy child settles this call on its own.
+			//   2. Race an equal deadline as a backstop. A child that cannot
+			//      observe the abort — a spawn that never settles, or a sick
+			//      sandbox (the failure mode that motivated this cap) — must not
+			//      hold the parent turn open until the submission's durability
+			//      timeout terminalizes it.
+			//
+			// On timeout we throw a plain descriptive error: a rejected execute
+			// settles as an error tool result the model can recover from, while
+			// a host abort rethrows as-is so the caller's cancellation surfaces
+			// as an AbortError.
+			const { timeoutSignal, mergedSignal } = composeTimeoutSignal(timeoutMs, signal);
+			const timeoutError = () =>
+				new Error(
+					`[flue] Task timed out after ${timeoutMs / 1000} seconds. Its partial work is discarded. Retry with a larger timeout, or delegate a smaller task.`,
+				);
+			let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+			const deadline = new Promise<never>((_, reject) => {
+				deadlineTimer = setTimeout(() => reject(timeoutError()), timeoutMs);
+			});
+			const run = runTask(params, mergedSignal, toolCallId);
+			try {
+				const result = await Promise.race([run, deadline]);
+				// A sandbox adapter may ignore the merged signal and return a
+				// stale result after the deadline fired — surface the timeout
+				// instead of the stale success.
+				if (timeoutSignal?.aborted && !signal?.aborted) throw timeoutError();
+				return result;
+			} catch (err) {
+				if (timeoutSignal?.aborted && !signal?.aborted) throw timeoutError();
+				throw err;
+			} finally {
+				clearTimeout(deadlineTimer);
+				// When the deadline wins the race, the abandoned run settles
+				// later; its rejection must not surface as an unhandled crash.
+				void run.catch(() => {});
+			}
 		},
 	};
 }
