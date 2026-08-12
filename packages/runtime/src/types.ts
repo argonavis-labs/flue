@@ -383,6 +383,12 @@ export interface AgentConfig {
 	compaction?: false | CompactionConfig;
 	/** Durability settings resolved from the agent profile. */
 	durability?: DurabilityConfig;
+	/**
+	 * Default wall-clock cap in milliseconds for a model-invoked `task` call.
+	 * The model's per-call `timeout` parameter (seconds) overrides it. Unset
+	 * leaves model-invoked tasks uncapped. Resolved from the agent profile.
+	 */
+	taskTimeoutMs?: number;
 	/** Image-memory eviction settings resolved from the agent profile. */
 	imageMemory?: ImageMemoryConfig;
 }
@@ -425,6 +431,15 @@ export interface AgentProfile {
 	 */
 	durability?: DurabilityConfig;
 	/**
+	 * Default wall-clock cap in milliseconds for a model-invoked `task` call
+	 * started by sessions of this profile. The model's per-call `timeout`
+	 * parameter (seconds) overrides it. Unset leaves model-invoked tasks
+	 * uncapped. Unlike `durability`, this is legal on a subagent profile: it
+	 * caps the tasks that profile's sessions delegate, not the profile's own
+	 * runtime.
+	 */
+	taskTimeoutMs?: number;
+	/**
 	 * Image-memory eviction. Bounds how many of the most-recent images are held
 	 * in memory and sent to the model at once; older visible images are evicted
 	 * to a text placeholder. Defaults to keeping 3.
@@ -464,6 +479,12 @@ export interface AgentRuntimeConfig {
 	 * recovery attempt limits and submission timeouts.
 	 */
 	durability?: DurabilityConfig;
+	/**
+	 * Default wall-clock cap in milliseconds for a model-invoked `task` call.
+	 * The model's per-call `timeout` parameter (seconds) overrides it. Unset
+	 * leaves model-invoked tasks uncapped.
+	 */
+	taskTimeoutMs?: number;
 	/**
 	 * Image-memory eviction. Bounds how many of the most-recent images are held
 	 * in memory and sent to the model at once; older visible images are evicted

@@ -2172,7 +2172,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				{ source: 'adapter', tools: adapterTools },
 				{
 					source: 'framework',
-					tools: frameworkTools(createTaskTool(runTask, this.config.subagents ?? {})),
+					tools: frameworkTools(createTaskTool(runTask, this.config.subagents ?? {}, { timeoutMs: this.config.taskTimeoutMs })),
 				},
 			];
 		}
@@ -2185,7 +2185,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			{ source: 'builtin', tools: builtinTools },
 			{
 				source: 'framework',
-				tools: frameworkTools(createTaskTool(runTask, this.config.subagents ?? {})),
+				tools: frameworkTools(createTaskTool(runTask, this.config.subagents ?? {}, { timeoutMs: this.config.taskTimeoutMs })),
 			},
 		];
 	}

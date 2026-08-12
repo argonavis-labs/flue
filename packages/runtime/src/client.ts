@@ -317,6 +317,7 @@ export async function initializeRootHarness(
 		thinkingLevel: definition.thinkingLevel ?? config.agentConfig.thinkingLevel,
 		compaction: definition.compaction ?? config.agentConfig.compaction,
 		durability: definition.durability,
+		taskTimeoutMs: definition.taskTimeoutMs ?? config.agentConfig.taskTimeoutMs,
 		imageMemory: definition.imageMemory ?? config.agentConfig.imageMemory,
 	};
 	if (!config.conversationWriter || !config.attachmentStore) {
