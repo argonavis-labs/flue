@@ -12,13 +12,21 @@ const BASE64_READ_LINE_LENGTH = 76;
 const PACKAGED_SKILLS_ROOT = '/.flue/packaged-skills/';
 export const READ_SKILL_RESOURCE_TOOL_NAME = 'read_skill_resource';
 
+/**
+ * Final fallback cap for a model-invoked `task` call. A task always has a
+ * cap: one hung child (a spawn that never settles, a sick sandbox, a stalled
+ * model call) must never hold the parent turn open until the submission's
+ * durability timeout (one hour by default) terminalizes the whole turn.
+ */
+export const DEFAULT_TASK_TIMEOUT_MS = 15 * 60_000;
+
 export interface TaskToolParams {
 	prompt: string;
 	description?: string;
 	agent?: string;
 	cwd?: string;
 	attachments?: Array<{ id: string }>;
-	/** Wall-clock cap in seconds. Overrides the agent-configured default. */
+	/** Wall-clock cap in seconds. Overrides the configured and built-in defaults. */
 	timeout?: number;
 }
 
@@ -36,7 +44,8 @@ export interface CreateToolsOptions {
 		signal?: AbortSignal,
 	) => Promise<AgentToolResult<TaskToolResultDetails>>;
 	subagents?: Record<string, AgentProfile>;
-	/** Default wall-clock cap in milliseconds for a model-invoked `task` call. */
+	/** Default cap in milliseconds for a model-invoked `task` call. A per-call
+	 * `timeout` or a selected profile's `taskTimeoutMs` takes precedence. */
 	taskTimeoutMs?: number;
 	packagedSkills?: Record<string, PackagedSkillDirectory>;
 }
@@ -326,14 +335,22 @@ export function createTaskTool(
 			'Use this for independent research, file exploration, or parallel work. ' +
 			'Pass attachment IDs shown in the conversation to include those images. ' +
 			'The task returns only its final answer to this conversation. ' +
-			'Set timeout (seconds) generously above the expected runtime; a task that exceeds it is aborted and its partial work is lost.' +
+			'Set timeout (seconds) generously above the expected runtime; a task that exceeds it is aborted and its partial work is lost. ' +
+			`Without a timeout, a default cap of ${DEFAULT_TASK_TIMEOUT_MS / 1000} seconds applies.` +
 			agentDescription,
 		parameters: TaskParams,
 		async execute(toolCallId: string, params: Static<typeof TaskParams>, signal?: AbortSignal) {
 			throwIfAborted(signal);
+			// Resolution order: the model's per-call value, then the selected
+			// profile's cap, then the session default, then the built-in
+			// default. Each is a cap on this one delegated call; a task is
+			// never uncapped.
+			const profileDefault =
+				typeof params.agent === 'string' ? subagents[params.agent]?.taskTimeoutMs : undefined;
 			const timeoutMs =
-				typeof params.timeout === 'number' ? params.timeout * 1000 : defaults?.timeoutMs;
-			if (timeoutMs === undefined) return runTask(params, signal, toolCallId);
+				typeof params.timeout === 'number'
+					? params.timeout * 1000
+					: (profileDefault ?? defaults?.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS);
 
 			// Same two-layer convention as the bash tool above (the model-facing
 			// parameter stays in seconds and is converted to milliseconds here):

@@ -385,8 +385,10 @@ export interface AgentConfig {
 	durability?: DurabilityConfig;
 	/**
 	 * Default wall-clock cap in milliseconds for a model-invoked `task` call.
-	 * The model's per-call `timeout` parameter (seconds) overrides it. Unset
-	 * leaves model-invoked tasks uncapped. Resolved from the agent profile.
+	 * The model's per-call `timeout` parameter (seconds) and a selected
+	 * profile's `taskTimeoutMs` override it. Unset applies the built-in
+	 * 15-minute default; a task is never uncapped. Resolved from the agent
+	 * profile.
 	 */
 	taskTimeoutMs?: number;
 	/** Image-memory eviction settings resolved from the agent profile. */
@@ -431,12 +433,12 @@ export interface AgentProfile {
 	 */
 	durability?: DurabilityConfig;
 	/**
-	 * Default wall-clock cap in milliseconds for a model-invoked `task` call
-	 * started by sessions of this profile. The model's per-call `timeout`
-	 * parameter (seconds) overrides it. Unset leaves model-invoked tasks
-	 * uncapped. Unlike `durability`, this is legal on a subagent profile: it
-	 * caps the tasks that profile's sessions delegate, not the profile's own
-	 * runtime.
+	 * Wall-clock cap in milliseconds for a model-invoked `task` call that
+	 * selects this profile as its agent. The model's per-call `timeout`
+	 * parameter (seconds) overrides it; without either, the parent session's
+	 * `taskTimeoutMs` applies. Unlike `durability` (rejected on subagent
+	 * profiles), this is legal on one: it caps one delegated call, not the
+	 * profile's durable runtime.
 	 */
 	taskTimeoutMs?: number;
 	/**
@@ -481,8 +483,9 @@ export interface AgentRuntimeConfig {
 	durability?: DurabilityConfig;
 	/**
 	 * Default wall-clock cap in milliseconds for a model-invoked `task` call.
-	 * The model's per-call `timeout` parameter (seconds) overrides it. Unset
-	 * leaves model-invoked tasks uncapped.
+	 * The model's per-call `timeout` parameter (seconds) and a selected
+	 * profile's `taskTimeoutMs` override it. Unset applies the built-in
+	 * 15-minute default; a task is never uncapped.
 	 */
 	taskTimeoutMs?: number;
 	/**

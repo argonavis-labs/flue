@@ -241,7 +241,6 @@ export class Harness implements FlueHarness {
 			model: taskModel,
 			thinkingLevel: taskAgent?.thinkingLevel ?? this.config.thinkingLevel,
 			compaction: taskAgent?.compaction ?? this.config.compaction,
-			taskTimeoutMs: taskAgent?.taskTimeoutMs ?? this.config.taskTimeoutMs,
 			imageMemory: taskAgent?.imageMemory ?? this.config.imageMemory,
 		};
 		const harnessScope = this.scopeName ? `${this.name}:${this.scopeName}` : this.name;

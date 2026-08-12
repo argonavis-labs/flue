@@ -6,7 +6,12 @@ import {
 } from '@earendil-works/pi-ai/compat';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createTaskTool, type TaskToolParams, type TaskToolResultDetails } from '../src/agent.ts';
+import {
+	createTaskTool,
+	DEFAULT_TASK_TIMEOUT_MS,
+	type TaskToolParams,
+	type TaskToolResultDetails,
+} from '../src/agent.ts';
 import { defineAgent, defineAgentProfile } from '../src/index.ts';
 import { createFlueContext } from '../src/internal.ts';
 import type { SessionEnv } from '../src/types.ts';
@@ -83,6 +88,56 @@ describe('task tool timeout', () => {
 		).rejects.toThrow('Task timed out after 0.05 seconds');
 	});
 
+	it("applies the selected profile's taskTimeoutMs when the model sets no timeout", async () => {
+		const tool = createTaskTool(hangingRunTask(), {
+			helper: { name: 'helper', taskTimeoutMs: 50 },
+		});
+
+		await expect(
+			tool.execute('call-1', { prompt: 'Hang forever.', agent: 'helper' }, undefined),
+		).rejects.toThrow('Task timed out after 0.05 seconds');
+	});
+
+	it("lets the selected profile's value override the session default", async () => {
+		// The session default alone would allow a minute; the profile cap wins.
+		const tool = createTaskTool(
+			hangingRunTask(),
+			{ helper: { name: 'helper', taskTimeoutMs: 50 } },
+			{ timeoutMs: 60_000 },
+		);
+
+		await expect(
+			tool.execute('call-1', { prompt: 'Hang forever.', agent: 'helper' }, undefined),
+		).rejects.toThrow('Task timed out after 0.05 seconds');
+	});
+
+	it("lets a per-call timeout override the selected profile's value", async () => {
+		// The profile cap alone would allow a minute; the per-call value wins.
+		const tool = createTaskTool(hangingRunTask(), {
+			helper: { name: 'helper', taskTimeoutMs: 60_000 },
+		});
+
+		await expect(
+			tool.execute(
+				'call-1',
+				{ prompt: 'Hang forever.', agent: 'helper', timeout: 0.05 },
+				undefined,
+			),
+		).rejects.toThrow('Task timed out after 0.05 seconds');
+	});
+
+	it('falls back to the session default when the selected profile sets no value', async () => {
+		const tool = createTaskTool(
+			hangingRunTask(),
+			{ helper: { name: 'helper' } },
+			{ timeoutMs: 50 },
+		);
+
+		await expect(
+			tool.execute('call-1', { prompt: 'Hang forever.', agent: 'helper' }, undefined),
+		).rejects.toThrow('Task timed out after 0.05 seconds');
+	});
+
 	it('passes an in-time result through and leaves the signal untouched', async () => {
 		const seen: { signal?: AbortSignal } = {};
 		const tool = createTaskTool(
@@ -100,7 +155,7 @@ describe('task tool timeout', () => {
 		expect(seen.signal?.aborted).toBe(false);
 	});
 
-	it('runs without any cap when neither a timeout nor a default is set', async () => {
+	it('applies the built-in default cap when nothing is configured — a task is never uncapped', async () => {
 		let sawSignal: AbortSignal | undefined;
 		const tool = createTaskTool(async (_params, signal) => {
 			sawSignal = signal;
@@ -110,7 +165,11 @@ describe('task tool timeout', () => {
 		await expect(tool.execute('call-1', { prompt: 'Finish.' }, undefined)).resolves.toEqual(
 			OK_RESULT,
 		);
-		expect(sawSignal).toBeUndefined();
+		// The built-in 15-minute deadline is too long to wait out in a test;
+		// the armed merged signal proves the cap exists on the bare call.
+		expect(sawSignal).toBeDefined();
+		expect(sawSignal?.aborted).toBe(false);
+		expect(DEFAULT_TASK_TIMEOUT_MS).toBe(900_000);
 	});
 
 	it('rethrows a host abort instead of shaping it as a timeout', async () => {
