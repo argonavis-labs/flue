@@ -10,6 +10,8 @@
  * The application needs to append one without owning a turn, so this exposes the
  * coordinator attached to the agent's Durable Object instance.
  */
+import { InvalidRequestError } from '../errors.ts';
+import { parseDeliveredMessage } from '../runtime/schemas.ts';
 import type { DeliveredMessage } from '../types.ts';
 import type { CloudflareAgentCoordinator } from './agent-coordinator.ts';
 
@@ -49,5 +51,15 @@ export async function appendAgentConversationSignal(
 	instance: object,
 	signal: AgentConversationSignalInput,
 ): Promise<void> {
-	return resolveAttachedCoordinator(instance).appendConversationSignal(signal);
+	const coordinator = resolveAttachedCoordinator(instance);
+	// The tag name is rendered unescaped as the signal's XML envelope in model
+	// context, so this seam must apply the same validation as the wire
+	// transports — the type only helps callers that compile against it.
+	const parsed = parseDeliveredMessage(signal);
+	if (parsed.kind !== 'signal') {
+		throw new InvalidRequestError({
+			reason: 'An out-of-turn conversation append must be a signal message.',
+		});
+	}
+	return coordinator.appendConversationSignal(parsed);
 }
