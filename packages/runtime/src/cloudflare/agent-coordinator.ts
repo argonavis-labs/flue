@@ -34,7 +34,9 @@ import {
 import { createSessionStorageKey } from '../session-identity.ts';
 import {
 	type LatestCompletedSubmission,
+	type LatestSettledSubmission,
 	readLatestCompletedSubmission,
+	readLatestSettledSubmission,
 } from '../sql-agent-execution-store.ts';
 import type { DeliveredMessage } from '../types.ts';
 import {
@@ -354,6 +356,12 @@ export class CloudflareAgentCoordinator {
 	async latestCompletedSubmission(): Promise<LatestCompletedSubmission | undefined> {
 		const sql = this.prepared.sql;
 		return sql ? readLatestCompletedSubmission(sql) : undefined;
+	}
+
+	/** See {@link agentLatestSettledSubmission}: durable settlement read for the embedding application. */
+	async latestSettledSubmission(): Promise<LatestSettledSubmission | undefined> {
+		const sql = this.prepared.sql;
+		return sql ? readLatestSettledSubmission(sql) : undefined;
 	}
 
 	private emitActivity(activity: FlueAgentActivity): void {
