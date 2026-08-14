@@ -92,11 +92,15 @@ export interface LatestCompletedSubmission {
 	readonly submissionId: string;
 }
 
-/** The greatest durably settled submission and its terminal outcome. */
+/**
+ * The greatest durably settled submission and its terminal outcome.
+ * Dispatch rows store only success or error, so an aborted dispatch reports `failed`.
+ */
 export interface LatestSettledSubmission {
 	readonly sequence: number;
 	readonly submissionId: string;
 	readonly outcome: 'completed' | 'failed' | 'aborted';
+	/** A serialized direct error, or a stored message from dispatch or reconciliation settlement. */
 	readonly error?: unknown;
 }
 
@@ -132,9 +136,7 @@ export function readLatestCompletedSubmission(
 }
 
 /** A query, not a store method: only the Cloudflare coordinator needs this recovery read. */
-export function readLatestSettledSubmission(
-	sql: SqlStorage,
-): LatestSettledSubmission | undefined {
+export function readLatestSettledSubmission(sql: SqlStorage): LatestSettledSubmission | undefined {
 	const row = sql
 		.exec(
 			`SELECT sequence, submission_id, kind, error, settlement_record_json
@@ -172,9 +174,17 @@ export function readLatestSettledSubmission(
 	}
 
 	if (typeof row.settlement_record_json !== 'string') {
+		if (typeof row.error === 'string') {
+			return {
+				sequence: row.sequence,
+				submissionId: row.submission_id,
+				outcome: 'failed',
+				error: row.error,
+			};
+		}
 		throw new PersistedRowInvariantError({
 			table: 'flue_agent_submissions',
-			reason: 'A settled direct row has no settlement record.',
+			reason: 'A settled direct row has no settlement record or error.',
 		});
 	}
 	let record: unknown;

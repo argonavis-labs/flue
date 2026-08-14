@@ -494,7 +494,7 @@ describe('readLatestCompletedSubmission()', () => {
 });
 
 describe('readLatestSettledSubmission()', () => {
-	it('returns the latest direct failure with its durable error', async () => {
+	it('returns the latest direct failure when its settlement record stores an error', async () => {
 		const { sql, transactionSync } = makeFakeSql();
 		const store = createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
 		const input = {
@@ -543,7 +543,7 @@ describe('readLatestSettledSubmission()', () => {
 		});
 	});
 
-	it('derives dispatch outcomes from the error column', () => {
+	it('returns a failed dispatch result when the error column is set', () => {
 		const { db, sql, transactionSync } = makeFakeSql();
 		createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
 		db.prepare(
@@ -560,7 +560,24 @@ describe('readLatestSettledSubmission()', () => {
 		});
 	});
 
-	it('reports an aborted direct submission instead of an older completion', async () => {
+	it('returns a failed direct result when reconciliation stores only an error', () => {
+		const { db, sql, transactionSync } = makeFakeSql();
+		createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
+		db.prepare(
+			`INSERT INTO flue_agent_submissions
+			 (submission_id, session_key, kind, payload, status, accepted_at, settled_at, error)
+			 VALUES ('direct-1', 'agents/assistant/agent-1', 'direct', '{}', 'settled', 1, 2, 'invalid payload')`,
+		).run();
+
+		expect(readLatestSettledSubmission(sql)).toEqual({
+			sequence: 1,
+			submissionId: 'direct-1',
+			outcome: 'failed',
+			error: 'invalid payload',
+		});
+	});
+
+	it('returns an aborted direct result when it follows an older completion', async () => {
 		const { db, sql, transactionSync } = makeFakeSql();
 		createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
 		db.prepare(
