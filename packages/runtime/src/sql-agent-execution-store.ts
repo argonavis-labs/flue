@@ -92,6 +92,14 @@ export interface LatestCompletedSubmission {
 	readonly submissionId: string;
 }
 
+/** The greatest durably settled submission and its terminal outcome. */
+export interface LatestSettledSubmission {
+	readonly sequence: number;
+	readonly submissionId: string;
+	readonly outcome: 'completed' | 'failed' | 'aborted';
+	readonly error?: unknown;
+}
+
 /** A query, not a store method: {@link AgentSubmissionStore} is one contract for every backend and only the Cloudflare coordinator needs this read. */
 export function readLatestCompletedSubmission(
 	sql: SqlStorage,
@@ -121,6 +129,80 @@ export function readLatestCompletedSubmission(
 		});
 	}
 	return { sequence: row.sequence, submissionId: row.submission_id };
+}
+
+/** A query, not a store method: only the Cloudflare coordinator needs this recovery read. */
+export function readLatestSettledSubmission(
+	sql: SqlStorage,
+): LatestSettledSubmission | undefined {
+	const row = sql
+		.exec(
+			`SELECT sequence, submission_id, kind, error, settlement_record_json
+			 FROM flue_agent_submissions
+			 WHERE status = 'settled'
+			 ORDER BY sequence DESC
+			 LIMIT 1`,
+		)
+		.toArray()[0];
+	if (!row) return undefined;
+	if (
+		typeof row.sequence !== 'number' ||
+		typeof row.submission_id !== 'string' ||
+		(row.kind !== 'direct' && row.kind !== 'dispatch')
+	) {
+		throw new PersistedRowInvariantError({
+			table: 'flue_agent_submissions',
+			reason: 'A settled submission row has an invalid sequence, submission_id, or kind.',
+		});
+	}
+
+	if (row.kind === 'dispatch') {
+		if (row.error !== null && typeof row.error !== 'string') {
+			throw new PersistedRowInvariantError({
+				table: 'flue_agent_submissions',
+				reason: 'A settled dispatch row has a non-string error.',
+			});
+		}
+		return {
+			sequence: row.sequence,
+			submissionId: row.submission_id,
+			outcome: row.error === null ? 'completed' : 'failed',
+			...(row.error === null ? {} : { error: row.error }),
+		};
+	}
+
+	if (typeof row.settlement_record_json !== 'string') {
+		throw new PersistedRowInvariantError({
+			table: 'flue_agent_submissions',
+			reason: 'A settled direct row has no settlement record.',
+		});
+	}
+	let record: unknown;
+	try {
+		record = JSON.parse(row.settlement_record_json);
+	} catch {
+		throw new PersistedRowInvariantError({
+			table: 'flue_agent_submissions',
+			reason: 'A settled direct row has an invalid settlement record.',
+		});
+	}
+	if (
+		typeof record !== 'object' ||
+		record === null ||
+		!('outcome' in record) ||
+		(record.outcome !== 'completed' && record.outcome !== 'failed' && record.outcome !== 'aborted')
+	) {
+		throw new PersistedRowInvariantError({
+			table: 'flue_agent_submissions',
+			reason: 'A settled direct row has an invalid settlement outcome.',
+		});
+	}
+	return {
+		sequence: row.sequence,
+		submissionId: row.submission_id,
+		outcome: record.outcome,
+		...('error' in record ? { error: record.error } : {}),
+	};
 }
 
 /**

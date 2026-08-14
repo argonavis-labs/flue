@@ -5,7 +5,10 @@ import { createSqlAgentExecutionStore } from '../src/cloudflare/agent-execution-
 import { PersistedRowInvariantError } from '../src/errors.ts';
 import { IMAGE_DATA_CHUNK_LENGTH } from '../src/persisted-images.ts';
 import type { DispatchInput } from '../src/runtime/dispatch-queue.ts';
-import { readLatestCompletedSubmission } from '../src/sql-agent-execution-store.ts';
+import {
+	readLatestCompletedSubmission,
+	readLatestSettledSubmission,
+} from '../src/sql-agent-execution-store.ts';
 
 function makeFakeSql() {
 	const db = new DatabaseSync(':memory:');
@@ -487,5 +490,94 @@ describe('readLatestCompletedSubmission()', () => {
 				meta: { table: 'flue_agent_submissions' },
 			});
 		}
+	});
+});
+
+describe('readLatestSettledSubmission()', () => {
+	it('returns the latest direct failure with its durable error', async () => {
+		const { sql, transactionSync } = makeFakeSql();
+		const store = createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
+		const input = {
+			kind: 'direct' as const,
+			submissionId: 'direct-1',
+			agent: 'assistant',
+			id: 'agent-1',
+			acceptedAt: '2026-06-03T00:00:00.000Z',
+			message: { kind: 'user' as const, body: 'hello' },
+		};
+		await store.submissions.admitDirect(input);
+		await store.submissions.markSubmissionCanonicalReady(input.submissionId);
+		await store.submissions.claimSubmission({
+			submissionId: input.submissionId,
+			attemptId: 'attempt-1',
+			ownerId: 'test-owner',
+			leaseExpiresAt: Date.now() + 30_000,
+		});
+		const record = {
+			v: 1 as const,
+			id: 'direct-1:settled',
+			type: 'submission_settled' as const,
+			conversationId: 'conversation-1',
+			harness: 'default',
+			session: 'default',
+			timestamp: '2026-06-22T00:00:00.000Z',
+			submissionId: 'direct-1',
+			attemptId: 'attempt-1',
+			outcome: 'failed' as const,
+			error: { name: 'ProviderError', message: 'upstream failed', type: 'provider_error' },
+		};
+		await store.submissions.reserveSubmissionSettlement(
+			{ submissionId: 'direct-1', attemptId: 'attempt-1' },
+			{ recordId: record.id, record },
+		);
+		await store.submissions.finalizeSubmissionSettlement(
+			{ submissionId: 'direct-1', attemptId: 'attempt-1' },
+			record.id,
+		);
+
+		expect(readLatestSettledSubmission(sql)).toEqual({
+			sequence: 1,
+			submissionId: 'direct-1',
+			outcome: 'failed',
+			error: { name: 'ProviderError', message: 'upstream failed', type: 'provider_error' },
+		});
+	});
+
+	it('derives dispatch outcomes from the error column', () => {
+		const { db, sql, transactionSync } = makeFakeSql();
+		createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
+		db.prepare(
+			`INSERT INTO flue_agent_submissions
+			 (submission_id, session_key, kind, payload, status, accepted_at, settled_at, error)
+			 VALUES ('dispatch-1', 'agents/assistant/agent-1', 'dispatch', '{}', 'settled', 1, 2, 'dispatch failed')`,
+		).run();
+
+		expect(readLatestSettledSubmission(sql)).toEqual({
+			sequence: 1,
+			submissionId: 'dispatch-1',
+			outcome: 'failed',
+			error: 'dispatch failed',
+		});
+	});
+
+	it('reports an aborted direct submission instead of an older completion', async () => {
+		const { db, sql, transactionSync } = makeFakeSql();
+		createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
+		db.prepare(
+			`INSERT INTO flue_agent_submissions
+			 (submission_id, session_key, kind, payload, status, accepted_at, settled_at,
+			  settlement_record_json)
+			 VALUES
+			 ('direct-1', 'agents/assistant/agent-1', 'direct', '{}', 'settled', 1, 2,
+			  '{"outcome":"completed"}'),
+			 ('direct-2', 'agents/assistant/agent-1', 'direct', '{}', 'settled', 2, 3,
+			  '{"outcome":"aborted"}')`,
+		).run();
+
+		expect(readLatestSettledSubmission(sql)).toEqual({
+			sequence: 2,
+			submissionId: 'direct-2',
+			outcome: 'aborted',
+		});
 	});
 });

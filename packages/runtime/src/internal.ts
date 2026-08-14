@@ -198,7 +198,9 @@ export {
 	type FlueAgentActivity,
 	type FlueReconciliationFailure,
 	type LatestCompletedSubmission,
+	type LatestSettledSubmission,
 	agentLatestCompletedSubmission,
+	agentLatestSettledSubmission,
 	agentQueueBusy,
 	agentSubmissionAttemptCount,
 } from './cloudflare/agent-activity.ts';
