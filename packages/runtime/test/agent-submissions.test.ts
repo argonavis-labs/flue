@@ -464,8 +464,9 @@ describe('processSubmission()', () => {
 	it('records a visible terminal advisory when a dispatch submission fails before input application', async () => {
 		const provider = createProvider();
 		const store = await openExecutionStore();
+		const streamStore = new InMemoryConversationStreamStore();
 		const writer = await ConversationRecordWriter.create({
-			store: new InMemoryConversationStreamStore(),
+			store: streamStore,
 			path: 'agents/assistant/agent-1',
 			identity: { agentName: 'assistant', instanceId: 'agent-1' },
 			producerId: 'producer-1',
@@ -575,5 +576,14 @@ describe('processSubmission()', () => {
 			},
 		]);
 		expect(await writer.hasRecord('record_submission_interrupted_sleep:call-1')).toBe(true);
+		// The record body stays fixed copy: the raw error may carry provider
+		// text, and the operational row already keeps the real message.
+		const page = await streamStore.read('agents/assistant/agent-1');
+		const advisory = page.batches
+			.flatMap((batch) => batch.records)
+			.find((record) => record.id === 'record_submission_interrupted_sleep:call-1');
+		expect(advisory).toMatchObject({
+			content: 'The agent submission failed and did not complete.',
+		});
 	});
 });

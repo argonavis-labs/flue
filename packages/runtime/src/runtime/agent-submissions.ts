@@ -703,16 +703,16 @@ export async function processSubmission(opts: ProcessSubmissionOptions): Promise
 					opts.conversationWriter,
 				);
 			} else {
-				// A dispatch settles only the operational row, so without this
-				// advisory a pre-flight failure leaves no trace in the conversation.
-				// Best-effort like the abort advisory: a save failure must not wedge settlement.
+				// A dispatch settles only the operational row; this best-effort advisory
+				// is the only conversation trace. Fixed copy — the raw error may carry
+				// provider text, and failSubmission below keeps the real message.
 				try {
 					await createAgentSubmissionSessionHandler(agent, submission.input, (s) =>
 						s.recordSubmissionTerminal({
 							submissionId: submission.submissionId,
 							kind: submission.kind,
 							reason: 'failed',
-							message: error instanceof Error ? error.message : String(error),
+							message: 'The agent submission failed and did not complete.',
 						}),
 					)(ctx);
 				} catch (advisoryError) {
