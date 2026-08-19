@@ -286,6 +286,15 @@ function encodeRecord(
 					...(record.usage ? { usage: record.usage as PromptUsage } : {}),
 				},
 			];
+		case 'tool_outcome':
+			// Emit the settlement chunk the moment the outcome lands, not at the
+			// batch commit. One slow call in a parallel batch (a long-running
+			// subtask) otherwise holds every sibling's row in its running state
+			// for the whole batch. The commit below re-emits the same chunks;
+			// consumers replace the part by toolCallId, so the duplicate is a
+			// no-op, and it still heals a consumer that attached between the
+			// outcome and the commit.
+			return [chunkFromOutcomeRecord(record, conversationId)];
 		case 'tool_results_committed':
 			return record.outcomeIds.flatMap((outcomeId, index) =>
 				encodeToolOutcome(outcomeId, index, conversationId, record, state, batchRecords),
@@ -321,6 +330,28 @@ function encodeRecord(
  * its placeholder text, matching what every other post-compaction projection
  * of that history renders.
  */
+/** The settlement chunk for one durable outcome record. */
+function chunkFromOutcomeRecord(
+	outcome: Extract<ConversationRecord, { type: 'tool_outcome' }>,
+	conversationId: string,
+): ConversationStreamChunkBody {
+	return outcome.isError
+		? {
+				type: 'tool-output-error',
+				conversationId,
+				toolCallId: outcome.toolCallId,
+				errorText: toolResultText(outcome.content),
+				...(outcome.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}),
+			}
+		: {
+				type: 'tool-output',
+				conversationId,
+				toolCallId: outcome.toolCallId,
+				output: outcome.output !== undefined ? outcome.output : toolResultOutput(outcome.content),
+				...(outcome.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}),
+			};
+}
+
 function encodeToolOutcome(
 	outcomeId: string,
 	outcomeIndex: number,
@@ -341,17 +372,7 @@ function encodeToolOutcome(
 		) {
 			return [];
 		}
-		return outcome.isError
-			? [{ type: 'tool-output-error', conversationId, toolCallId: outcome.toolCallId, errorText: toolResultText(outcome.content), ...(outcome.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}) }]
-			: [
-					{
-						type: 'tool-output',
-						conversationId,
-						toolCallId: outcome.toolCallId,
-						output: outcome.output !== undefined ? outcome.output : toolResultOutput(outcome.content),
-						...(outcome.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}),
-					},
-				];
+		return [chunkFromOutcomeRecord(outcome, conversationId)];
 	}
 	// Cross-batch commit: recover the projection from the materialized entry.
 	// `outcomeIds` are in assistant tool-call order (validated at reduction), so
