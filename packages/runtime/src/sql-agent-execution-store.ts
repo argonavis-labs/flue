@@ -147,6 +147,29 @@ export function readLatestSettledSubmission(sql: SqlStorage): LatestSettledSubmi
 		)
 		.toArray()[0];
 	if (!row) return undefined;
+	return settledSubmissionFromRow(row);
+}
+
+/** A query, not a store method: the by-id settlement read for the Cloudflare coordinator. */
+export function readSettledSubmission(
+	sql: SqlStorage,
+	submissionId: string,
+): LatestSettledSubmission | undefined {
+	const row = sql
+		.exec(
+			`SELECT sequence, submission_id, kind, error, settlement_record_json
+			 FROM flue_agent_submissions
+			 WHERE status = 'settled'
+			   AND submission_id = ?
+			 LIMIT 1`,
+			submissionId,
+		)
+		.toArray()[0];
+	if (!row) return undefined;
+	return settledSubmissionFromRow(row);
+}
+
+function settledSubmissionFromRow(row: Record<string, unknown>): LatestSettledSubmission {
 	if (
 		typeof row.sequence !== 'number' ||
 		typeof row.submission_id !== 'string' ||

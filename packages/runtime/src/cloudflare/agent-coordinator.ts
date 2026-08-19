@@ -37,6 +37,7 @@ import {
 	type LatestSettledSubmission,
 	readLatestCompletedSubmission,
 	readLatestSettledSubmission,
+	readSettledSubmission,
 } from '../sql-agent-execution-store.ts';
 import type { DeliveredMessage } from '../types.ts';
 import {
@@ -394,13 +395,21 @@ export class CloudflareAgentCoordinator {
 	}
 
 	/** See {@link appendAgentConversationSignal}: out-of-turn canonical signal append. */
-	async appendConversationSignal(signal: AgentConversationSignalInput): Promise<void> {
+	async appendConversationSignal(
+		signal: AgentConversationSignalInput,
+		options?: { dedupeKey?: string },
+	): Promise<{ created: boolean }> {
 		const writer = await this.ensureConversationWriter();
 		// A signal may precede the very first submission, so create the root
 		// conversation when absent — the same seam the submission commit path uses.
 		const conversation = await ensureRootSubmissionConversation(writer);
+		const unique = options?.dedupeKey ?? crypto.randomUUID();
+		// The canonical record is the dedupe marker itself, so a keyed retry
+		// can never double-append: the same idiom recordSubmissionTerminal uses.
+		if (options?.dedupeKey !== undefined && (await writer.hasRecord(`record_app_signal_${unique}`))) {
+			return { created: false };
+		}
 		const parentId = await writer.getConversationLeaf(conversation.conversationId);
-		const unique = crypto.randomUUID();
 		await writer.append([
 			{
 				v: 1,
@@ -418,6 +427,13 @@ export class CloudflareAgentCoordinator {
 				...(signal.attributes ? { attributes: signal.attributes } : {}),
 			},
 		]);
+		return { created: true };
+	}
+
+	/** See {@link agentSettledSubmission}: by-id durable settlement read for the embedding application. */
+	async settledSubmission(submissionId: string): Promise<LatestSettledSubmission | undefined> {
+		const sql = this.prepared.sql;
+		return sql ? readSettledSubmission(sql, submissionId) : undefined;
 	}
 
 	/** See {@link ensureAgentConversation}: out-of-turn root-conversation ensure. */

@@ -8,6 +8,7 @@ import type { DispatchInput } from '../src/runtime/dispatch-queue.ts';
 import {
 	readLatestCompletedSubmission,
 	readLatestSettledSubmission,
+	readSettledSubmission,
 } from '../src/sql-agent-execution-store.ts';
 
 function makeFakeSql() {
@@ -575,6 +576,54 @@ describe('readLatestSettledSubmission()', () => {
 			outcome: 'failed',
 			error: 'invalid payload',
 		});
+	});
+
+	it('returns the named settled dispatch even when a newer submission settled after it', () => {
+		const { db, sql, transactionSync } = makeFakeSql();
+		createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
+		db.prepare(
+			`INSERT INTO flue_agent_submissions
+			 (submission_id, session_key, kind, payload, status, accepted_at, settled_at, error)
+			 VALUES
+			 ('sleep:call-1', 'agents/assistant/agent-1', 'dispatch', '{}', 'settled', 1, 2, 'gate refused'),
+			 ('direct-2', 'agents/assistant/agent-1', 'direct', '{}', 'settled', 3, 4, 'later failure')`,
+		).run();
+
+		expect(readSettledSubmission(sql, 'sleep:call-1')).toEqual({
+			sequence: 1,
+			submissionId: 'sleep:call-1',
+			outcome: 'failed',
+			error: 'gate refused',
+		});
+	});
+
+	it('returns a completed dispatch when its error column is null', () => {
+		const { db, sql, transactionSync } = makeFakeSql();
+		createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
+		db.prepare(
+			`INSERT INTO flue_agent_submissions
+			 (submission_id, session_key, kind, payload, status, accepted_at, settled_at)
+			 VALUES ('sleep:call-1', 'agents/assistant/agent-1', 'dispatch', '{}', 'settled', 1, 2)`,
+		).run();
+
+		expect(readSettledSubmission(sql, 'sleep:call-1')).toEqual({
+			sequence: 1,
+			submissionId: 'sleep:call-1',
+			outcome: 'completed',
+		});
+	});
+
+	it('answers undefined for an unsettled or unknown submission', () => {
+		const { db, sql, transactionSync } = makeFakeSql();
+		createSqlAgentExecutionStore({ sql, transactionSync }, 'FlueAssistantAgent');
+		db.prepare(
+			`INSERT INTO flue_agent_submissions
+			 (submission_id, session_key, kind, payload, status, accepted_at)
+			 VALUES ('sleep:call-1', 'agents/assistant/agent-1', 'dispatch', '{}', 'queued', 1)`,
+		).run();
+
+		expect(readSettledSubmission(sql, 'sleep:call-1')).toBeUndefined();
+		expect(readSettledSubmission(sql, 'sleep:call-9')).toBeUndefined();
 	});
 
 	it('returns an aborted direct result when it follows an older completion', async () => {
