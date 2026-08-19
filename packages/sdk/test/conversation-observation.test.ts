@@ -548,3 +548,75 @@ describe('client.agents.observe() credential re-resolution', () => {
 		observation.close();
 	});
 });
+
+describe('createAgentConversationObservation() retry-chain resilience', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('keeps retrying when a subscribed listener throws on a retry publish', async () => {
+		const { source, historyCalls } = makeSource([new Error('history transport failed')]);
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+		let threw = false;
+		observation.subscribe(() => {
+			if (threw) return;
+			const current = observation.getSnapshot();
+			if (current.phase === 'connecting' && current.error) {
+				threw = true;
+				throw new Error('listener exploded');
+			}
+		});
+		await flush();
+		expect(threw).toBe(true);
+
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+
+		expect(historyCalls()).toBe(2);
+		expect(observation.getSnapshot().phase).toBe('live');
+		expect(consoleError).toHaveBeenCalled();
+		consoleError.mockRestore();
+		observation.close();
+	});
+
+	it('abandons a hung history read at the deadline and retries', async () => {
+		let calls = 0;
+		const source: AgentConversationObservationSource = {
+			history: ({ signal }) => {
+				calls++;
+				if (calls === 1) {
+					return new Promise((_, reject) => {
+						signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+					});
+				}
+				return Promise.resolve({
+					v: 1,
+					conversationId: 'c1',
+					offset: FOLLOW_OFFSET,
+					messages: [],
+					settlements: [],
+				} as unknown as FlueConversationSnapshot);
+			},
+			updates: () => pushStream<ConversationStreamChunk>().stream,
+		};
+		const observation = createAgentConversationObservation(source, { live: 'sse' });
+		observation.subscribe(() => {});
+		await flush();
+		expect(observation.getSnapshot().phase).toBe('loading');
+		expect(calls).toBe(1);
+
+		await vi.advanceTimersByTimeAsync(45_000);
+		await flush();
+		expect(observation.getSnapshot().phase).toBe('connecting');
+
+		await vi.advanceTimersByTimeAsync(1_100);
+		await flush();
+		expect(calls).toBe(2);
+		expect(observation.getSnapshot().phase).toBe('live');
+		observation.close();
+	});
+});
