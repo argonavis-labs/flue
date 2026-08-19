@@ -261,6 +261,21 @@ export function projectConversationUi(
 			break;
 		}
 	}
+	// A pending outcome is a tool that finished while its batch is still open
+	// (the commit waits for every sibling call). Settle its part here too, so a
+	// snapshot taken mid-batch matches what the live stream already showed.
+	for (const outcome of conversation.toolOutcomes.values()) {
+		const candidate = byId.get(outcome.assistantMessageId);
+		const partIndex =
+			candidate?.parts.findIndex(
+				(value) => value.type === 'dynamic-tool' && value.toolCallId === outcome.toolCallId,
+			) ?? -1;
+		if (!candidate || partIndex < 0) continue;
+		const part = candidate.parts[partIndex] as Extract<ConversationUiPart, { type: 'dynamic-tool' }>;
+		candidate.parts[partIndex] = outcome.isError
+			? { type: 'dynamic-tool', toolName: part.toolName, toolCallId: part.toolCallId, state: 'output-error', input: part.input, errorText: toolResultText(outcome.content), ...(outcome.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}) }
+			: { type: 'dynamic-tool', toolName: part.toolName, toolCallId: part.toolCallId, state: 'output-available', input: part.input, output: outcome.output !== undefined ? outcome.output : toolResultOutput(outcome.content), ...(outcome.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}) };
+	}
 	// In-progress messages ride only the head window: an older page is settled
 	// history and must not grow a live tail.
 	if (windowed.isHead) {
