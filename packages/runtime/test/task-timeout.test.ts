@@ -70,6 +70,17 @@ describe('task tool timeout', () => {
 		expect(seen.signal?.aborted).toBe(true);
 	});
 
+	it('tells the model to do the work directly, never to widen the timeout', async () => {
+		// The old text said "Retry with a larger timeout" — anti-guidance for a
+		// doomed open-ended task, inviting the model to double down instead of
+		// doing the work itself.
+		const tool = createTaskTool(hangingRunTask(), {});
+
+		await expect(
+			tool.execute('call-1', { prompt: 'Hang forever.', timeout: 0.05 }, undefined),
+		).rejects.toThrow('Do the work directly instead');
+	});
+
 	it('applies the configured default when the model sets no timeout', async () => {
 		const tool = createTaskTool(hangingRunTask(), {}, { timeoutMs: 50 });
 

@@ -371,7 +371,7 @@ export function createTaskTool(
 			const { timeoutSignal, mergedSignal } = composeTimeoutSignal(timeoutMs, signal);
 			const timeoutError = () =>
 				new Error(
-					`[flue] Task timed out after ${timeoutMs / 1000} seconds. Its partial work is discarded. Retry with a larger timeout, or delegate a smaller task.`,
+					`[flue] Task timed out after ${timeoutMs / 1000} seconds. Its partial work is discarded. Do the work directly instead, or retry only with a smaller, bounded task that can finish inside the timeout.`,
 				);
 			let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
 			const deadline = new Promise<never>((_, reject) => {
