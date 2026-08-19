@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentExecutionStore, SubmissionAttemptRef } from '../src/agent-execution-store.ts';
 import type { ConversationRecord } from '../src/conversation-records.ts';
 import { ConversationRecordWriter } from '../src/conversation-writer.ts';
-import { defineAgent } from '../src/index.ts';
+import { defineAgent, FlueError, instrument } from '../src/index.ts';
 import { createFlueContext, InMemoryAttachmentStore, InMemoryConversationStreamStore } from '../src/internal.ts';
 import { sqlite } from '../src/node/agent-execution-store.ts';
 import {
@@ -459,5 +459,121 @@ describe('processSubmission()', () => {
 		expect(settlements).toEqual([
 			{ submissionId: 'direct-1', outcome: 'completed', attemptCount: 1 },
 		]);
+	});
+
+	it('records a visible terminal advisory when a dispatch submission fails before input application', async () => {
+		const provider = createProvider();
+		const store = await openExecutionStore();
+		const writer = await ConversationRecordWriter.create({
+			store: new InMemoryConversationStreamStore(),
+			path: 'agents/assistant/agent-1',
+			identity: { agentName: 'assistant', instanceId: 'agent-1' },
+			producerId: 'producer-1',
+		});
+		// At rest, as a session parked by a terminate tool is: no assistant
+		// message in progress, so the advisory append must succeed.
+		const timestamp = new Date().toISOString();
+		await writer.append([
+			{
+				v: 1,
+				id: 'record-created',
+				type: 'conversation_created',
+				kind: 'root',
+				conversationId: 'conversation-1',
+				harness: 'default',
+				session: 'default',
+				timestamp,
+				affinityKey: 'affinity-1',
+				createdAt: timestamp,
+			},
+			{
+				v: 1,
+				conversationId: 'conversation-1',
+				harness: 'default',
+				session: 'default',
+				timestamp,
+				submissionId: 'direct-1',
+				attemptId: 'attempt-0',
+				id: 'record_direct_input_direct-1',
+				type: 'user_message',
+				messageId: INPUT_ENTRY_ID,
+				parentId: null,
+				content: [{ type: 'text', text: 'Continue' }],
+			},
+		], { submission: { submissionId: 'direct-1', attemptId: 'attempt-0' } });
+		await store.submissions.admitDispatch({
+			dispatchId: 'sleep:call-1',
+			agent: 'assistant',
+			id: 'agent-1',
+			message: {
+				kind: 'signal' as const,
+				type: 'session_wake',
+				tagName: 'system_message',
+				body: 'Your 3-second sleep ended.',
+				attributes: {},
+			},
+			acceptedAt: '2026-06-03T00:00:01.000Z',
+		});
+		await store.submissions.markSubmissionCanonicalReady('sleep:call-1');
+		await store.submissions.claimSubmission({
+			submissionId: 'sleep:call-1',
+			attemptId: 'attempt-1',
+			ownerId: 'test-owner',
+			leaseExpiresAt: 0,
+		});
+		const submission = await store.submissions.getSubmission('sleep:call-1');
+		if (!submission) throw new Error('Expected a running dispatch submission.');
+		const settlements: Array<AgentSubmissionSettlement | undefined> = [];
+		// A pre-flight refusal, in the same shape an embedding application's
+		// gate interceptor throws it: before next(), so before input application.
+		const disposeInterceptor = instrument({
+			observe: () => {},
+			interceptor: async (operation, _ctx, next) => {
+				if (operation.type !== 'agent') return next();
+				throw new FlueError({
+					type: 'budget_exhausted',
+					message: 'You have no plan allowance or Runner credit left.',
+					details: 'Review your plan.',
+					dev: 'gate refused the turn',
+				});
+			},
+			dispose: () => {},
+		});
+		try {
+			await expect(
+				processSubmission({
+					submissions: store.submissions,
+					submission,
+					resolveAgent: () => AGENT,
+					createContext: (dispatchId) =>
+						createFlueContext({
+							id: 'agent-1',
+							dispatchId,
+							env: {},
+							req: submissionSyntheticRequest(submission.input),
+							agentConfig: { resolveModel: () => provider.getModel('reviewer') },
+							createDefaultEnv: async () => createNoopSessionEnv(),
+							conversationWriter: writer,
+							attachmentStore: new InMemoryAttachmentStore(),
+						}),
+					conversationWriter: writer,
+					onSettled: (settlement) => settlements.push(settlement),
+				}),
+			).rejects.toThrow('You have no plan allowance or Runner credit left.');
+		} finally {
+			await disposeInterceptor();
+		}
+		expect(await store.submissions.getSubmission('sleep:call-1')).toMatchObject({
+			status: 'settled',
+		});
+		expect(settlements).toEqual([
+			{
+				submissionId: 'sleep:call-1',
+				outcome: 'failed',
+				attemptCount: 1,
+				error: 'You have no plan allowance or Runner credit left.',
+			},
+		]);
+		expect(await writer.hasRecord('record_submission_interrupted_sleep:call-1')).toBe(true);
 	});
 });
