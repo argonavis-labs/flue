@@ -38,6 +38,41 @@ export interface TaskToolResultDetails {
 	cwd?: string;
 }
 
+/**
+ * Work salvaged from a child that was aborted by the task timeout: the last
+ * assistant text it completed and its tool-call trace. Carried on the abort
+ * error through a WeakMap so the task runner can attach it without changing
+ * the error contract of every intermediate layer.
+ */
+export interface TaskPartialWork {
+	text: string;
+	toolTrace: string;
+}
+
+const TASK_PARTIAL_WORK = new WeakMap<object, TaskPartialWork>();
+
+/** No-op for empty partials, so a timeout with nothing to show stays terse. */
+export function attachTaskPartialWork(error: unknown, partial: TaskPartialWork): void {
+	if (error === null || typeof error !== 'object') return;
+	if (partial.text.trim() === '' && partial.toolTrace.trim() === '') return;
+	TASK_PARTIAL_WORK.set(error, partial);
+}
+
+export function taskPartialWorkOf(error: unknown): TaskPartialWork | undefined {
+	return error !== null && typeof error === 'object' ? TASK_PARTIAL_WORK.get(error) : undefined;
+}
+
+/** Cap on salvaged text in a timeout error, so a chatty child cannot flood the parent turn. */
+export const TASK_PARTIAL_WORK_MAX_CHARS = 4_000;
+
+/** How long the timed-out call waits for the aborted child to settle before giving up on salvage. */
+export const DEFAULT_TASK_SALVAGE_GRACE_MS = 2_000;
+
+function truncatePartialText(text: string): string {
+	if (text.length <= TASK_PARTIAL_WORK_MAX_CHARS) return text;
+	return `${text.slice(0, TASK_PARTIAL_WORK_MAX_CHARS)}\n… (${text.length - TASK_PARTIAL_WORK_MAX_CHARS} more characters truncated)`;
+}
+
 export interface CreateToolsOptions {
 	task?: (
 		params: TaskToolParams,
@@ -318,7 +353,7 @@ export function createTaskTool(
 		toolCallId?: string,
 	) => Promise<AgentToolResult<TaskToolResultDetails>>,
 	subagents: Record<string, AgentProfile>,
-	defaults?: { timeoutMs?: number },
+	defaults?: { timeoutMs?: number; salvageGraceMs?: number },
 ): AgentTool<typeof TaskParams> {
 	const agentEntries = Object.entries(subagents);
 	const agentDescription =
@@ -338,7 +373,7 @@ export function createTaskTool(
 			'Use this for a subtask that can run in parallel with other work and that the child can finish inside its timeout; keep open-ended research and multi-step work in this session. ' +
 			'Pass attachment IDs shown in the conversation to include those images. ' +
 			'The task returns its final answer followed by a bracketed trace of the tool calls it made; a trace of "no tool calls" means the answer came from model recall, not research - and may contain errors. ' +
-			'A task that exceeds its timeout is aborted and returns nothing, so give the child one deliverable it can finish inside the timeout instead of raising the timeout. ' +
+			'A task that exceeds its timeout is aborted and returns at most a fragment of unverified partial work, so give the child one deliverable it can finish inside the timeout instead of raising the timeout. ' +
 			`Without a timeout, a default cap of ${DEFAULT_TASK_TIMEOUT_MS / 1000} seconds applies.` +
 			agentDescription,
 		parameters: TaskParams,
@@ -370,26 +405,67 @@ export function createTaskTool(
 			// On timeout we throw a plain descriptive error: a rejected execute
 			// settles as an error tool result the model can recover from, while
 			// a host abort rethrows as-is so the caller's cancellation surfaces
-			// as an AbortError.
+			// as an AbortError. The error carries whatever partial work the
+			// aborted child settled with, so a timeout no longer burns the whole
+			// budget for nothing and no longer teaches the parent to over-specify.
 			const { timeoutSignal, mergedSignal } = composeTimeoutSignal(timeoutMs, signal);
-			const timeoutError = () =>
+			const salvageGraceMs = defaults?.salvageGraceMs ?? DEFAULT_TASK_SALVAGE_GRACE_MS;
+			const timeoutError = (partial?: TaskPartialWork) =>
 				new Error(
-					`[flue] Task timed out after ${timeoutMs / 1000} seconds. Its partial work is discarded. Retry with a larger timeout, or delegate a smaller task.`,
+					`[flue] Task timed out after ${timeoutMs / 1000} seconds. Delegate a smaller, bounded task instead of retrying with a larger timeout.` +
+						(partial
+							? `\nPartial work before the timeout (incomplete and unverified):\n${truncatePartialText(partial.text)}` +
+								(partial.toolTrace.trim() === '' ? '' : `\n\n[helper trace: ${partial.toolTrace}]`)
+							: ' It produced no salvageable partial work.'),
 				);
 			let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
 			const deadline = new Promise<never>((_, reject) => {
 				deadlineTimer = setTimeout(() => reject(timeoutError()), timeoutMs);
 			});
 			const run = runTask(params, mergedSignal, toolCallId);
+			// Wait briefly for the aborted run to settle and hand over partial
+			// work. A child that cannot observe the abort — the hung spawn this
+			// deadline exists for — never settles, so the grace window is short
+			// and expiring empty-handed is the expected worst case.
+			const salvage = async (): Promise<TaskPartialWork | undefined> => {
+				let graceTimer: ReturnType<typeof setTimeout> | undefined;
+				const grace = new Promise<undefined>((resolve) => {
+					graceTimer = setTimeout(() => resolve(undefined), salvageGraceMs);
+				});
+				try {
+					return await Promise.race([
+						run.then(
+							// A stale success that ignored the abort still loses the
+							// race to the deadline; keep its text as partial work.
+							(result) => ({
+								text: result.content
+									.filter(
+										(block): block is { type: 'text'; text: string } => block.type === 'text',
+									)
+									.map((block) => block.text)
+									.join('\n'),
+								toolTrace: '',
+							}),
+							(error) => taskPartialWorkOf(error),
+						),
+						grace,
+					]);
+				} finally {
+					clearTimeout(graceTimer);
+				}
+			};
 			try {
 				const result = await Promise.race([run, deadline]);
 				// A sandbox adapter may ignore the merged signal and return a
 				// stale result after the deadline fired — surface the timeout
 				// instead of the stale success.
-				if (timeoutSignal?.aborted && !signal?.aborted) throw timeoutError();
+				if (timeoutSignal?.aborted && !signal?.aborted) throw timeoutError(await salvage());
 				return result;
 			} catch (err) {
-				if (timeoutSignal?.aborted && !signal?.aborted) throw timeoutError();
+				if (timeoutSignal?.aborted && !signal?.aborted) {
+					const alreadyShaped = taskPartialWorkOf(err);
+					throw timeoutError(alreadyShaped ?? (await salvage()));
+				}
 				throw err;
 			} finally {
 				clearTimeout(deadlineTimer);

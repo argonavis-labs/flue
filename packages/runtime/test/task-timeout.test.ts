@@ -7,8 +7,10 @@ import {
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+	attachTaskPartialWork,
 	createTaskTool,
 	DEFAULT_TASK_TIMEOUT_MS,
+	taskPartialWorkOf,
 	type TaskToolParams,
 	type TaskToolResultDetails,
 } from '../src/agent.ts';
@@ -62,7 +64,7 @@ function hangingRunTask(seen: { signal?: AbortSignal } = {}) {
 describe('task tool timeout', () => {
 	it('fails a hung task at the per-call timeout and aborts the merged signal', async () => {
 		const seen: { signal?: AbortSignal } = {};
-		const tool = createTaskTool(hangingRunTask(seen), {});
+		const tool = createTaskTool(hangingRunTask(seen), {}, { salvageGraceMs: 25 });
 
 		await expect(
 			tool.execute('call-1', { prompt: 'Hang forever.', timeout: 0.05 }, undefined),
@@ -71,7 +73,7 @@ describe('task tool timeout', () => {
 	});
 
 	it('applies the configured default when the model sets no timeout', async () => {
-		const tool = createTaskTool(hangingRunTask(), {}, { timeoutMs: 50 });
+		const tool = createTaskTool(hangingRunTask(), {}, { timeoutMs: 50, salvageGraceMs: 25 });
 
 		await expect(tool.execute('call-1', { prompt: 'Hang forever.' }, undefined)).rejects.toThrow(
 			'Task timed out after 0.05 seconds',
@@ -81,7 +83,7 @@ describe('task tool timeout', () => {
 	it('lets a per-call timeout override the configured default', async () => {
 		// The default alone would let this hung task run for a minute; the
 		// short per-call value must win, so the call fails immediately.
-		const tool = createTaskTool(hangingRunTask(), {}, { timeoutMs: 60_000 });
+		const tool = createTaskTool(hangingRunTask(), {}, { timeoutMs: 60_000, salvageGraceMs: 25 });
 
 		await expect(
 			tool.execute('call-1', { prompt: 'Hang forever.', timeout: 0.05 }, undefined),
@@ -89,9 +91,11 @@ describe('task tool timeout', () => {
 	});
 
 	it("applies the selected profile's taskTimeoutMs when the model sets no timeout", async () => {
-		const tool = createTaskTool(hangingRunTask(), {
-			helper: { name: 'helper', taskTimeoutMs: 50 },
-		});
+		const tool = createTaskTool(
+			hangingRunTask(),
+			{ helper: { name: 'helper', taskTimeoutMs: 50 } },
+			{ salvageGraceMs: 25 },
+		);
 
 		await expect(
 			tool.execute('call-1', { prompt: 'Hang forever.', agent: 'helper' }, undefined),
@@ -103,7 +107,7 @@ describe('task tool timeout', () => {
 		const tool = createTaskTool(
 			hangingRunTask(),
 			{ helper: { name: 'helper', taskTimeoutMs: 50 } },
-			{ timeoutMs: 60_000 },
+			{ timeoutMs: 60_000, salvageGraceMs: 25 },
 		);
 
 		await expect(
@@ -113,9 +117,11 @@ describe('task tool timeout', () => {
 
 	it("lets a per-call timeout override the selected profile's value", async () => {
 		// The profile cap alone would allow a minute; the per-call value wins.
-		const tool = createTaskTool(hangingRunTask(), {
-			helper: { name: 'helper', taskTimeoutMs: 60_000 },
-		});
+		const tool = createTaskTool(
+			hangingRunTask(),
+			{ helper: { name: 'helper', taskTimeoutMs: 60_000 } },
+			{ salvageGraceMs: 25 },
+		);
 
 		await expect(
 			tool.execute(
@@ -130,7 +136,7 @@ describe('task tool timeout', () => {
 		const tool = createTaskTool(
 			hangingRunTask(),
 			{ helper: { name: 'helper' } },
-			{ timeoutMs: 50 },
+			{ timeoutMs: 50, salvageGraceMs: 25 },
 		);
 
 		await expect(
@@ -172,6 +178,73 @@ describe('task tool timeout', () => {
 		expect(DEFAULT_TASK_TIMEOUT_MS).toBe(900_000);
 	});
 
+	it('hands the child partial work to the parent when the timeout aborts a settling child', async () => {
+		// The child observes the abort, rejects, and its rejection carries the
+		// text it had completed. The timeout error must carry that text on to
+		// the parent instead of discarding it.
+		const tool = createTaskTool(
+			(_params, signal) =>
+				new Promise<AgentToolResult<TaskToolResultDetails>>((_, reject) => {
+					signal?.addEventListener(
+						'abort',
+						() => {
+							const error = new Error('aborted');
+							attachTaskPartialWork(error, {
+								text: 'Finding 1: the connector returned 400.',
+								toolTrace: '2 tool calls\n- execute\n- execute',
+							});
+							reject(error);
+						},
+						{ once: true },
+					);
+				}),
+			{},
+			{ timeoutMs: 50, salvageGraceMs: 500 },
+		);
+
+		await expect(tool.execute('call-1', { prompt: 'Report findings.' }, undefined)).rejects.toThrow(
+			/Task timed out after 0.05 seconds[\s\S]*Finding 1: the connector returned 400\.[\s\S]*helper trace: 2 tool calls/,
+		);
+	});
+
+	it('reports no salvageable work when the hung child never settles inside the grace window', async () => {
+		const tool = createTaskTool(hangingRunTask(), {}, { timeoutMs: 50, salvageGraceMs: 25 });
+
+		await expect(tool.execute('call-1', { prompt: 'Hang forever.' }, undefined)).rejects.toThrow(
+			'It produced no salvageable partial work.',
+		);
+	});
+
+	it('keeps a stale success as partial work instead of discarding it', async () => {
+		// A sandbox adapter that ignores the merged signal can resolve after
+		// the deadline. The call still fails as a timeout, but the text it
+		// produced rides along.
+		const tool = createTaskTool(
+			() =>
+				new Promise<AgentToolResult<TaskToolResultDetails>>((resolve) => {
+					setTimeout(
+						() => resolve({ content: [{ type: 'text', text: 'late answer' }], details: OK_RESULT.details }),
+						100,
+					);
+				}),
+			{},
+			{ timeoutMs: 50, salvageGraceMs: 500 },
+		);
+
+		await expect(tool.execute('call-1', { prompt: 'Finish late.' }, undefined)).rejects.toThrow(
+			/Task timed out after 0.05 seconds[\s\S]*late answer/,
+		);
+	});
+
+	it('never attaches an empty partial, so an idle child stays terse', async () => {
+		const error = new Error('aborted');
+		attachTaskPartialWork(error, { text: '   ', toolTrace: '' });
+		expect(taskPartialWorkOf(error)).toBeUndefined();
+
+		attachTaskPartialWork(error, { text: '', toolTrace: 'no tool calls' });
+		expect(taskPartialWorkOf(error)?.toolTrace).toBe('no tool calls');
+	});
+
 	it('rethrows a host abort instead of shaping it as a timeout', async () => {
 		const controller = new AbortController();
 		const tool = createTaskTool(
@@ -203,7 +276,9 @@ describe('task tool timeout', () => {
 		// raising the timeout.
 		const tool = createTaskTool(async () => OK_RESULT, {});
 		expect(tool.description).toContain('one short, bounded subtask');
-		expect(tool.description).toContain('aborted and returns nothing');
+		expect(tool.description).toContain(
+			'aborted and returns at most a fragment of unverified partial work',
+		);
 		expect(tool.description).toContain('keep open-ended research and multi-step work in this session');
 		expect(tool.description).not.toContain('generously');
 		expect(tool.description).not.toContain('Use this for independent research');
