@@ -479,6 +479,75 @@ describe('session.task()', () => {
 		expect(taskRequests).toEqual([['Review only the delegated input.']]);
 	});
 
+	it('appends the child tool-call trace to the model-facing task result', async () => {
+		const provider = createProvider([{ id: 'reviewer' }]);
+		let taskResult: unknown;
+		provider.setResponses([
+			fauxAssistantMessage(fauxToolCall('task', { prompt: 'Count the TypeScript files.' }), {
+				stopReason: 'toolUse',
+			}),
+			fauxAssistantMessage(fauxToolCall('glob', { pattern: '*.ts' }), { stopReason: 'toolUse' }),
+			fauxAssistantMessage('Two files.'),
+			(context) => {
+				taskResult = context.messages.at(-1);
+				return fauxAssistantMessage('Delegation complete.');
+			},
+		]);
+		const ctx = createContext(provider);
+		const harness = await ctx.initializeRootHarness(
+			defineAgent(() => ({ model: `${provider.getModel().provider}/reviewer` })),
+		);
+		const session = await harness.session();
+
+		await session.prompt('Delegate the count.');
+
+		expect(taskResult).toMatchObject({
+			role: 'toolResult',
+			toolName: 'task',
+			isError: false,
+			content: [
+				{
+					type: 'text',
+					text: 'Two files.\n\n[helper trace: 1 tool call\n- glob(pattern=*.ts)]',
+				},
+			],
+		});
+	});
+
+	it('marks a child that answered without any tool call as "no tool calls"', async () => {
+		const provider = createProvider([{ id: 'reviewer' }]);
+		let taskResult: unknown;
+		provider.setResponses([
+			fauxAssistantMessage(fauxToolCall('task', { prompt: 'Estimate the cost.' }), {
+				stopReason: 'toolUse',
+			}),
+			fauxAssistantMessage('About $500, from memory.'),
+			(context) => {
+				taskResult = context.messages.at(-1);
+				return fauxAssistantMessage('Delegation complete.');
+			},
+		]);
+		const ctx = createContext(provider);
+		const harness = await ctx.initializeRootHarness(
+			defineAgent(() => ({ model: `${provider.getModel().provider}/reviewer` })),
+		);
+		const session = await harness.session();
+
+		await session.prompt('Delegate the estimate.');
+
+		expect(taskResult).toMatchObject({
+			role: 'toolResult',
+			toolName: 'task',
+			isError: false,
+			content: [
+				{
+					type: 'text',
+					text: 'About $500, from memory.\n\n[helper trace: no tool calls]',
+				},
+			],
+		});
+	});
+
 	it('keeps distinct dispatch IDs distinct when sanitized forms would collide', async () => {
 		const provider = createProvider([{ id: 'reviewer' }]);
 		provider.setResponses([

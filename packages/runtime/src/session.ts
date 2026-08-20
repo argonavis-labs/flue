@@ -362,11 +362,34 @@ interface CallOverrides {
 interface InternalTaskResult<T> {
 	output: T;
 	text: string;
+	/** Compact record of the child's tool calls; see getToolCallTrace. */
+	toolTrace: string;
 	taskId: string;
 	session: string;
 	messageId?: string;
 	agent?: string;
 	cwd?: string;
+}
+
+const TASK_TRACE_MAX_CALLS = 30;
+const TASK_TRACE_ARG_MAX = 120;
+
+/**
+ * Previews at most two short string arguments per call. Reads fields off the
+ * argument object without serializing it, so a large payload (a file body, a
+ * screenshot) is never re-materialized into the trace.
+ */
+function toolCallArgPreview(args: Record<string, unknown>): string {
+	const parts: string[] = [];
+	for (const [key, value] of Object.entries(args)) {
+		if (typeof value !== 'string' || value.length === 0) continue;
+		const flat = value.replace(/\s+/g, ' ');
+		parts.push(
+			`${key}=${flat.length > TASK_TRACE_ARG_MAX ? `${flat.slice(0, TASK_TRACE_ARG_MAX)}…` : flat}`,
+		);
+		if (parts.length === 2) break;
+	}
+	return parts.length > 0 ? `(${parts.join(', ')})` : '';
 }
 
 interface InternalTaskOptions<S extends v.GenericSchema | undefined> extends TaskOptions<S> {
@@ -2260,8 +2283,11 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			signal,
 		);
 
+		// The trace lets the parent tell researched prose from recalled prose:
+		// a child that answered without a single tool call says so here.
+		const text = `${result.text || '(task completed with no text)'}\n\n[helper trace: ${result.toolTrace}]`;
 		return {
-			content: [{ type: 'text', text: result.text || '(task completed with no text)' }],
+			content: [{ type: 'text', text }],
 			details: {
 				taskId: result.taskId,
 				session: result.session,
@@ -2370,6 +2396,8 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			const taskResult: InternalTaskResult<any> = {
 				output,
 				text: typeof output?.text === 'string' ? output.text : child.getAssistantText(),
+				// Read before the finally block closes the child.
+				toolTrace: child.getToolCallTrace(),
 				taskId,
 				session: child.name,
 				messageId: await child.getLatestAssistantMessageId(),
@@ -3123,6 +3151,34 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			}
 		}
 		return undefined;
+	}
+
+	/**
+	 * A compact record of every tool call this session's model made, for the
+	 * parent of a delegated task. The parent otherwise receives only the final
+	 * text, so it cannot tell a researched answer from a recalled one. Walks
+	 * the already-resident message list and allocates only the output lines,
+	 * capped at TASK_TRACE_MAX_CALLS.
+	 */
+	private getToolCallTrace(): string {
+		const lines: string[] = [];
+		let total = 0;
+		for (const msg of this.agentLoop.state.messages) {
+			if (msg?.role !== 'assistant') continue;
+			const content = (msg as AssistantMessage).content;
+			if (!Array.isArray(content)) continue;
+			for (const block of content) {
+				if (block.type !== 'toolCall') continue;
+				total++;
+				if (lines.length < TASK_TRACE_MAX_CALLS) {
+					lines.push(`- ${block.name}${toolCallArgPreview(block.arguments)}`);
+				}
+			}
+		}
+		if (total === 0) return 'no tool calls';
+		const omitted = total - lines.length;
+		const suffix = omitted > 0 ? `\n- (+${omitted} more)` : '';
+		return `${total} tool call${total === 1 ? '' : 's'}\n${lines.join('\n')}${suffix}`;
 	}
 
 	private getAssistantText(): string {
