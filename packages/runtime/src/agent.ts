@@ -281,7 +281,10 @@ const TaskParams = Type.Object({
 	description: Type.Optional(
 		Type.String({ description: 'Short human-readable label for the delegated work' }),
 	),
-	prompt: Type.String({ description: 'Focused instructions for the child agent' }),
+	prompt: Type.String({
+		description:
+			'Focused instructions for the child agent: a few sentences carrying one bounded deliverable and every input it needs (paths, ids, URLs). The child sees nothing else from this conversation.',
+	}),
 	agent: Type.Optional(
 		Type.String({ description: 'Declared subagent to use for the child agent' }),
 	),
@@ -331,11 +334,11 @@ export function createTaskTool(
 		name: 'task',
 		label: 'Run Task',
 		description:
-			'Delegate a focused task to a detached child agent with its own context. ' +
-			'Use this for independent research, file exploration, or parallel work. ' +
+			'Delegate one short, bounded subtask to a detached child agent with its own context. ' +
+			'Use this for a subtask that can run in parallel with other work and that the child can finish inside its timeout; keep open-ended research and multi-step work in this session. ' +
 			'Pass attachment IDs shown in the conversation to include those images. ' +
-			'The task returns its final answer followed by a bracketed trace of the tool calls it made; a trace of "no tool calls" means the answer came from model recall, not research - and may contain errors.' +
-			'Set timeout (seconds) generously above the expected runtime; a task that exceeds it is aborted and its partial work is lost. ' +
+			'The task returns its final answer followed by a bracketed trace of the tool calls it made; a trace of "no tool calls" means the answer came from model recall, not research - and may contain errors. ' +
+			'A task that exceeds its timeout is aborted and returns nothing, so give the child one deliverable it can finish inside the timeout instead of raising the timeout. ' +
 			`Without a timeout, a default cap of ${DEFAULT_TASK_TIMEOUT_MS / 1000} seconds applies.` +
 			agentDescription,
 		parameters: TaskParams,

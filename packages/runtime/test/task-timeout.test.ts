@@ -194,6 +194,26 @@ describe('task tool timeout', () => {
 		const tool = createTaskTool(async () => OK_RESULT, {});
 		expect(tool.description).toContain('timeout');
 	});
+
+	it('describes the task as bounded and never invites a generous timeout', () => {
+		// Production callers measured the old wording's effect: prompts that
+		// framed open-ended research rode "Set timeout generously" into the cap
+		// and returned nothing. The description now states the bound and the
+		// consequence, and must not steer the model toward research or toward
+		// raising the timeout.
+		const tool = createTaskTool(async () => OK_RESULT, {});
+		expect(tool.description).toContain('one short, bounded subtask');
+		expect(tool.description).toContain('aborted and returns nothing');
+		expect(tool.description).toContain('keep open-ended research and multi-step work in this session');
+		expect(tool.description).not.toContain('generously');
+		expect(tool.description).not.toContain('Use this for independent research');
+
+		const promptSchema = (tool.parameters.properties as { prompt: { description?: string } })
+			.prompt;
+		expect(promptSchema.description).toContain('a few sentences');
+		expect(promptSchema.description).toContain('one bounded deliverable');
+		expect(promptSchema.description).toContain('The child sees nothing else from this conversation');
+	});
 });
 
 describe('taskTimeoutMs configuration', () => {
