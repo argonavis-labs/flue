@@ -64,6 +64,14 @@ export async function agentLatestSettledSubmission(
 	return resolveAttachedCoordinator(instance).latestSettledSubmission();
 }
 
+/** The named submission's durable settlement; undefined while it is queued, running, or unknown. */
+export async function agentSettledSubmission(
+	instance: object,
+	submissionId: string,
+): Promise<LatestSettledSubmission | undefined> {
+	return resolveAttachedCoordinator(instance).settledSubmission(submissionId);
+}
+
 /** The submission's attempt counter (1 on first claim, +1 per recovery re-drive); undefined when unknown. */
 export async function agentSubmissionAttemptCount(
 	instance: object,

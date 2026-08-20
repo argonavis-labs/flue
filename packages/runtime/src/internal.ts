@@ -202,6 +202,7 @@ export {
 	agentLatestCompletedSubmission,
 	agentLatestSettledSubmission,
 	agentQueueBusy,
+	agentSettledSubmission,
 	agentSubmissionAttemptCount,
 } from './cloudflare/agent-activity.ts';
 export type { AgentSubmissionSettlement } from './runtime/agent-submissions.ts';

@@ -44,10 +44,14 @@ export function resolveAttachedCoordinator(instance: object): CloudflareAgentCoo
  * path, so a signal may precede the very first submission. Throws while an
  * assistant turn is in progress — the canonical reducer only accepts linear,
  * out-of-turn appends.
+ *
+ * `dedupeKey` becomes the canonical record id, so a retried append finds the
+ * existing record and reports `created: false`. Keep it unique per intent.
  */
 export async function appendAgentConversationSignal(
 	instance: object,
 	signal: AgentConversationSignalInput,
-): Promise<void> {
-	return resolveAttachedCoordinator(instance).appendConversationSignal(signal);
+	options?: { dedupeKey?: string },
+): Promise<{ created: boolean }> {
+	return resolveAttachedCoordinator(instance).appendConversationSignal(signal, options);
 }

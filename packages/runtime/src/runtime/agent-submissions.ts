@@ -46,6 +46,7 @@ export interface AgentSubmissionInterruption {
 		| 'interrupted_after_input_application'
 		| 'exhausted_retry_budget'
 		| 'exceeded_timeout'
+		| 'failed'
 		| 'aborted';
 	readonly message: string;
 }
@@ -702,6 +703,25 @@ export async function processSubmission(opts: ProcessSubmissionOptions): Promise
 					opts.conversationWriter,
 				);
 			} else {
+				// A dispatch settles only the operational row; this best-effort advisory
+				// is the only conversation trace. Fixed copy — the raw error may carry
+				// provider text, and failSubmission below keeps the real message.
+				try {
+					await createAgentSubmissionSessionHandler(agent, submission.input, (s) =>
+						s.recordSubmissionTerminal({
+							submissionId: submission.submissionId,
+							kind: submission.kind,
+							reason: 'failed',
+							message: 'The agent submission failed and did not complete.',
+						}),
+					)(ctx);
+				} catch (advisoryError) {
+					console.error(
+						'[flue:submission-processing] Failed to record failure advisory for submission',
+						submission.submissionId,
+						advisoryError,
+					);
+				}
 				await submissions.failSubmission(attempt, error);
 			}
 			settlement = settlementSummary(submission, 'failed', error);

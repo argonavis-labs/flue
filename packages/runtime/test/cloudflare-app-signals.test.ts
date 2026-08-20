@@ -132,7 +132,7 @@ describe('appendAgentConversationSignal()', () => {
 	it('appends linearly to the existing root conversation', async () => {
 		const { instance, conversationStreamStore } = attachInstance();
 
-		await appendAgentConversationSignal(instance, {
+		const first = await appendAgentConversationSignal(instance, {
 			kind: 'signal',
 			type: 'note',
 			body: 'First.',
@@ -142,6 +142,7 @@ describe('appendAgentConversationSignal()', () => {
 			type: 'note',
 			body: 'Second.',
 		});
+		expect(first).toEqual({ created: true });
 
 		const records = await readCanonicalRecords(conversationStreamStore);
 		// The first signal created the root conversation; the second reuses it.
@@ -155,6 +156,74 @@ describe('appendAgentConversationSignal()', () => {
 		// tagName and attributes stay optional — absent, not defaulted.
 		expect(signals[0]).not.toHaveProperty('tagName');
 		expect(signals[0]).not.toHaveProperty('attributes');
+	});
+
+	it('appends at most once per dedupe key and reports which call created it', async () => {
+		const { instance, conversationStreamStore } = attachInstance();
+		const signal = {
+			kind: 'signal' as const,
+			type: 'session_wake_cancelled',
+			tagName: 'system_message',
+			body: 'The scheduled wake did not complete.',
+			attributes: { sleepToolCallId: 'call-1', status: 'cancelled' },
+		};
+
+		const first = await appendAgentConversationSignal(instance, signal, {
+			dedupeKey: 'wait_resolved_sleep:call-1',
+		});
+		const repeat = await appendAgentConversationSignal(instance, signal, {
+			dedupeKey: 'wait_resolved_sleep:call-1',
+		});
+
+		expect(first).toEqual({ created: true });
+		expect(repeat).toEqual({ created: false });
+		const records = await readCanonicalRecords(conversationStreamStore);
+		const signals = records.filter((record) => record.type === 'signal');
+		expect(signals).toHaveLength(1);
+		expect(signals[0]?.id).toBe('record_app_signal_wait_resolved_sleep:call-1');
+		if (signals[0]?.type !== 'signal') throw new Error('Expected a signal record.');
+		expect(signals[0].messageId).toBe('entry_app_signal_wait_resolved_sleep:call-1');
+	});
+
+	it('appends once when two calls with one dedupe key overlap', async () => {
+		const { instance, conversationStreamStore } = attachInstance();
+		const signal = {
+			kind: 'signal' as const,
+			type: 'session_wake_cancelled',
+			tagName: 'system_message',
+			body: 'The scheduled wake did not complete.',
+			attributes: { sleepToolCallId: 'call-1', status: 'cancelled' },
+		};
+
+		const results = await Promise.all([
+			appendAgentConversationSignal(instance, signal, { dedupeKey: 'wait_resolved_sleep:call-1' }),
+			appendAgentConversationSignal(instance, signal, { dedupeKey: 'wait_resolved_sleep:call-1' }),
+		]);
+
+		expect(results.filter((result) => result.created)).toHaveLength(1)
+		expect(results.filter((result) => !result.created)).toHaveLength(1)
+		const records = await readCanonicalRecords(conversationStreamStore);
+		expect(records.filter((record) => record.type === 'signal')).toHaveLength(1);
+	});
+
+	it('appends separately for distinct dedupe keys', async () => {
+		const { instance, conversationStreamStore } = attachInstance();
+
+		const one = await appendAgentConversationSignal(
+			instance,
+			{ kind: 'signal', type: 'note', body: 'One.' },
+			{ dedupeKey: 'key-1' },
+		);
+		const two = await appendAgentConversationSignal(
+			instance,
+			{ kind: 'signal', type: 'note', body: 'Two.' },
+			{ dedupeKey: 'key-2' },
+		);
+
+		expect(one).toEqual({ created: true });
+		expect(two).toEqual({ created: true });
+		const records = await readCanonicalRecords(conversationStreamStore);
+		expect(records.filter((record) => record.type === 'signal')).toHaveLength(2);
 	});
 
 	it('throws while an assistant message is in progress', async () => {

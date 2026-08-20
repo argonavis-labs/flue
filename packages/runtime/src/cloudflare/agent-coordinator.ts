@@ -37,6 +37,7 @@ import {
 	type LatestSettledSubmission,
 	readLatestCompletedSubmission,
 	readLatestSettledSubmission,
+	readSettledSubmission,
 } from '../sql-agent-execution-store.ts';
 import type { DeliveredMessage } from '../types.ts';
 import {
@@ -393,14 +394,39 @@ export class CloudflareAgentCoordinator {
 		if (settlement) this.lastSettlement = settlement;
 	}
 
+	// Serializes ensure -> dedupe check -> parent read -> append. An overlapping
+	// call passes hasRecord before the first append lands, then writes a
+	// duplicate or a stale-parent record that fails the writer.
+	private signalAppendTail: Promise<unknown> = Promise.resolve();
+
 	/** See {@link appendAgentConversationSignal}: out-of-turn canonical signal append. */
-	async appendConversationSignal(signal: AgentConversationSignalInput): Promise<void> {
+	appendConversationSignal(
+		signal: AgentConversationSignalInput,
+		options?: { dedupeKey?: string },
+	): Promise<{ created: boolean }> {
+		const operation = this.signalAppendTail.then(() => this.appendSignalRecord(signal, options));
+		this.signalAppendTail = operation.then(
+			() => {},
+			() => {},
+		);
+		return operation;
+	}
+
+	private async appendSignalRecord(
+		signal: AgentConversationSignalInput,
+		options?: { dedupeKey?: string },
+	): Promise<{ created: boolean }> {
 		const writer = await this.ensureConversationWriter();
 		// A signal may precede the very first submission, so create the root
 		// conversation when absent — the same seam the submission commit path uses.
 		const conversation = await ensureRootSubmissionConversation(writer);
+		const unique = options?.dedupeKey ?? crypto.randomUUID();
+		// The canonical record is the dedupe marker itself, so a keyed retry
+		// can never double-append: the same idiom recordSubmissionTerminal uses.
+		if (options?.dedupeKey !== undefined && (await writer.hasRecord(`record_app_signal_${unique}`))) {
+			return { created: false };
+		}
 		const parentId = await writer.getConversationLeaf(conversation.conversationId);
-		const unique = crypto.randomUUID();
 		await writer.append([
 			{
 				v: 1,
@@ -418,6 +444,13 @@ export class CloudflareAgentCoordinator {
 				...(signal.attributes ? { attributes: signal.attributes } : {}),
 			},
 		]);
+		return { created: true };
+	}
+
+	/** See {@link agentSettledSubmission}: by-id durable settlement read for the embedding application. */
+	async settledSubmission(submissionId: string): Promise<LatestSettledSubmission | undefined> {
+		const sql = this.prepared.sql;
+		return sql ? readSettledSubmission(sql, submissionId) : undefined;
 	}
 
 	/** See {@link ensureAgentConversation}: out-of-turn root-conversation ensure. */
