@@ -24,6 +24,9 @@ import type { FlueEventStream } from './stream.ts';
  */
 export type ConversationLiveMode = 'long-poll' | 'sse';
 
+// Generous: a cold read of the largest transcripts, plus one proxy-side retry.
+const HISTORY_TIMEOUT_MS = 45_000;
+
 export type AgentConversationObservationPhase =
 	| 'loading'
 	| 'connecting'
@@ -104,7 +107,15 @@ export function createAgentConversationObservation(
 
 	const publish = (next: AgentConversationObservationSnapshot) => {
 		snapshot = next;
-		for (const listener of listeners) listener();
+		for (const listener of listeners) {
+			try {
+				listener();
+			} catch (error) {
+				// A defective listener must not kill the caller: for a retry publish
+				// that caller is the observation's only recovery.
+				console.error('[flue] agent conversation observation listener threw', error);
+			}
+		}
 	};
 
 	const isCurrent = (value: number) => !closed && value === generation;
@@ -248,11 +259,31 @@ export function createAgentConversationObservation(
 		}
 	};
 
+	// A hung read aborts at the deadline into a retryable failure. setTimeout,
+	// not AbortSignal.timeout, so fake-timer suites can drive it.
+	const historyWithDeadline = async (): Promise<FlueConversationSnapshot> => {
+		const parent = controller?.signal;
+		const deadline = new AbortController();
+		if (parent?.aborted) deadline.abort(parent.reason);
+		const onParentAbort = () => deadline.abort(parent?.reason);
+		parent?.addEventListener('abort', onParentAbort, { once: true });
+		const timer = setTimeout(
+			() => deadline.abort(new Error('Agent conversation history read timed out; retrying.')),
+			HISTORY_TIMEOUT_MS,
+		);
+		try {
+			return await source.history({ signal: deadline.signal });
+		} finally {
+			clearTimeout(timer);
+			parent?.removeEventListener('abort', onParentAbort);
+		}
+	};
+
 	const hydrate = async (value: number) => {
 		if (!isCurrent(value)) return;
 		publish({ ...snapshot, phase: streamState ? 'connecting' : 'loading', error: undefined });
 		try {
-			const history = await source.history({ signal: controller?.signal });
+			const history = await historyWithDeadline();
 			if (!isCurrent(value)) return;
 			streamState = createConversationStreamState(history);
 			lastApplied = undefined;
