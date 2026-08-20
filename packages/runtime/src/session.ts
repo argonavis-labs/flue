@@ -31,6 +31,7 @@ import {
 	createTools,
 	READ_SKILL_RESOURCE_TOOL_NAME,
 	type TaskToolParams,
+	attachTaskPartialWork,
 	type TaskToolResultDetails,
 } from './agent.ts';
 import {
@@ -2417,6 +2418,20 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			}, { agentOutput: child.agentInvocationOutput(output) });
 			return taskResult;
 		} catch (error) {
+			// A timeout abort lands here before the finally block closes the
+			// child. Hand the parent whatever the child completed — the task
+			// tool's timeout error carries it — and never let a read of a
+			// half-written conversation mask the real failure.
+			if (child) {
+				try {
+					attachTaskPartialWork(error, {
+						text: child.getAssistantText(),
+						toolTrace: child.getToolCallTrace(),
+					});
+				} catch {
+					// Salvage is best-effort only.
+				}
+			}
 			this.emit({
 				type: 'task',
 				taskId,
