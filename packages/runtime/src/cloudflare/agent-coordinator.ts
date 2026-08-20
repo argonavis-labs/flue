@@ -394,8 +394,25 @@ export class CloudflareAgentCoordinator {
 		if (settlement) this.lastSettlement = settlement;
 	}
 
+	// Serializes ensure -> dedupe check -> parent read -> append. An overlapping
+	// call passes hasRecord before the first append lands, then writes a
+	// duplicate or a stale-parent record that fails the writer.
+	private signalAppendTail: Promise<unknown> = Promise.resolve();
+
 	/** See {@link appendAgentConversationSignal}: out-of-turn canonical signal append. */
-	async appendConversationSignal(
+	appendConversationSignal(
+		signal: AgentConversationSignalInput,
+		options?: { dedupeKey?: string },
+	): Promise<{ created: boolean }> {
+		const operation = this.signalAppendTail.then(() => this.appendSignalRecord(signal, options));
+		this.signalAppendTail = operation.then(
+			() => {},
+			() => {},
+		);
+		return operation;
+	}
+
+	private async appendSignalRecord(
 		signal: AgentConversationSignalInput,
 		options?: { dedupeKey?: string },
 	): Promise<{ created: boolean }> {

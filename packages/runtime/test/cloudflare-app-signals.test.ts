@@ -185,6 +185,27 @@ describe('appendAgentConversationSignal()', () => {
 		expect(signals[0].messageId).toBe('entry_app_signal_wait_resolved_sleep:call-1');
 	});
 
+	it('appends once when two calls with one dedupe key overlap', async () => {
+		const { instance, conversationStreamStore } = attachInstance();
+		const signal = {
+			kind: 'signal' as const,
+			type: 'session_wake_cancelled',
+			tagName: 'system_message',
+			body: 'The scheduled wake did not complete.',
+			attributes: { sleepToolCallId: 'call-1', status: 'cancelled' },
+		};
+
+		const results = await Promise.all([
+			appendAgentConversationSignal(instance, signal, { dedupeKey: 'wait_resolved_sleep:call-1' }),
+			appendAgentConversationSignal(instance, signal, { dedupeKey: 'wait_resolved_sleep:call-1' }),
+		]);
+
+		expect(results.filter((result) => result.created)).toHaveLength(1)
+		expect(results.filter((result) => !result.created)).toHaveLength(1)
+		const records = await readCanonicalRecords(conversationStreamStore);
+		expect(records.filter((record) => record.type === 'signal')).toHaveLength(1);
+	});
+
 	it('appends separately for distinct dedupe keys', async () => {
 		const { instance, conversationStreamStore } = attachInstance();
 
