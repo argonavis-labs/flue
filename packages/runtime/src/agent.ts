@@ -334,7 +334,7 @@ export function createTaskTool(
 			'Delegate a focused task to a detached child agent with its own context. ' +
 			'Use this for independent research, file exploration, or parallel work. ' +
 			'Pass attachment IDs shown in the conversation to include those images. ' +
-			'The task returns its final answer followed by a bracketed trace of the tool calls it made; a trace of "no tool calls" means the answer came from model recall or potential hallucination, not research. Ignore answers with zero tool calls' +
+			'The task returns its final answer followed by a bracketed trace of the tool calls it made; a trace of "no tool calls" means the answer came from model recall, not research - and may contain errors.' +
 			'Set timeout (seconds) generously above the expected runtime; a task that exceeds it is aborted and its partial work is lost. ' +
 			`Without a timeout, a default cap of ${DEFAULT_TASK_TIMEOUT_MS / 1000} seconds applies.` +
 			agentDescription,
