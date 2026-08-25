@@ -560,6 +560,107 @@ describe('session.prompt()', () => {
 		expect(conversation?.activeLeafId).not.toBe('entry_synthetic_assistant');
 	});
 
+	// The shape RUN-6789 and RUN-6801 wedged on: the buried stream emitted no
+	// block at all, so recovery has only the message record to settle. The
+	// block-bearing case above cannot catch a materializer that assumes one.
+	it('heals a buried assistant stream that never emitted a block', async () => {
+		const provider = createProvider([{ id: 'reviewer' }]);
+		provider.setResponses([fauxAssistantMessage('Recovered after empty-stream repair.')]);
+		const store = new InMemoryConversationStreamStore();
+		const writer = await ConversationRecordWriter.create({
+			store,
+			path: 'agents/assistant/empty-stream-instance',
+			identity: { agentName: 'assistant', instanceId: 'empty-stream-instance' },
+			producerId: 'producer-1',
+		});
+		const timestamp = new Date().toISOString();
+		const envelope = {
+			v: 1 as const,
+			conversationId: 'conversation-empty-stream',
+			harness: 'default',
+			session: 'default',
+			timestamp,
+			submissionId: 'submission-poisoned',
+			attemptId: 'attempt-poisoned',
+		};
+		await writer.append([
+			{
+				v: 1,
+				id: 'record-created',
+				type: 'conversation_created',
+				kind: 'root',
+				conversationId: 'conversation-empty-stream',
+				harness: 'default',
+				session: 'default',
+				timestamp,
+				affinityKey: 'affinity-empty-stream',
+				createdAt: timestamp,
+			},
+			{
+				...envelope,
+				id: 'record-user',
+				type: 'user_message',
+				messageId: 'entry_user',
+				parentId: null,
+				content: [{ type: 'text', text: 'Original prompt' }],
+			},
+			{
+				...envelope,
+				id: 'record-original-started',
+				type: 'assistant_message_started',
+				turnId: 'turn-original',
+				messageId: 'entry_original_assistant',
+				parentId: 'entry_user',
+				modelInfo: { api: 'faux', provider: provider.getModel().provider, model: 'reviewer' },
+			},
+			{
+				...envelope,
+				id: 'record-synthetic-started',
+				type: 'assistant_message_started',
+				turnId: 'turn-synthetic',
+				messageId: 'entry_synthetic_assistant',
+				parentId: 'entry_user',
+				modelInfo: { api: 'faux', provider: provider.getModel().provider, model: 'reviewer' },
+			},
+			{
+				...envelope,
+				id: 'record-synthetic-completed',
+				type: 'assistant_message_completed',
+				messageId: 'entry_synthetic_assistant',
+				stopReason: 'error',
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				error: 'simulated mid-stream failure',
+			},
+		], { submission: { submissionId: 'submission-poisoned', attemptId: 'attempt-poisoned' } });
+		const ctx = createFlueContext({
+			id: 'empty-stream-instance',
+			env: {},
+			agentConfig: { resolveModel: () => provider.getModel('reviewer') },
+			createDefaultEnv: async () => createNoopSessionEnv(),
+			conversationWriter: writer,
+			attachmentStore: new InMemoryAttachmentStore(),
+		});
+		const harness = await ctx.initializeRootHarness(
+			defineAgent(() => ({ model: `${provider.getModel().provider}/reviewer` })),
+		);
+		const session = await harness.session();
+
+		await expect(session.prompt('Try again.')).resolves.toMatchObject({
+			text: 'Recovered after empty-stream repair.',
+		});
+
+		const conversation = await writer.findConversation('default', 'default');
+		expect(conversation?.inProgressMessages.size).toBe(0);
+		expect(conversation?.entries.has('entry_original_assistant')).toBe(false);
+	});
+
 
 	it('uses a call-level model when a prompt overrides the agent model', async () => {
 		const provider = createProvider([{ id: 'default-model' }, { id: 'override-model' }]);

@@ -1527,9 +1527,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		let conversation = await this.conversationWriter.getConversation(this.conversationId);
 		if (!conversation) return [];
 
-		// Settle every abandoned stream. A leaf-parented stream materializes as an
-		// aborted entry; a stream already buried behind the leaf is discarded by
-		// the recovery completion without rewinding or advancing the graph.
+		// Settle every abandoned stream: a leaf-parented one materializes as an
+		// aborted entry, a buried one is discarded. Iteration follows append order,
+		// so among legacy siblings at one parent the earliest becomes that entry.
 		const inProgressMessages = [...conversation.inProgressMessages.values()].filter((message) =>
 			owns(message.submissionId)
 		);
