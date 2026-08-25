@@ -444,7 +444,7 @@ describe('session.prompt()', () => {
 		).toEqual(['aborted', 'error', 'stop']);
 	});
 
-	it('heals a legacy buried assistant stream when the next prompt starts', async () => {
+	it('heals a buried assistant stream when the next prompt starts', async () => {
 		const provider = createProvider([{ id: 'reviewer' }]);
 		provider.setResponses([fauxAssistantMessage('Recovered after durable repair.')]);
 		const store = new InMemoryConversationStreamStore();
@@ -563,7 +563,7 @@ describe('session.prompt()', () => {
 	// The shape RUN-6789 and RUN-6801 wedged on: the buried stream emitted no
 	// block at all, so recovery has only the message record to settle. The
 	// block-bearing case above cannot catch a materializer that assumes one.
-	it('heals a buried assistant stream that never emitted a block', async () => {
+	it('accepts the next prompt when a buried assistant stream never emitted a block', async () => {
 		const provider = createProvider([{ id: 'reviewer' }]);
 		provider.setResponses([fauxAssistantMessage('Recovered after empty-stream repair.')]);
 		const store = new InMemoryConversationStreamStore();

@@ -554,7 +554,7 @@ describe('reduceConversationRecords()', () => {
 		}));
 	});
 
-	it('discards a legacy assistant stream when recovery finds it buried behind the active leaf', () => {
+	it('discards an assistant stream when recovery finds it buried behind the active leaf', () => {
 		const records = canonicalConversation();
 		const state = reduceConversationRecords(createReducedInstanceState(), [
 			required(records[0]),
@@ -599,12 +599,20 @@ describe('reduceConversationRecords()', () => {
 		expect(conversation.inProgressMessages).toHaveLength(0);
 		expect(conversation.entries.has('entry_assistant')).toBe(false);
 		expect(conversation.entries.has('entry_second_assistant')).toBe(true);
-		expect(projectAgentConversationBatch({
+		// A consumer already holds the discarded message from its `message-started`,
+		// and no chunk retracts one, so the batch has to re-seat the whole snapshot.
+		const chunks = projectAgentConversationBatch({
 			state: repaired,
 			previousState: state,
 			records: [recovery],
 			batchOrdinal: 7,
-		})).toEqual([]);
+		});
+		expect(chunks).toHaveLength(1);
+		const reset = required(chunks[0]);
+		expect(reset.type).toBe('conversation-reset');
+		if (reset.type !== 'conversation-reset') throw new Error('Expected a reset chunk.');
+		expect(reset.snapshot.messages.map((message) => message.id)).not.toContain('entry_assistant');
+		expect(reset.snapshot.messages.map((message) => message.id)).toContain('entry_second_assistant');
 	});
 
 	it('projects one complete UI snapshot through the physical catch-up offset', () => {

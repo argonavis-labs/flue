@@ -1529,7 +1529,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 
 		// Settle every abandoned stream: a leaf-parented one materializes as an
 		// aborted entry, a buried one is discarded. Iteration follows append order,
-		// so among legacy siblings at one parent the earliest becomes that entry.
+		// so among sibling streams at one parent the earliest becomes that entry.
 		const inProgressMessages = [...conversation.inProgressMessages.values()].filter((message) =>
 			owns(message.submissionId)
 		);

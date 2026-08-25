@@ -100,11 +100,7 @@ export interface AssistantMessageStartedRecord extends ConversationRecordEnvelop
 	messageId: string;
 	parentId: string | null;
 	modelInfo: AssistantModelInfo;
-	/**
-	 * New writers assert that a conversation has no other live assistant stream.
-	 * Optional so records written before this invariant was enforced still replay
-	 * and can be repaired.
-	 */
+	/** Asserts no other assistant stream is live here. Optional: a stored record without it replays unchecked, keeping an unenforced log repairable. */
 	exclusive?: true;
 }
 

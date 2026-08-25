@@ -164,7 +164,7 @@ export function projectAgentConversationBatch(options: {
 
 	// A reset subsumes the whole batch: a fresh snapshot already reflects every
 	// record in it, so emitting per-record chunks too would double-apply.
-	if (relevant.some(requiresSnapshotReset)) {
+	if (relevant.some((record) => requiresSnapshotReset(record, options.state))) {
 		const snapshot = projectAgentConversationSnapshot(options.state);
 		return snapshot
 			? withPositions([{ type: 'conversation-reset', conversationId, snapshot }], options.batchOrdinal)
@@ -190,8 +190,23 @@ function withPositions(
 	return bodies.map((body, index) => ({ ...body, position: { batch, index } }));
 }
 
-function requiresSnapshotReset(record: ConversationRecord): boolean {
-	return record.type === 'conversation_created' || record.type === 'compaction';
+// Effects no per-record chunk expresses, because they remove history the
+// consumer already holds. A discard is one: its `message-started` is on the
+// wire and nothing retracts a message.
+function requiresSnapshotReset(record: ConversationRecord, state: ReducedInstanceState): boolean {
+	if (record.type === 'conversation_created' || record.type === 'compaction') return true;
+	return record.type === 'assistant_message_completed' && wasDiscarded(record, state);
+}
+
+/** A recovery completion settles a buried stream by dropping it, never by materializing an entry. */
+function wasDiscarded(
+	record: Extract<ConversationRecord, { type: 'assistant_message_completed' }>,
+	state: ReducedInstanceState,
+): boolean {
+	return (
+		record.discardIfOrphaned === true &&
+		!state.conversations.get(record.conversationId)?.entries.has(record.messageId)
+	);
 }
 
 function encodeRecord(
@@ -278,12 +293,8 @@ function encodeRecord(
 		case 'assistant_tool_call':
 			return [{ type: 'tool-input', conversationId, messageId: record.messageId, toolCallId: record.toolCallId, toolName: record.name, input: record.arguments }];
 		case 'assistant_message_completed':
-			if (
-				record.discardIfOrphaned &&
-				!state.conversations.get(record.conversationId)?.entries.has(record.messageId)
-			) {
-				return [];
-			}
+			// A discarded completion never reaches here: `requiresSnapshotReset`
+			// turns its batch into a reset before any record is encoded.
 			return [
 				{
 					type: 'message-completed',
