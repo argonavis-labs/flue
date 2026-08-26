@@ -100,6 +100,8 @@ export interface AssistantMessageStartedRecord extends ConversationRecordEnvelop
 	messageId: string;
 	parentId: string | null;
 	modelInfo: AssistantModelInfo;
+	/** Asserts no other assistant stream is live here. Optional: a stored record without it replays unchecked, keeping an unenforced log repairable. */
+	exclusive?: true;
 }
 
 interface AssistantTextStartedRecord extends ConversationRecordEnvelope {
@@ -168,6 +170,11 @@ interface AssistantMessageCompletedRecord extends ConversationRecordEnvelope {
 	stopReason: AssistantMessage['stopReason'];
 	usage: AssistantMessage['usage'];
 	error?: string;
+	/**
+	 * Recovery completions may discard a stream whose parent is already behind
+	 * the active leaf. Leaf-parented streams still materialize normally.
+	 */
+	discardIfOrphaned?: true;
 }
 
 interface ToolOutcomeRecord extends ConversationRecordEnvelope {

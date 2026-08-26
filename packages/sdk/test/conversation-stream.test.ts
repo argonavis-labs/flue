@@ -254,6 +254,43 @@ describe('applyConversationChunk()', () => {
 		]);
 	});
 
+	it('drops a streaming message the reset snapshot omits when recovery discarded it', () => {
+		const conversation = reduce([
+			{ type: 'message-started', conversationId: 'c1', messageId: 'orphan', timestamp: '2026-08-25T00:00:00.000Z' },
+			{
+				type: 'conversation-reset',
+				conversationId: 'c1',
+				snapshot: {
+					v: 1,
+					conversationId: 'c1',
+					offset: '9',
+					messages: [{ id: 'kept', role: 'assistant', parts: [{ type: 'text', text: 'kept', state: 'done' }] }],
+					settlements: [],
+				},
+			},
+		]);
+		expect(conversation.messages.map((message) => message.id)).toEqual(['kept']);
+	});
+
+	it('drops a partially streamed message the reset snapshot omits when recovery discarded it', () => {
+		const conversation = reduce([
+			{ type: 'message-started', conversationId: 'c1', messageId: 'orphan', timestamp: '2026-08-25T00:00:00.000Z' },
+			{ type: 'message-delta', conversationId: 'c1', messageId: 'orphan', kind: 'text', delta: 'Partial output' },
+			{
+				type: 'conversation-reset',
+				conversationId: 'c1',
+				snapshot: {
+					v: 1,
+					conversationId: 'c1',
+					offset: '9',
+					messages: [{ id: 'kept', role: 'assistant', parts: [{ type: 'text', text: 'kept', state: 'done' }] }],
+					settlements: [],
+				},
+			},
+		]);
+		expect(conversation.messages.map((message) => message.id)).toEqual(['kept']);
+	});
+
 	it('records a submission settlement', () => {
 		const conversation = reduce([
 			{ type: 'submission-settled', conversationId: 'c1', submissionId: 's1', outcome: 'completed' },

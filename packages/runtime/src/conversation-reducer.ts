@@ -442,6 +442,9 @@ export function applyConversationRecord(
 			if (conversation.entries.has(record.messageId) || conversation.inProgressMessages.has(record.messageId)) {
 				fail(record, `Assistant entry "${record.messageId}" already exists.`);
 			}
+			if (record.exclusive && conversation.inProgressMessages.size > 0) {
+				fail(record, `Cannot start an assistant message while another assistant message is in progress.`);
+			}
 			conversation.inProgressMessages.set(record.messageId, {
 				messageId: record.messageId,
 				parentId: record.parentId,
@@ -513,6 +516,17 @@ export function applyConversationRecord(
 					fail(record, `Assistant block "${block.blockId}" is not complete.`);
 				}
 			}
+			// Committing a buried stream would rewrite the graph, so discarding is
+			// its only settlement; `discardIfOrphaned` is how a recovery completion
+			// accepts losing the content. Every other completion keeps the tail check.
+			const discarded = inProgress.parentId !== conversation.activeLeafId && record.discardIfOrphaned;
+			if (!discarded) assertAssistantCompletionAppend(conversation, record, inProgress);
+			// Assertions above, mutations below: a refused record changes nothing.
+			conversation.inProgressMessages.delete(record.messageId);
+			// Streaming ids absorb redelivery only while in flight; pruning them here
+			// bounds recordIndex, the checkpoint's dominant growth term (RUN-5441).
+			for (const id of inProgress.streamRecordIds) state.recordIndex.delete(id);
+			if (discarded) break;
 			const content = [...inProgress.blocks.values()]
 				.sort((a, b) => a.blockIndex - b.blockIndex)
 				.map(materializeAssistantBlock);
@@ -525,11 +539,6 @@ export function applyConversationRecord(
 				errorMessage: record.error,
 				timestamp: new Date(inProgress.timestamp).getTime(),
 			} as AssistantMessage;
-			assertAssistantCompletionAppend(conversation, record, inProgress);
-			conversation.inProgressMessages.delete(record.messageId);
-			// Streaming ids absorb redelivery only while in flight; pruning them here
-			// bounds recordIndex, the checkpoint's dominant growth term (RUN-5441).
-			for (const id of inProgress.streamRecordIds) state.recordIndex.delete(id);
 			commitEntry(conversation, {
 				type: 'message',
 				id: record.messageId,
